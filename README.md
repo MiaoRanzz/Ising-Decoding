@@ -69,6 +69,7 @@ WORKFLOW=inference bash code/scripts/local_run.sh
 ```
 
 Inference note:
+
 - On bare metal, keep the default DataLoader workers.
 - In containers, set a larger shared-memory size (e.g., `docker run --shm-size=1g ...`).
 - If you cannot change `--shm-size`, set `PREDECODER_INFERENCE_NUM_WORKERS=0` to avoid shared-memory worker crashes.
@@ -91,14 +92,15 @@ Inference note:
 If you are not training locally, you can run inference using pre-trained models.
 
 1. **(Optional) create a venv and install inference deps**:
-```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -r code/requirements_public_inference.txt
-```
 
-2. **Get the pre-trained models**  
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate
+   python -m pip install --upgrade pip
+   pip install -r code/requirements_public_inference.txt
+   ```
+
+2. **Get the pre-trained models**
    This repo ships two pre-trained model files (tracked with Git LFS):
    - `models/Ising-Decoder-SurfaceCode-1-Fast.pt` (receptive field R=9)
    - `models/Ising-Decoder-SurfaceCode-1-Accurate.pt` (receptive field R=13)
@@ -106,13 +108,15 @@ pip install -r code/requirements_public_inference.txt
    Clones get the files via `git lfs pull`. Optionally, set `PREDECODER_MODEL_URL` to the LFS/raw URL to fetch files when not in the working tree (e.g. in a minimal checkout or CI).
 
 3. Set:
-- `EXPERIMENT_NAME=predecoder_model_1`
-- `model_id: 1` in `conf/config_public.yaml`
+
+   - `EXPERIMENT_NAME=predecoder_model_1`
+   - `model_id: 1` in `conf/config_public.yaml`
 
 4. **Run inference**:
-```bash
-WORKFLOW=inference EXPERIMENT_NAME=predecoder_model_1 bash code/scripts/local_run.sh
-```
+
+   ```bash
+   WORKFLOW=inference EXPERIMENT_NAME=predecoder_model_1 bash code/scripts/local_run.sh
+   ```
 
 Inference output is written to `outputs/<EXPERIMENT_NAME>/` with a full log in
 `outputs/<EXPERIMENT_NAME>/run.log`.
@@ -199,6 +203,54 @@ Notes:
 - FP8 quantization failure is fatal. INT8 failure falls back to the FP32 ONNX model silently.
 - ONNX and engine files are written to the current working directory.
 - `ONNX_WORKFLOW` is also honoured by the `decoder_ablation` workflow — see below.
+
+### Generating data for CUDA-Q QEC Realtime Predecoder test application
+
+When evaluating the neural pre-decoder in an end-to-end downstream system like
+CUDA-Q Realtime, you will need a test harness with valid inputs—both the
+exported neural network model and the corresponding syndrome data.
+
+The utility script `code/export/generate_test_data.py` is provided to generate
+this exact data (both an `.onnx` file and several `.bin` files) so you can
+easily consume it in the CUDA-Q QEC realtime AI decoder.
+
+> **Important:** The `--distance` and `--n-rounds` arguments provided to this
+script **must match** the values used in the preceding section when running the
+ONNX export (e.g. `ONNX_WORKFLOW=2`).
+
+For a detailed walkthrough on how to ingest these files into the CUDA-Q Realtime
+C++ pipeline, see the downstream documentation here: [Realtime AI Predecoder
+Pipeline](https://nvidia.github.io/cudaqx/examples_rst/qec/realtime_predecoder_pymatching.html).
+
+```bash
+python3 code/export/generate_test_data.py --distance 13 --n-rounds 104 --num-samples 10000 --basis X --p-error=0.003 --simple-noise
+```
+
+**Example output:**
+
+```text
+Building circuit: D=13, T=104, basis=X, rotation=XV, p=0.003
+  Circuit built in 0.007s
+Building detector error model and PyMatching matcher...
+  DEM + matcher built in 0.083s
+  Detectors: 17472, Observables: 1
+Extracting check matrices (beliefmatching)...
+  H shape: (17472, 93864), O shape: (1, 93864), priors shape: (93864,)
+Sampling 10000 shots...
+  Sampled in 1.006s
+Decoding with PyMatching (baseline)...
+  Errors: 30/10000, LER: 0.0030
+  Decode time: 5.439s (543.9 µs/shot)
+Writing outputs to test_data/d13_T104_X/
+Done.
+  H_csr.bin                           808,944 bytes
+  O_csr.bin                             2,932 bytes
+  detectors.bin                   698,880,008 bytes
+  metadata.txt                            162 bytes
+  observables.bin                      40,008 bytes
+  priors.bin                          750,916 bytes
+  pymatching_predictions.bin           40,008 bytes
+```
 
 ### Decoder ablation study with cudaq-qec (optional)
 
@@ -395,8 +447,6 @@ LOGICAL Z (lz):
  ●  ·  ·
 ```
 
-
-
 #### Noise model (public default)
 
 - `data.noise_model`: a **25-parameter circuit-level** noise model (SPAM, idles, and CNOT Pauli channels).
@@ -449,7 +499,6 @@ Either method causes the training pipeline to use the user-specified noise model
 [Train] noise_model upscaling SKIPPED (skip_noise_upscaling=true or PREDECODER_SKIP_NOISE_UPSCALING=1).
 ```
 
-
 ### Precomputed frames (recommended)
 
 Training/validation data generation can load precomputed frames from:
@@ -464,10 +513,8 @@ python3 code/data/precompute_frames.py --distance 13 --n_rounds 13 --basis X Z -
 
 ### Resuming training & running inference on a trained model
 
-
 - **Inference uses the trained model from `outputs/<experiment_name>/models/`**, so keep the same `EXPERIMENT_NAME` when you switch from training to inference.
 - **Training auto-resumes**: if a run is interrupted, launching the same training command again (same `EXPERIMENT_NAME`) will automatically load the latest checkpoint it finds and continue training (up to the fixed 100 epochs). To force a clean restart, set `FRESH_START=1`, although we recommend changing `EXPERIMENT_NAME` instead.
-
 
 ### What gets written where
 
@@ -528,6 +575,7 @@ PYTHONPATH=code python -m unittest discover -s code/tests -p "test_*.py"
 ```
 
 Useful env vars for noise model tests:
+
 - `RUN_SLOW=1` enables >=100k-shot statistical tests
 - `NOISEMODEL_FAST_SHOTS` controls fast-tier shots (default 10000)
 - `NOISEMODEL_SLOW_SHOTS` controls slow-tier shots (default 100000)
