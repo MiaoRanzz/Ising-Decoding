@@ -16,6 +16,39 @@ The public release exposes a **single user-facing config** and a **single runner
 
 ![Pre-decoder pipeline](images/predecoder_pipeline.png)
 
+### High-level workflow
+
+```text
+ ┌────────────────────────────────────────┐  Uses:
+ │ 1. Train or Download Model             │  - Ising-Decoding repo (train)
+ │                                        │  - Hugging Face (download)
+ └──────────────────┬─────────────────────┘
+                    │
+                    ▼
+ ┌────────────────────────────────────────┐  Uses:
+ │ 2. Assess Performance                  │  - Ising-Decoding repo
+ │    (Run inference tests)               │
+ └──────────────────┬─────────────────────┘
+                    │
+ ┌──────────────────▼─────────────────────┐  Uses:
+ │ 3. Investigate Realtime Performance    │  - Ising-Decoding repo (3a, 3b)
+ │                                        │  - CUDA-Q QEC (3c)
+ │   ┌────────────────────────────────┐   │
+ │   │ 3a. Enable ONNX_WORKFLOW &     │   │
+ │   │     choose quantization format │   │
+ │   └──────────────┬─────────────────┘   │
+ │                  │                     │
+ │   ┌──────────────▼─────────────────┐   │
+ │   │ 3b. Run generate_test_data.py  │   │
+ │   └──────────────┬─────────────────┘   │
+ │                  │                     │
+ │   ┌──────────────▼─────────────────┐   │
+ │   │ 3c. Take .onnx and .bin files  │   │
+ │   │     into CUDA-Q QEC            │   │
+ │   └────────────────────────────────┘   │
+ └────────────────────────────────────────┘
+```
+
 ### Quick start (train + inference)
 
 From the repo root:
