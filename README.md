@@ -17,7 +17,33 @@ The public release exposes a **single user-facing config** and a **single runner
 
 ![Pre-decoder pipeline](images/predecoder_pipeline.png)
 
-### High-level workflow
+## Table of Contents
+
+- [High-level workflow](#high-level-workflow)
+- [Quick start (train + inference)](#quick-start-train--inference)
+- [Dependencies](#dependencies)
+- [Troubleshooting](#troubleshooting)
+- [Inference (pre-trained models)](#inference-pre-trained-models)
+- [Model export and downstream tools](#model-export-and-downstream-tools)
+  - [Converting .pt checkpoints to SafeTensors](#converting-pt-checkpoints-to-safetensors-optional-post-training)
+  - [ONNX export and quantization](#onnx-export-and-quantization-optional-post-training)
+  - [Generating data for CUDA-Q QEC](#generating-data-for-cuda-q-qec-realtime-predecoder-test-application)
+  - [Decoder ablation study with cudaq-qec](#decoder-ablation-study-with-cudaq-qec-optional)
+- [Configuration and advanced usage](#configuration-and-advanced-usage)
+  - [GPU selection](#gpu-selection)
+  - [Public configuration](#public-configuration-confconfig_publicyaml)
+  - [Precomputed frames](#precomputed-frames-recommended)
+  - [Resuming training and running inference](#resuming-training-and-running-inference-on-a-trained-model)
+- [Logging and outputs](#logging-and-outputs)
+  - [What gets written where](#what-gets-written-where)
+  - [Evaluation defaults](#evaluation-defaults-public-release)
+- [Testing and CI](#testing-and-ci)
+  - [Testing (CPU + GPU)](#testing-cpu--gpu)
+  - [CI (GitHub Actions)](#ci-github-actions)
+- [Results](#results)
+- [License](#license)
+
+## High-level workflow
 
 ```text
  ┌────────────────────────────────────────┐  Uses:
@@ -50,7 +76,7 @@ The public release exposes a **single user-facing config** and a **single runner
  └────────────────────────────────────────┘
 ```
 
-### Quick start (train + inference)
+## Quick start (train + inference)
 
 From the repo root:
 
@@ -109,7 +135,7 @@ Inference note:
 - If you cannot change `--shm-size`, set `PREDECODER_INFERENCE_NUM_WORKERS=0` to avoid shared-memory worker crashes.
 - Default evaluation is heavy (`cfg.test.num_samples=262144` shots per basis); expect inference to take time.
 
-### Troubleshooting
+## Troubleshooting
 
 - **Avoid `steps_per_epoch=0` on short runs**:
   - Keep `PREDECODER_TRAIN_SAMPLES >= per_device_batch_size * accumulate_steps * world_size`.
@@ -121,7 +147,7 @@ Inference note:
   - Disable compile: `TORCH_COMPILE=0 bash code/scripts/local_run.sh`.
   - Or try a safer mode: `TORCH_COMPILE=1 TORCH_COMPILE_MODE=reduce-overhead bash code/scripts/local_run.sh`.
 
-### Inference (pre-trained models)
+## Inference (pre-trained models)
 
 If you are not training locally, you can run inference using pre-trained models.
 
@@ -154,6 +180,8 @@ If you are not training locally, you can run inference using pre-trained models.
 
 Inference output is written to `outputs/<EXPERIMENT_NAME>/` with a full log in
 `outputs/<EXPERIMENT_NAME>/run.log`.
+
+## Model export and downstream tools
 
 ### Converting .pt checkpoints to SafeTensors (optional, post-training)
 
@@ -238,7 +266,7 @@ Notes:
 - ONNX and engine files are written to the current working directory.
 - `ONNX_WORKFLOW` is also honoured by the `decoder_ablation` workflow — see below.
 
-### Generating data for CUDA-Q QEC Realtime Predecoder test application
+### Generating data for CUDA-Q QEC realtime predecoder test application
 
 When evaluating the neural pre-decoder in an end-to-end downstream system like
 CUDA-Q Realtime, you will need a test harness with valid inputs—both the
@@ -340,6 +368,8 @@ Results are written to `outputs/<EXPERIMENT_NAME>/plots/`.
 
 `cudaq-qec` decoders are loaded automatically when `cudaq_qec` is importable; the study
 degrades gracefully to the non-cudaq decoders if the package is absent.
+
+## Configuration and advanced usage
 
 ### GPU selection
 
@@ -545,10 +575,12 @@ If frames are missing, the code can fall back to on-the-fly generation, but it i
 python3 code/data/precompute_frames.py --distance 13 --n_rounds 13 --basis X Z --rotation O1
 ```
 
-### Resuming training & running inference on a trained model
+### Resuming training and running inference on a trained model
 
 - **Inference uses the trained model from `outputs/<experiment_name>/models/`**, so keep the same `EXPERIMENT_NAME` when you switch from training to inference.
 - **Training auto-resumes**: if a run is interrupted, launching the same training command again (same `EXPERIMENT_NAME`) will automatically load the latest checkpoint it finds and continue training (up to the fixed 100 epochs). To force a clean restart, set `FRESH_START=1`, although we recommend changing `EXPERIMENT_NAME` instead.
+
+## Logging and outputs
 
 ### What gets written where
 
@@ -592,6 +624,8 @@ Key scalars (as shown in TensorBoard):
 
 - **Validation loss** during training uses the on-the-fly generator.
 - **Testing / inference metrics** (LER / SDR / latency) default to the **Stim** path.
+
+## Testing and CI
 
 ### Testing (CPU + GPU)
 
