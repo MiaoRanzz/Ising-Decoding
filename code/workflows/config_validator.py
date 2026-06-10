@@ -49,6 +49,8 @@ _PUBLIC_MODEL_ID_TO_LR = {
     3: 1e-4,
     4: 2e-4,
     5: 1e-4,
+    # Fast architecture candidate: keep the original fast training LR.
+    101: 3e-4,
 }
 
 
@@ -171,7 +173,7 @@ def _base_hidden_defaults_dict() -> Dict[str, Any]:
                 "accumulate_steps": 2,
                 "checkpoint_interval": 1,
                 "save_every_datasets": 5,
-                "epochs": 100,
+                "epochs": 50,
             },
         # NOTE: temporarily reduced for faster iteration during refactor/testing.
         "val": {
@@ -288,7 +290,7 @@ def validate_public_config(cfg: DictConfig) -> PublicModelSpec:
     """
     # model_id must exist in public config
     if "model_id" not in cfg:
-        raise ValueError("Missing required field: 'model_id' (choose 1..5).")
+        raise ValueError("Missing required field: 'model_id' (choose a supported model_id).")
 
     model_spec = get_model_spec(cfg.model_id)
 

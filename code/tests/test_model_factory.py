@@ -49,3 +49,12 @@ class TestModelFactory(unittest.TestCase):
         self.assertIsNotNone(model)
         self.assertEqual(model.distance, cfg.distance)
         self.assertEqual(model.n_rounds, cfg.n_rounds)
+
+    def test_create_surface_model_factorized_v1(self):
+        cfg = get_mock_config()
+        cfg.code = "surface"
+        cfg.model.version = "predecoder_memory_factorized_v1"
+        model = ModelFactory.create_model(cfg)
+        self.assertIsNotNone(model)
+        self.assertEqual(model.distance, cfg.distance)
+        self.assertEqual(model.n_rounds, cfg.n_rounds)

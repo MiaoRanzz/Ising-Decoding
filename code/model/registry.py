@@ -15,7 +15,7 @@
 """
 Public model registry for the early-access public release.
 
-External users choose `model_id` in {1..5}. This registry maps model_id to:
+External users choose a supported `model_id`. This registry maps model_id to:
 - the underlying architecture parameters (num_filters, kernel_size)
 - the model receptive field R (in rounds / distance units)
 
@@ -60,6 +60,15 @@ _MODEL_SPECS: Dict[int, PublicModelSpec] = {
             kernel_size=[3, 3, 3, 3],
             receptive_field=compute_receptive_field([3, 3, 3, 3]),
         ),
+    # Model 101: Fast temporal-spatial factorized conv candidate, R=9
+    101:
+        PublicModelSpec(
+            model_id=101,
+            num_filters=[128, 128, 128, 4],
+            kernel_size=[3, 3, 3, 3],
+            receptive_field=compute_receptive_field([3, 3, 3, 3]),
+            model_version="predecoder_memory_factorized_v1",
+        ),
     # Model 2: 4 conv layers, k=3, wider
     2:
         PublicModelSpec(
@@ -96,13 +105,14 @@ _MODEL_SPECS: Dict[int, PublicModelSpec] = {
 
 
 def get_model_spec(model_id: int) -> PublicModelSpec:
-    """Return the public model spec for a given model_id (1..5)."""
+    """Return the public model spec for a supported model_id."""
+    supported = sorted(_MODEL_SPECS)
     try:
         mid = int(model_id)
     except Exception as e:
-        raise ValueError(f"model_id must be an int in [1..5], got: {model_id!r}") from e
+        raise ValueError(f"model_id must be an int in {supported}, got: {model_id!r}") from e
     if mid == 0:
         raise ValueError("model_id=0 is not supported in the public release")
     if mid not in _MODEL_SPECS:
-        raise ValueError(f"model_id must be in [1..5], got: {mid}")
+        raise ValueError(f"model_id must be in {supported}, got: {mid}")
     return _MODEL_SPECS[mid]

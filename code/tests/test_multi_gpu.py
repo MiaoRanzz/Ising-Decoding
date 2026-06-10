@@ -39,7 +39,12 @@ import torch.multiprocessing as mp
 
 
 def _require_multi_gpu(cls):
-    return unittest.skipUnless(torch.cuda.device_count() >= 2, "2 CUDA GPUs required")(cls)
+    ok = (
+        torch.cuda.is_available()
+        and torch.cuda.device_count() >= 2
+        and dist.is_nccl_available()
+    )
+    return unittest.skipUnless(ok, "requires >=2 CUDA GPUs with NCCL")(cls)
 
 
 def _setup_sys_path():

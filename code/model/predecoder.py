@@ -117,6 +117,68 @@ class PreDecoderModelMemory_v1(nn.Module):
         return self.net(x)  # x: (B, 4, T, D, D)
 
 
+class PreDecoderModelMemoryFactorized_v1(nn.Module):
+
+    def __init__(self, cfg):
+        super(PreDecoderModelMemoryFactorized_v1, self).__init__()
+
+        self.distance = cfg.distance
+        self.n_rounds = cfg.n_rounds
+        self.dropout_p = cfg.model.dropout_p
+
+        filters = cfg.model.num_filters
+        kernel_sizes = cfg.model.kernel_size
+
+        assert len(filters) == len(kernel_sizes), \
+            "Mismatch: num_filters and kernel_size must be the same length."
+
+        input_channels = cfg.model.input_channels
+        out_channels = cfg.model.out_channels
+        assert filters[-1] == out_channels, \
+            f"The last element of num_filters must match the configured out_channels ({out_channels}), but got {filters[-1]}"
+
+        layers = []
+        in_channels = input_channels
+
+        for i in range(len(filters)):
+            k = kernel_sizes[i]
+            layers.append(
+                nn.Conv3d(
+                    in_channels=in_channels,
+                    out_channels=filters[i],
+                    kernel_size=(k, 1, 1),
+                    padding=(k // 2, 0, 0)
+                )
+            )
+            layers.append(
+                nn.Conv3d(
+                    in_channels=filters[i],
+                    out_channels=filters[i],
+                    kernel_size=(1, k, k),
+                    padding=(0, k // 2, k // 2)
+                )
+            )
+            if i < len(filters) - 1:
+                layers.append(nn.Dropout3d(p=self.dropout_p))
+                layers.append(self._get_activation(cfg.model.activation))
+            in_channels = filters[i]
+
+        self.net = nn.Sequential(*layers)
+
+    def _get_activation(self, name):
+        if name == "relu":
+            return nn.ReLU()
+        elif name == "gelu":
+            return nn.GELU(approximate='tanh')
+        elif name == "leakyrelu":
+            return nn.LeakyReLU()
+        else:
+            raise ValueError(f"Unsupported activation: {name}")
+
+    def forward(self, x):
+        return self.net(x)  # x: (B, 4, T, D, D)
+
+
 # === Define a mock config using SimpleNamespace ===
 def get_mock_config():
     cfg = SimpleNamespace()

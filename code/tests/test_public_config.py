@@ -181,6 +181,7 @@ class TestPublicConfig(unittest.TestCase):
             3: 1e-4,
             4: 2e-4,
             5: 1e-4,
+            101: 3e-4,
         }
         for model_id, lr in expected.items():
             cfg = OmegaConf.create({"model_id": model_id, "distance": 9, "n_rounds": 9})
