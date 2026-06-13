@@ -142,22 +142,32 @@ class PreDecoderModelMemoryFactorized_v1(nn.Module):
 
         for i in range(len(filters)):
             k = kernel_sizes[i]
-            layers.append(
-                nn.Conv3d(
-                    in_channels=in_channels,
-                    out_channels=filters[i],
-                    kernel_size=(k, 1, 1),
-                    padding=(k // 2, 0, 0)
+            if k == 1:
+                layers.append(
+                    nn.Conv3d(
+                        in_channels=in_channels,
+                        out_channels=filters[i],
+                        kernel_size=1,
+                        padding=0
+                    )
                 )
-            )
-            layers.append(
-                nn.Conv3d(
-                    in_channels=filters[i],
-                    out_channels=filters[i],
-                    kernel_size=(1, k, k),
-                    padding=(0, k // 2, k // 2)
+            else:
+                layers.append(
+                    nn.Conv3d(
+                        in_channels=in_channels,
+                        out_channels=filters[i],
+                        kernel_size=(k, 1, 1),
+                        padding=(k // 2, 0, 0)
+                    )
                 )
-            )
+                layers.append(
+                    nn.Conv3d(
+                        in_channels=filters[i],
+                        out_channels=filters[i],
+                        kernel_size=(1, k, k),
+                        padding=(0, k // 2, k // 2)
+                    )
+                )
             if i < len(filters) - 1:
                 layers.append(nn.Dropout3d(p=self.dropout_p))
                 layers.append(self._get_activation(cfg.model.activation))
@@ -177,6 +187,445 @@ class PreDecoderModelMemoryFactorized_v1(nn.Module):
 
     def forward(self, x):
         return self.net(x)  # x: (B, 4, T, D, D)
+
+
+class ChannelGate3D(nn.Module):
+
+    def __init__(self, channels, reduction, activation):
+        super(ChannelGate3D, self).__init__()
+        hidden_channels = max(1, channels // reduction)
+        self.net = nn.Sequential(
+            nn.AdaptiveAvgPool3d(1),
+            nn.Conv3d(channels, hidden_channels, kernel_size=1),
+            activation,
+            nn.Conv3d(hidden_channels, channels, kernel_size=1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x):
+        return x * self.net(x)
+
+
+class AdaptiveBranchFusion3D(nn.Module):
+
+    def __init__(self, channels, reduction, activation):
+        super(AdaptiveBranchFusion3D, self).__init__()
+        self.num_branches = 3
+        hidden_channels = max(1, channels // (reduction + 2))
+        self.pool = nn.AdaptiveAvgPool3d(1)
+        self.weight_net = nn.Sequential(
+            nn.Conv3d(channels * self.num_branches, hidden_channels, kernel_size=1),
+            activation,
+            nn.Conv3d(hidden_channels, channels * self.num_branches, kernel_size=1),
+        )
+        nn.init.zeros_(self.weight_net[-1].weight)
+        nn.init.zeros_(self.weight_net[-1].bias)
+
+    def forward(self, spatial, temporal, joint):
+        batch_size, channels = spatial.shape[:2]
+        pooled = torch.cat(
+            [self.pool(spatial), self.pool(temporal), self.pool(joint)],
+            dim=1,
+        )
+        weights = self.weight_net(pooled).view(
+            batch_size, self.num_branches, channels, 1, 1, 1
+        )
+        weights = torch.softmax(weights, dim=1)
+        fused = (
+            weights[:, 0] * spatial
+            + weights[:, 1] * temporal
+            + weights[:, 2] * joint
+        )
+        return fused * self.num_branches
+
+
+class AxisChannelGate3D(nn.Module):
+
+    def __init__(self, channels, reduction, activation):
+        super(AxisChannelGate3D, self).__init__()
+        hidden_channels = max(1, channels // reduction)
+        self.channel_net = nn.Sequential(
+            nn.AdaptiveAvgPool3d(1),
+            nn.Conv3d(channels, hidden_channels, kernel_size=1),
+            activation,
+            nn.Conv3d(hidden_channels, channels, kernel_size=1),
+        )
+        self.temporal_conv = nn.Conv3d(
+            1,
+            1,
+            kernel_size=(3, 1, 1),
+            padding=(1, 0, 0),
+        )
+        self.spatial_conv = nn.Conv3d(
+            1,
+            1,
+            kernel_size=(1, 3, 3),
+            padding=(0, 1, 1),
+        )
+
+    def forward(self, x):
+        channel_logits = self.channel_net(x)
+        temporal_logits = self.temporal_conv(x.mean(dim=(1, 3, 4), keepdim=True))
+        spatial_logits = self.spatial_conv(x.mean(dim=(1, 2), keepdim=True))
+        return x * torch.sigmoid(channel_logits + temporal_logits + spatial_logits)
+
+
+class STFusionBlock(nn.Module):
+
+    def __init__(
+        self,
+        channels,
+        expand_channels,
+        joint_groups,
+        norm_groups,
+        se_reduction,
+        dropout_p,
+        activation_name,
+    ):
+        super(STFusionBlock, self).__init__()
+        if expand_channels % joint_groups != 0:
+            raise ValueError(
+                f"expand_channels ({expand_channels}) must be divisible by joint_groups ({joint_groups})"
+            )
+        if channels % norm_groups != 0 or expand_channels % norm_groups != 0:
+            raise ValueError(
+                "channels and expand_channels must be divisible by norm_groups "
+                f"(got channels={channels}, expand_channels={expand_channels}, norm_groups={norm_groups})"
+            )
+
+        activation = self._get_activation(activation_name)
+        self.pre = nn.Sequential(
+            nn.GroupNorm(num_groups=norm_groups, num_channels=channels),
+            nn.Conv3d(channels, expand_channels, kernel_size=1),
+            activation,
+        )
+        self.spatial = nn.Conv3d(
+            expand_channels,
+            expand_channels,
+            kernel_size=(1, 3, 3),
+            padding=(0, 1, 1),
+            groups=expand_channels,
+        )
+        self.temporal = nn.Conv3d(
+            expand_channels,
+            expand_channels,
+            kernel_size=(3, 1, 1),
+            padding=(1, 0, 0),
+            groups=expand_channels,
+        )
+        self.joint = nn.Sequential(
+            nn.GroupNorm(num_groups=norm_groups, num_channels=expand_channels),
+            nn.Conv3d(
+                expand_channels,
+                expand_channels,
+                kernel_size=3,
+                padding=1,
+                groups=joint_groups,
+            ),
+        )
+        self.project = nn.Sequential(
+            nn.Conv3d(expand_channels, channels, kernel_size=1),
+            self._get_activation(activation_name),
+        )
+        self.gate = ChannelGate3D(
+            channels=channels,
+            reduction=se_reduction,
+            activation=self._get_activation(activation_name),
+        )
+        self.dropout = nn.Dropout3d(p=dropout_p)
+
+    def _get_activation(self, name):
+        if name == "relu":
+            return nn.ReLU()
+        elif name == "gelu":
+            return nn.GELU(approximate='tanh')
+        elif name == "leakyrelu":
+            return nn.LeakyReLU()
+        else:
+            raise ValueError(f"Unsupported activation: {name}")
+
+    def forward(self, x):
+        residual = x
+        y = self.pre(x)
+        y = self.spatial(y) + self.temporal(y) + self.joint(y)
+        y = self.project(y)
+        y = self.gate(y)
+        return residual + self.dropout(y)
+
+
+class STFusionBlockV2(nn.Module):
+
+    def __init__(
+        self,
+        channels,
+        expand_channels,
+        joint_groups,
+        norm_groups,
+        se_reduction,
+        dropout_p,
+        activation_name,
+    ):
+        super(STFusionBlockV2, self).__init__()
+        if expand_channels % joint_groups != 0:
+            raise ValueError(
+                f"expand_channels ({expand_channels}) must be divisible by joint_groups ({joint_groups})"
+            )
+        if channels % norm_groups != 0 or expand_channels % norm_groups != 0:
+            raise ValueError(
+                "channels and expand_channels must be divisible by norm_groups "
+                f"(got channels={channels}, expand_channels={expand_channels}, norm_groups={norm_groups})"
+            )
+
+        activation = self._get_activation(activation_name)
+        self.pre = nn.Sequential(
+            nn.GroupNorm(num_groups=norm_groups, num_channels=channels),
+            nn.Conv3d(channels, expand_channels, kernel_size=1),
+            activation,
+        )
+        self.spatial = nn.Conv3d(
+            expand_channels,
+            expand_channels,
+            kernel_size=(1, 3, 3),
+            padding=(0, 1, 1),
+            groups=expand_channels,
+        )
+        self.temporal = nn.Conv3d(
+            expand_channels,
+            expand_channels,
+            kernel_size=(3, 1, 1),
+            padding=(1, 0, 0),
+            groups=expand_channels,
+        )
+        self.joint = nn.Sequential(
+            nn.GroupNorm(num_groups=norm_groups, num_channels=expand_channels),
+            nn.Conv3d(
+                expand_channels,
+                expand_channels,
+                kernel_size=3,
+                padding=1,
+                groups=joint_groups,
+            ),
+        )
+        self.branch_fusion = AdaptiveBranchFusion3D(
+            channels=expand_channels,
+            reduction=se_reduction,
+            activation=self._get_activation(activation_name),
+        )
+        self.branch_mixer = nn.Sequential(
+            nn.Conv3d(
+                expand_channels,
+                expand_channels,
+                kernel_size=1,
+                groups=joint_groups,
+            ),
+            self._get_activation(activation_name),
+        )
+        self.project = nn.Sequential(
+            nn.Conv3d(expand_channels, channels, kernel_size=1),
+            self._get_activation(activation_name),
+        )
+        self.gate = AxisChannelGate3D(
+            channels=channels,
+            reduction=se_reduction,
+            activation=self._get_activation(activation_name),
+        )
+        self.dropout = nn.Dropout3d(p=dropout_p)
+
+    def _get_activation(self, name):
+        if name == "relu":
+            return nn.ReLU()
+        elif name == "gelu":
+            return nn.GELU(approximate='tanh')
+        elif name == "leakyrelu":
+            return nn.LeakyReLU()
+        else:
+            raise ValueError(f"Unsupported activation: {name}")
+
+    def forward(self, x):
+        residual = x
+        y = self.pre(x)
+        y = self.branch_fusion(self.spatial(y), self.temporal(y), self.joint(y))
+        y = self.branch_mixer(y)
+        y = self.project(y)
+        y = self.gate(y)
+        return residual + self.dropout(y)
+
+
+class PreDecoderSTFusion_v1(nn.Module):
+
+    def __init__(self, cfg):
+        super(PreDecoderSTFusion_v1, self).__init__()
+
+        self.distance = cfg.distance
+        self.n_rounds = cfg.n_rounds
+        self.dropout_p = cfg.model.dropout_p
+
+        input_channels = cfg.model.input_channels
+        out_channels = cfg.model.out_channels
+        channels = int(cfg.model.channels)
+        expand_channels = int(cfg.model.expand_channels)
+        num_blocks = int(cfg.model.num_blocks)
+        joint_groups = int(cfg.model.joint_groups)
+        norm_groups = int(cfg.model.norm_groups)
+        se_reduction = int(cfg.model.se_reduction)
+        activation_name = cfg.model.activation
+
+        self.stem = nn.Sequential(
+            nn.Conv3d(input_channels, channels, kernel_size=3, padding=1),
+            nn.GroupNorm(num_groups=norm_groups, num_channels=channels),
+            self._get_activation(activation_name),
+        )
+        self.blocks = nn.Sequential(*[
+            STFusionBlock(
+                channels=channels,
+                expand_channels=expand_channels,
+                joint_groups=joint_groups,
+                norm_groups=norm_groups,
+                se_reduction=se_reduction,
+                dropout_p=self.dropout_p,
+                activation_name=activation_name,
+            )
+            for _ in range(num_blocks)
+        ])
+        self.head = nn.Sequential(
+            nn.GroupNorm(num_groups=norm_groups, num_channels=channels),
+            nn.Conv3d(channels, channels, kernel_size=1),
+            self._get_activation(activation_name),
+            nn.Conv3d(channels, out_channels, kernel_size=1),
+        )
+
+    def _get_activation(self, name):
+        if name == "relu":
+            return nn.ReLU()
+        elif name == "gelu":
+            return nn.GELU(approximate='tanh')
+        elif name == "leakyrelu":
+            return nn.LeakyReLU()
+        else:
+            raise ValueError(f"Unsupported activation: {name}")
+
+    def forward(self, x):
+        return self.head(self.blocks(self.stem(x)))  # x: (B, 4, T, D, D)
+
+
+class PreDecoderSTFusion_v2(nn.Module):
+
+    def __init__(self, cfg):
+        super(PreDecoderSTFusion_v2, self).__init__()
+
+        self.distance = cfg.distance
+        self.n_rounds = cfg.n_rounds
+        self.dropout_p = cfg.model.dropout_p
+
+        input_channels = cfg.model.input_channels
+        out_channels = cfg.model.out_channels
+        channels = int(cfg.model.channels)
+        expand_channels = int(cfg.model.expand_channels)
+        num_blocks = int(cfg.model.num_blocks)
+        joint_groups = int(cfg.model.joint_groups)
+        norm_groups = int(cfg.model.norm_groups)
+        se_reduction = int(cfg.model.se_reduction)
+        activation_name = cfg.model.activation
+
+        self.stem = nn.Sequential(
+            nn.Conv3d(input_channels, channels, kernel_size=3, padding=1),
+            nn.GroupNorm(num_groups=norm_groups, num_channels=channels),
+            self._get_activation(activation_name),
+        )
+        self.blocks = nn.Sequential(*[
+            STFusionBlockV2(
+                channels=channels,
+                expand_channels=expand_channels,
+                joint_groups=joint_groups,
+                norm_groups=norm_groups,
+                se_reduction=se_reduction,
+                dropout_p=self.dropout_p,
+                activation_name=activation_name,
+            )
+            for _ in range(num_blocks)
+        ])
+        self.head_norm = nn.GroupNorm(num_groups=norm_groups, num_channels=channels)
+        self.head_hidden = nn.Conv3d(
+            channels + input_channels,
+            channels,
+            kernel_size=1,
+        )
+        self.head_activation = self._get_activation(activation_name)
+        self.head_out = nn.Conv3d(channels, out_channels, kernel_size=1)
+
+    def _get_activation(self, name):
+        if name == "relu":
+            return nn.ReLU()
+        elif name == "gelu":
+            return nn.GELU(approximate='tanh')
+        elif name == "leakyrelu":
+            return nn.LeakyReLU()
+        else:
+            raise ValueError(f"Unsupported activation: {name}")
+
+    def forward(self, x):
+        y = self.blocks(self.stem(x))
+        y = self.head_norm(y)
+        y = torch.cat([y, x], dim=1)
+        y = self.head_activation(self.head_hidden(y))
+        return self.head_out(y)  # x: (B, 4, T, D, D)
+
+
+class PreDecoderFastHyperRF13_v1(nn.Module):
+
+    def __init__(self, cfg):
+        super(PreDecoderFastHyperRF13_v1, self).__init__()
+
+        self.distance = cfg.distance
+        self.n_rounds = cfg.n_rounds
+        self.dropout_p = cfg.model.dropout_p
+
+        input_channels = cfg.model.input_channels
+        out_channels = cfg.model.out_channels
+        channels = int(cfg.model.channels)
+        expand_channels = int(cfg.model.expand_channels)
+        num_blocks = int(cfg.model.num_blocks)
+        joint_groups = int(cfg.model.joint_groups)
+        norm_groups = int(cfg.model.norm_groups)
+        se_reduction = int(cfg.model.se_reduction)
+        activation_name = cfg.model.activation
+
+        self.stem = nn.Sequential(
+            nn.Conv3d(input_channels, channels, kernel_size=3, padding=1),
+            nn.GroupNorm(num_groups=norm_groups, num_channels=channels),
+            self._get_activation(activation_name),
+        )
+        self.blocks = nn.Sequential(*[
+            STFusionBlock(
+                channels=channels,
+                expand_channels=expand_channels,
+                joint_groups=joint_groups,
+                norm_groups=norm_groups,
+                se_reduction=se_reduction,
+                dropout_p=self.dropout_p,
+                activation_name=activation_name,
+            )
+            for _ in range(num_blocks)
+        ])
+        self.head = nn.Sequential(
+            nn.GroupNorm(num_groups=norm_groups, num_channels=channels),
+            nn.Conv3d(channels, channels, kernel_size=1),
+            self._get_activation(activation_name),
+            nn.Conv3d(channels, out_channels, kernel_size=1),
+        )
+
+    def _get_activation(self, name):
+        if name == "relu":
+            return nn.ReLU()
+        elif name == "gelu":
+            return nn.GELU(approximate='tanh')
+        elif name == "leakyrelu":
+            return nn.LeakyReLU()
+        else:
+            raise ValueError(f"Unsupported activation: {name}")
+
+    def forward(self, x):
+        return self.head(self.blocks(self.stem(x)))  # x: (B, 4, T, D, D)
 
 
 # === Define a mock config using SimpleNamespace ===

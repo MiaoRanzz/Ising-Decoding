@@ -20,7 +20,7 @@
 # from internal defaults (and validated to prevent unsupported overrides).
 
 # === Model selection (required) ===
-model_id: 102  # Choose 1, 2, 3, 4, or 5
+model_id: 111
 
 # === Values for evaluation. Training window is hardcoded to model receptive field. ===
 distance: 9

@@ -47,8 +47,8 @@ set -euo pipefail
 #     code/export/checkpoint_to_safetensors.py (see README), then pass the result as:
 #     PREDECODER_SAFETENSORS_CHECKPOINT=<path>.safetensors WORKFLOW=inference bash code/scripts/local_run.sh
 
-EXPERIMENT_NAME="${EXPERIMENT_NAME:-test1}"
-CONFIG_NAME="${CONFIG_NAME:-config_public}"   # conf/<name>.yaml (no extension)
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-ising_domestic_accurate}"
+CONFIG_NAME="${CONFIG_NAME:-config_domestic}"   # conf/<name>.yaml (no extension)
 WORKFLOW="${WORKFLOW:-train}"                 # train | inference
 WORKFLOW="$(echo "${WORKFLOW}" | tr '[:upper:]' '[:lower:]')"
 GPUS="${GPUS:-}"                              # if empty, auto-detect

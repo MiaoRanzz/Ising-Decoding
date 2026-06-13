@@ -49,8 +49,12 @@ _PUBLIC_MODEL_ID_TO_LR = {
     3: 1e-4,
     4: 2e-4,
     5: 1e-4,
-    # Fast architecture candidate: keep the original fast training LR.
+    # Fast architecture candidates: keep the original fast training LR.
     101: 3e-4,
+    102: 3e-4,
+    110: 3e-4,
+    111: 3e-4,
+    112: 2e-4,
 }
 
 
@@ -360,7 +364,7 @@ def validate_public_config(cfg: DictConfig) -> PublicModelSpec:
                 "Config field 'data.precomputed_frames_dir' is not supported in the public release. "
                 "Remove it from the config/CLI overrides."
             )
-        allowed_data_keys = {"code_rotation", "noise_model"}
+        allowed_data_keys = {"code_rotation", "noise_model", "noise_model_mixture"}
         for k in cfg.data.keys():
             if k not in allowed_data_keys:
                 raise ValueError(
@@ -435,6 +439,13 @@ def apply_public_defaults_and_model(cfg: DictConfig, model_spec: PublicModelSpec
     merged.model.version = model_spec.model_version
     merged.model.num_filters = list(model_spec.num_filters)
     merged.model.kernel_size = list(model_spec.kernel_size)
+    if model_spec.channels is not None:
+        merged.model.channels = int(model_spec.channels)
+        merged.model.expand_channels = int(model_spec.expand_channels)
+        merged.model.num_blocks = int(model_spec.num_blocks)
+        merged.model.joint_groups = int(model_spec.joint_groups)
+        merged.model.norm_groups = int(model_spec.norm_groups)
+        merged.model.se_reduction = int(model_spec.se_reduction)
 
     # Public release: hard-code optimizer.lr based on model choice.
     # (User is not allowed to override optimizer settings.)

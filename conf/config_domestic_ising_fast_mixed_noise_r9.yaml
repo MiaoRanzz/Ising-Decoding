@@ -1,0 +1,179 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Ising fast mixed-noise R9 experiment.
+# Training uses data.noise_model_mixture in batch-level round-robin mode.
+# Validation and inference keep using data.noise_model below.
+
+model_id: 1
+distance: 9
+n_rounds: 9
+
+workflow:
+  task: train
+
+data:
+  code_rotation: O1
+  noise_model:
+    p_prep_X: 0.0010000
+    p_prep_Z: 0.0010000
+    p_meas_X: 0.0100000
+    p_meas_Z: 0.0100000
+    p_idle_cnot_X: 0.0003330
+    p_idle_cnot_Y: 0.0003330
+    p_idle_cnot_Z: 0.0003330
+    p_idle_spam_X: 0.0006670
+    p_idle_spam_Y: 0.0006670
+    p_idle_spam_Z: 0.0006670
+    p_cnot_IX: 0.0006670
+    p_cnot_IY: 0.0006670
+    p_cnot_IZ: 0.0006670
+    p_cnot_XI: 0.0006670
+    p_cnot_XX: 0.0006670
+    p_cnot_XY: 0.0006670
+    p_cnot_XZ: 0.0006670
+    p_cnot_YI: 0.0006670
+    p_cnot_YX: 0.0006670
+    p_cnot_YY: 0.0006670
+    p_cnot_YZ: 0.0006670
+    p_cnot_ZI: 0.0006670
+    p_cnot_ZX: 0.0006670
+    p_cnot_ZY: 0.0006670
+    p_cnot_ZZ: 0.0006670
+
+  noise_model_mixture:
+    - name: T0_base
+      noise_model:
+        p_prep_X: 0.0010000
+        p_prep_Z: 0.0010000
+        p_meas_X: 0.0100000
+        p_meas_Z: 0.0100000
+        p_idle_cnot_X: 0.0003330
+        p_idle_cnot_Y: 0.0003330
+        p_idle_cnot_Z: 0.0003330
+        p_idle_spam_X: 0.0006670
+        p_idle_spam_Y: 0.0006670
+        p_idle_spam_Z: 0.0006670
+        p_cnot_IX: 0.0006670
+        p_cnot_IY: 0.0006670
+        p_cnot_IZ: 0.0006670
+        p_cnot_XI: 0.0006670
+        p_cnot_XX: 0.0006670
+        p_cnot_XY: 0.0006670
+        p_cnot_XZ: 0.0006670
+        p_cnot_YI: 0.0006670
+        p_cnot_YX: 0.0006670
+        p_cnot_YY: 0.0006670
+        p_cnot_YZ: 0.0006670
+        p_cnot_ZI: 0.0006670
+        p_cnot_ZX: 0.0006670
+        p_cnot_ZY: 0.0006670
+        p_cnot_ZZ: 0.0006670
+    - name: T1_meas_1p5
+      noise_model:
+        p_prep_X: 0.0010000
+        p_prep_Z: 0.0010000
+        p_meas_X: 0.0150000
+        p_meas_Z: 0.0150000
+        p_idle_cnot_X: 0.0003330
+        p_idle_cnot_Y: 0.0003330
+        p_idle_cnot_Z: 0.0003330
+        p_idle_spam_X: 0.0006670
+        p_idle_spam_Y: 0.0006670
+        p_idle_spam_Z: 0.0006670
+        p_cnot_IX: 0.0006670
+        p_cnot_IY: 0.0006670
+        p_cnot_IZ: 0.0006670
+        p_cnot_XI: 0.0006670
+        p_cnot_XX: 0.0006670
+        p_cnot_XY: 0.0006670
+        p_cnot_XZ: 0.0006670
+        p_cnot_YI: 0.0006670
+        p_cnot_YX: 0.0006670
+        p_cnot_YY: 0.0006670
+        p_cnot_YZ: 0.0006670
+        p_cnot_ZI: 0.0006670
+        p_cnot_ZX: 0.0006670
+        p_cnot_ZY: 0.0006670
+        p_cnot_ZZ: 0.0006670
+    - name: T2_cnot_1p5
+      noise_model:
+        p_prep_X: 0.0010000
+        p_prep_Z: 0.0010000
+        p_meas_X: 0.0100000
+        p_meas_Z: 0.0100000
+        p_idle_cnot_X: 0.0003330
+        p_idle_cnot_Y: 0.0003330
+        p_idle_cnot_Z: 0.0003330
+        p_idle_spam_X: 0.0006670
+        p_idle_spam_Y: 0.0006670
+        p_idle_spam_Z: 0.0006670
+        p_cnot_IX: 0.0010005
+        p_cnot_IY: 0.0010005
+        p_cnot_IZ: 0.0010005
+        p_cnot_XI: 0.0010005
+        p_cnot_XX: 0.0010005
+        p_cnot_XY: 0.0010005
+        p_cnot_XZ: 0.0010005
+        p_cnot_YI: 0.0010005
+        p_cnot_YX: 0.0010005
+        p_cnot_YY: 0.0010005
+        p_cnot_YZ: 0.0010005
+        p_cnot_ZI: 0.0010005
+        p_cnot_ZX: 0.0010005
+        p_cnot_ZY: 0.0010005
+        p_cnot_ZZ: 0.0010005
+    - name: T3_idle_1p5
+      noise_model:
+        p_prep_X: 0.0010000
+        p_prep_Z: 0.0010000
+        p_meas_X: 0.0100000
+        p_meas_Z: 0.0100000
+        p_idle_cnot_X: 0.0004995
+        p_idle_cnot_Y: 0.0004995
+        p_idle_cnot_Z: 0.0004995
+        p_idle_spam_X: 0.0010005
+        p_idle_spam_Y: 0.0010005
+        p_idle_spam_Z: 0.0010005
+        p_cnot_IX: 0.0006670
+        p_cnot_IY: 0.0006670
+        p_cnot_IZ: 0.0006670
+        p_cnot_XI: 0.0006670
+        p_cnot_XX: 0.0006670
+        p_cnot_XY: 0.0006670
+        p_cnot_XZ: 0.0006670
+        p_cnot_YI: 0.0006670
+        p_cnot_YX: 0.0006670
+        p_cnot_YY: 0.0006670
+        p_cnot_YZ: 0.0006670
+        p_cnot_ZI: 0.0006670
+        p_cnot_ZX: 0.0006670
+        p_cnot_ZY: 0.0006670
+        p_cnot_ZZ: 0.0006670
+    - name: T4_z_bias_1p5
+      noise_model:
+        p_prep_X: 0.0015000
+        p_prep_Z: 0.0010000
+        p_meas_X: 0.0150000
+        p_meas_Z: 0.0100000
+        p_idle_cnot_X: 0.0003330
+        p_idle_cnot_Y: 0.0003330
+        p_idle_cnot_Z: 0.0004995
+        p_idle_spam_X: 0.0006670
+        p_idle_spam_Y: 0.0006670
+        p_idle_spam_Z: 0.0010005
+        p_cnot_IX: 0.0006670
+        p_cnot_IY: 0.0006670
+        p_cnot_IZ: 0.0010005
+        p_cnot_XI: 0.0006670
+        p_cnot_XX: 0.0006670
+        p_cnot_XY: 0.0006670
+        p_cnot_XZ: 0.0010005
+        p_cnot_YI: 0.0006670
+        p_cnot_YX: 0.0006670
+        p_cnot_YY: 0.0006670
+        p_cnot_YZ: 0.0010005
+        p_cnot_ZI: 0.0010005
+        p_cnot_ZX: 0.0010005
+        p_cnot_ZY: 0.0010005
+        p_cnot_ZZ: 0.0010005

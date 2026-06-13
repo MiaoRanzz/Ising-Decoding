@@ -27,7 +27,7 @@ in `code/training/utils.py`:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 def compute_receptive_field(kernel_sizes: List[int]) -> int:
@@ -49,6 +49,12 @@ class PublicModelSpec:
     kernel_size: List[int]
     receptive_field: int
     model_version: str = "predecoder_memory_v1"
+    channels: Optional[int] = None
+    expand_channels: Optional[int] = None
+    num_blocks: Optional[int] = None
+    joint_groups: Optional[int] = None
+    norm_groups: Optional[int] = None
+    se_reduction: Optional[int] = None
 
 
 _MODEL_SPECS: Dict[int, PublicModelSpec] = {
@@ -68,6 +74,60 @@ _MODEL_SPECS: Dict[int, PublicModelSpec] = {
             kernel_size=[3, 3, 3, 3],
             receptive_field=compute_receptive_field([3, 3, 3, 3]),
             model_version="predecoder_memory_factorized_v1",
+        ),
+    # Model 102: Fast factorized conv + 1x1x1 refinement candidate, R=9
+    102:
+        PublicModelSpec(
+            model_id=102,
+            num_filters=[128, 128, 128, 128, 4],
+            kernel_size=[3, 3, 3, 1, 3],
+            receptive_field=compute_receptive_field([3, 3, 3, 1, 3]),
+            model_version="predecoder_memory_factorized_v1",
+        ),
+    # Model 110: Fast ST-Fusion R9-M candidate
+    110:
+        PublicModelSpec(
+            model_id=110,
+            num_filters=[112, 112, 112, 112, 4],
+            kernel_size=[3, 3, 3, 3],
+            receptive_field=compute_receptive_field([3, 3, 3, 3]),
+            model_version="predecoder_st_fusion_v1",
+            channels=112,
+            expand_channels=168,
+            num_blocks=3,
+            joint_groups=6,
+            norm_groups=8,
+            se_reduction=4,
+        ),
+    # Model 111: Fast ST-Fusion R9-X candidate
+    111:
+        PublicModelSpec(
+            model_id=111,
+            num_filters=[112, 112, 112, 112, 4],
+            kernel_size=[3, 3, 3, 3],
+            receptive_field=compute_receptive_field([3, 3, 3, 3]),
+            model_version="predecoder_st_fusion_v2",
+            channels=112,
+            expand_channels=168,
+            num_blocks=3,
+            joint_groups=6,
+            norm_groups=8,
+            se_reduction=4,
+        ),
+    # Model 112: FastHyper RF13 reproduction candidate
+    112:
+        PublicModelSpec(
+            model_id=112,
+            num_filters=[96, 96, 96, 96, 96, 4],
+            kernel_size=[3, 3, 3, 3, 3, 3],
+            receptive_field=compute_receptive_field([3, 3, 3, 3, 3, 3]),
+            model_version="predecoder_fasthyper_rf13_v1",
+            channels=96,
+            expand_channels=144,
+            num_blocks=5,
+            joint_groups=6,
+            norm_groups=8,
+            se_reduction=4,
         ),
     # Model 2: 4 conv layers, k=3, wider
     2:

@@ -86,6 +86,7 @@ from training.utils import (
     load_checkpoint, save_checkpoint, create_directory, should_stop_due_to_time,
     compare_receptive_field_with_window_data
 )
+from training.ewc import add_ewc_penalty_to_loss, diagonal_ewc_penalty, load_ewc_states
 from model.factory import ModelFactory
 
 # Import optimizers
@@ -400,6 +401,8 @@ def train_epoch(
     ema_decay=0.0,
     global_step=0,
     accumulate_steps=1,
+    ewc_states=None,
+    ewc_lambda=0.0,
 ):
     """Training epoch using on-the-fly data generation."""
     loss_fn = torch.nn.BCEWithLogitsLoss(reduction='sum')
@@ -417,6 +420,8 @@ def train_epoch(
     last_loss = 0.0
     epoch_total_loss = 0.0
     accumulated_samples = 0
+    ewc_states = list(ewc_states or [])
+    use_ewc = bool(ewc_states) and float(ewc_lambda) > 0.0
 
     for step in range(steps_per_epoch):
         if rank == 0 and (step < 2 or step % 200 == 0):
@@ -475,6 +480,15 @@ def train_epoch(
         with autocast(device_type='cuda', dtype=autocast_dtype):
             outputs = model(trainX)
             loss = loss_fn(outputs, trainY)
+            ewc_penalty = None
+            if use_ewc:
+                ewc_penalty = diagonal_ewc_penalty(model, ewc_states)
+                loss = add_ewc_penalty_to_loss(
+                    loss,
+                    ewc_penalty,
+                    ewc_lambda=float(ewc_lambda),
+                    batch_size=int(current_batch_size),
+                )
 
         scaler.scale(loss).backward()
         accumulated_samples += current_batch_size
@@ -533,6 +547,8 @@ def train_epoch(
                         'LearningRate/train',
                         scheduler.get_last_lr()[0], global_step
                     )
+                    if use_ewc and ewc_penalty is not None:
+                        tb_writer.add_scalar('Loss/ewc_penalty', float(ewc_penalty.detach().float()), global_step)
             running_loss = 0.0
 
     avg_loss = epoch_total_loss / steps_per_epoch
@@ -748,6 +764,7 @@ def main(cfg: DictConfig) -> None:
         print("=" * 80)
 
     from data.generator_torch import QCDataGeneratorTorch
+    from data.mixed_noise_generator import MixedNoiseBatchGenerator
 
     # Generate random base seed on rank 0, broadcast to all
     import random
@@ -771,8 +788,14 @@ def main(cfg: DictConfig) -> None:
 
     # Optional explicit circuit-level noise model (overrides p_error/p_min/p_max when provided)
     noise_model_cfg = getattr(cfg.data, "noise_model", None)
+    noise_model_mixture_cfg = getattr(cfg.data, "noise_model_mixture", None)
     noise_model_user_obj = None
     noise_model_train_obj = None
+    noise_model_mixture_train = []
+    code_type = getattr(cfg.data, "code_type", "surface_code")
+    skip_upscale = bool(getattr(cfg.data, "skip_noise_upscaling", False))
+    if os.environ.get("PREDECODER_SKIP_NOISE_UPSCALING", "0") == "1":
+        skip_upscale = True
     if noise_model_cfg is not None:
         from qec.noise_model import NoiseModel
         nm_dict = OmegaConf.to_container(noise_model_cfg, resolve=True
@@ -800,10 +823,6 @@ def main(cfg: DictConfig) -> None:
                     f"idle_spam_effective={group_totals['p_idle_spam_effective']}, "
                     f"cnot={group_totals['p_cnot']})."
                 )
-            code_type = getattr(cfg.data, "code_type", "surface_code")
-            skip_upscale = bool(getattr(cfg.data, "skip_noise_upscaling", False))
-            if os.environ.get("PREDECODER_SKIP_NOISE_UPSCALING", "0") == "1":
-                skip_upscale = True
             noise_model_train_obj, upscale_info = get_training_upscaled_noise_model(
                 noise_model_user_obj,
                 code_type=code_type,
@@ -895,6 +914,51 @@ def main(cfg: DictConfig) -> None:
     elif dist.rank == 0:
         print("[Train] noise_model: (missing in config) (using legacy single-p / p-range sampling)")
 
+    if noise_model_mixture_cfg is not None:
+        from qec.noise_model import NoiseModel, get_training_upscaled_noise_model
+
+        mixture_items = OmegaConf.to_container(noise_model_mixture_cfg, resolve=True)
+        if not isinstance(mixture_items, list) or len(mixture_items) == 0:
+            raise ValueError("data.noise_model_mixture must be a non-empty list")
+
+        for task_idx, item in enumerate(mixture_items):
+            if not isinstance(item, dict):
+                raise ValueError("Each data.noise_model_mixture item must be a mapping")
+            name = str(item.get("name", f"task_{task_idx}"))
+            nm_dict = item.get("noise_model")
+            if nm_dict is None:
+                raise ValueError(f"noise_model_mixture[{task_idx}] is missing noise_model")
+            user_nm = NoiseModel.from_config_dict(dict(nm_dict))
+            train_nm, info = get_training_upscaled_noise_model(
+                user_nm,
+                code_type=code_type,
+                skip_upscale=skip_upscale,
+            )
+            p_placeholder = float(1.25 * train_nm.get_max_probability())
+            noise_model_mixture_train.append(
+                {
+                    "name": name,
+                    "user_noise_model": user_nm,
+                    "train_noise_model": train_nm,
+                    "p_error": p_placeholder,
+                    "upscale_info": info,
+                }
+            )
+
+        if dist.rank == 0:
+            print(
+                f"[Train] mixed-noise training enabled: {len(noise_model_mixture_train)} tasks "
+                "(batch-level round-robin)"
+            )
+            for task_idx, task in enumerate(noise_model_mixture_train):
+                info = task["upscale_info"]
+                print(
+                    f"[Train] mixed-noise task {task_idx}: name={task['name']}, "
+                    f"sha256={task['train_noise_model'].sha256()}, "
+                    f"p_placeholder={task['p_error']:.6g}, "
+                    f"max_group={float(info['max_group']):.6g}"
+                )
+
     # Check for multi-patch mode
     use_multiple_patches = getattr(cfg.data, 'use_multiple_patches', False)
     multi_d = getattr(cfg, 'multiple_distances', None)
@@ -959,27 +1023,59 @@ def main(cfg: DictConfig) -> None:
         train_generator = None
         val_generator = None
     else:
-        train_generator = QCDataGeneratorTorch(
-            distance=cfg.distance,
-            n_rounds=cfg.n_rounds,
-            p_error=p_error_value,
-            p_min=p_min_value,
-            p_max=p_max_value,
-            measure_basis=cfg.meas_basis,
-            rank=dist.local_rank,
-            global_rank=dist.rank,
-            mode='train',
-            verbose=(dist.rank == 0),
-            base_seed=base_seed,
-            timelike_he=timelike_he,
-            num_he_cycles=num_he_cycles,
-            max_passes_w1=max_passes,
-            decompose_y=False,
-            precomputed_frames_dir=precomputed_frames_dir,
-            code_rotation=code_rotation,
-            noise_model=noise_model_train_obj,
-            **_he_accel_kwargs,
-        )
+        if noise_model_mixture_train:
+            train_generators = []
+            task_names = []
+            for task_idx, task in enumerate(noise_model_mixture_train):
+                task_names.append(task["name"])
+                task_p = task["p_error"]
+                train_generators.append(
+                    QCDataGeneratorTorch(
+                        distance=cfg.distance,
+                        n_rounds=cfg.n_rounds,
+                        p_error=task_p,
+                        p_min=task_p,
+                        p_max=task_p,
+                        measure_basis=cfg.meas_basis,
+                        rank=dist.local_rank,
+                        global_rank=dist.rank,
+                        mode='train',
+                        verbose=(dist.rank == 0 and task_idx == 0),
+                        base_seed=base_seed,
+                        seed_offset=(task_idx + 1) * 10_000_000,
+                        timelike_he=timelike_he,
+                        num_he_cycles=num_he_cycles,
+                        max_passes_w1=max_passes,
+                        decompose_y=False,
+                        precomputed_frames_dir=precomputed_frames_dir,
+                        code_rotation=code_rotation,
+                        noise_model=task["train_noise_model"],
+                        **_he_accel_kwargs,
+                    )
+                )
+            train_generator = MixedNoiseBatchGenerator(train_generators, task_names)
+        else:
+            train_generator = QCDataGeneratorTorch(
+                distance=cfg.distance,
+                n_rounds=cfg.n_rounds,
+                p_error=p_error_value,
+                p_min=p_min_value,
+                p_max=p_max_value,
+                measure_basis=cfg.meas_basis,
+                rank=dist.local_rank,
+                global_rank=dist.rank,
+                mode='train',
+                verbose=(dist.rank == 0),
+                base_seed=base_seed,
+                timelike_he=timelike_he,
+                num_he_cycles=num_he_cycles,
+                max_passes_w1=max_passes,
+                decompose_y=False,
+                precomputed_frames_dir=precomputed_frames_dir,
+                code_rotation=code_rotation,
+                noise_model=noise_model_train_obj,
+                **_he_accel_kwargs,
+            )
         val_generator = QCDataGeneratorTorch(
             distance=cfg.distance,
             n_rounds=cfg.n_rounds,
@@ -1044,12 +1140,19 @@ def main(cfg: DictConfig) -> None:
             # Noise model usage
             nm = getattr(g, "noise_model", None)
             has_nm = nm is not None
+            task_names = getattr(g, "task_names", None)
             drift_en = bool(getattr(g, "_noise_model_drift_enabled", False))
             drift_frac = getattr(g, "_noise_model_drift_frac", None)
             drift_s = f", drift=±{float(drift_frac):.3f}" if drift_en and drift_frac is not None else ""
-            print(
-                f"[Train] {name}: d={d}, n_rounds={r}, mode={mode}, noise_model={'yes' if has_nm else 'no'}{drift_s}"
-            )
+            if task_names:
+                print(
+                    f"[Train] {name}: d={d}, n_rounds={r}, mode={mode}, "
+                    f"mixed_noise_tasks={len(task_names)}, task_names={list(task_names)}"
+                )
+            else:
+                print(
+                    f"[Train] {name}: d={d}, n_rounds={r}, mode={mode}, noise_model={'yes' if has_nm else 'no'}{drift_s}"
+                )
 
         _print_gen("train_generator", train_generator)
         _print_gen("val_generator", val_generator)
@@ -1147,6 +1250,27 @@ def main(cfg: DictConfig) -> None:
                 depth=2,
             )
             print(f"Model summary:\n{summary}\n")
+
+    # Optional EWC regularization state. T0 typically starts with no state; later
+    # sequential stages load Fisher snapshots produced by previous tasks.
+    ewc_enabled = str(os.environ.get("PREDECODER_EWC_ENABLED", "0")).strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+    ewc_dir = os.environ.get("PREDECODER_EWC_DIR")
+    ewc_lambda = 0.0
+    ewc_states = []
+    if ewc_enabled:
+        try:
+            ewc_lambda = float(os.environ.get("PREDECODER_EWC_LAMBDA", "100"))
+        except Exception:
+            ewc_lambda = 100.0
+        if ewc_dir:
+            ewc_states = load_ewc_states(ewc_dir, device=dist.device)
+        if dist.rank == 0:
+            print(
+                f"[EWC] enabled={ewc_enabled} states={len(ewc_states)} "
+                f"lambda={ewc_lambda:g} dir={ewc_dir or '<unset>'}"
+            )
 
     # Create optimizer
     trainable_params = filter(lambda p: p.requires_grad, model.parameters())
@@ -1369,6 +1493,8 @@ def main(cfg: DictConfig) -> None:
             ema_decay=ema_decay,
             global_step=global_step,
             accumulate_steps=accumulate_steps,
+            ewc_states=ewc_states,
+            ewc_lambda=ewc_lambda,
         )
         train_total_s = float(train_timing.get("total_s", 0.0)
                              ) if train_timing else (time.perf_counter() - t_train_start)
