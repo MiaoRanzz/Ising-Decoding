@@ -29,6 +29,7 @@ The public release exposes a **single user-facing config** and a **single runner
   - [Converting .pt checkpoints to SafeTensors](#converting-pt-checkpoints-to-safetensors-optional-post-training)
   - [ONNX export and quantization](#onnx-export-and-quantization-optional-post-training)
   - [Generating data for CUDA-Q QEC](#generating-data-for-cuda-q-qec-realtime-predecoder-test-application)
+  - [Google Quantum AI QEC benchmark](#google-quantum-ai-qec-benchmark)
   - [Decoder ablation study with cudaq-qec](#decoder-ablation-study-with-cudaq-qec-optional)
 - [Configuration and advanced usage](#configuration-and-advanced-usage)
   - [GPU selection](#gpu-selection)
@@ -358,6 +359,39 @@ Done.
   priors.bin                          750,916 bytes
   pymatching_predictions.bin           40,008 bytes
 ```
+
+### Google Quantum AI QEC benchmark
+
+The project can index and download the Google Quantum AI benchmark dataset for
+the paper "Quantum error correction below the surface code threshold". The
+official source is Zenodo record
+[`10.5281/zenodo.13273331`](https://zenodo.org/records/13273331), licensed
+under CC-BY-4.0.
+
+By default, the downloader selects the smallest surface-code archive:
+
+- `google_105Q_surface_code_d3_d5_d7.zip` (about 5.32 GiB)
+
+The full record contains four archives totaling about 104.8 GiB, so avoid
+`--all` unless your target filesystem has enough free space.
+
+```bash
+# List available Google QEC benchmark archives.
+PYTHONPATH=code python code/scripts/download_google_qec_benchmark.py --list
+
+# Write the official manifest without downloading data.
+PYTHONPATH=code python code/scripts/download_google_qec_benchmark.py --manifest-only
+
+# Download the default 105Q surface-code benchmark archive.
+PYTHONPATH=code python code/scripts/download_google_qec_benchmark.py
+
+# Download and extract the default archive.
+PYTHONPATH=code python code/scripts/download_google_qec_benchmark.py --extract
+```
+
+Files are written under `benchmarks/google_qec/` by default. The downloader
+stores `manifest.json`, verifies each archive size and MD5 against Zenodo,
+and keeps the dataset external to the repository.
 
 ### Decoder ablation study with cudaq-qec (optional)
 

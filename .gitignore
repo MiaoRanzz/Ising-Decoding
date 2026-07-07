@@ -63,6 +63,7 @@ logs/
 
 # Precomputed data
 /frames_data/
+/benchmarks/google_qec/
 
 # Local dev artifacts
 /EXECUTIVE_SUMMARY.md
