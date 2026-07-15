@@ -31,6 +31,7 @@ REPO_ROOT = CODE_ROOT.parent
 if str(CODE_ROOT) not in sys.path:
     sys.path.insert(0, str(CODE_ROOT))
 
+from scripts.config_paths import config_path  # noqa: E402
 from data.factory import DatapipeFactory  # noqa: E402
 from evaluation.logical_error_rate import (  # noqa: E402
     PreDecoderMemoryEvalModule,
@@ -113,7 +114,7 @@ def set_all_seeds(seed: int) -> None:
 
 
 def build_cfg(args: argparse.Namespace, model: ModelSpec, basis: str) -> Any:
-    cfg_path = REPO_ROOT / "conf" / f"{args.config_name}.yaml"
+    cfg_path = config_path(args.config_name)
     cfg = OmegaConf.load(cfg_path)
     cfg.model_id = model.model_id
     cfg.distance = args.distance
