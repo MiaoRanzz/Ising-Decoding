@@ -16,7 +16,9 @@ if str(CODE_ROOT) not in sys.path:
 
 from evaluation.lqcloud_inference import (
     build_model_detector_permutation,
+    collect_hardware_measurement_memory,
     load_lqcloud_hardware_samples,
+    normalize_measurement_memory,
     parse_measurement_log,
 )
 
@@ -42,6 +44,48 @@ class TestLQCloudMeasurementParser(unittest.TestCase):
             parse_measurement_log(path, expected_width=4),
             [[0, 1, 0, 1], [1, 1, 1, 0]],
         )
+
+    def test_normalizes_result_get_memory_output(self):
+        self.assertEqual(
+            normalize_measurement_memory(
+                ["0101", "1110"],
+                expected_width=4,
+            ),
+            [[0, 1, 0, 1], [1, 1, 1, 0]],
+        )
+
+    def test_hardware_collection_consumes_result_get_memory(self):
+        calls = {}
+
+        class FakeResult:
+
+            def get_memory(self):
+                calls["get_memory"] = calls.get("get_memory", 0) + 1
+                return ["0101", "1110"]
+
+        def fake_runner(**kwargs):
+            calls["runner_kwargs"] = kwargs
+            return FakeResult()
+
+        cfg = SimpleNamespace(
+            n_rounds=9,
+            lqcloud=SimpleNamespace(
+                shots=100,
+                backend_name="QZ01-surface_code",
+                circuit_type="memory_z",
+            ),
+        )
+        memory = collect_hardware_measurement_memory(
+            cfg,
+            initial_state=[0] * 9,
+            hardware_runner=fake_runner,
+        )
+
+        self.assertEqual(memory, ["0101", "1110"])
+        self.assertEqual(calls["get_memory"], 1)
+        self.assertEqual(calls["runner_kwargs"]["cycle"], 9)
+        self.assertEqual(calls["runner_kwargs"]["shots"], 100)
+        self.assertEqual(calls["runner_kwargs"]["backend_name"], "QZ01-surface_code")
 
     def test_parses_memory_from_result_dict_and_can_reverse(self):
         path = self._write_log("{'success': True, 'memory': ['0101', '1110'], 'shots': 2}\n")
@@ -130,6 +174,7 @@ class TestLQCloudHardwareRegression(unittest.TestCase):
             n_rounds=9,
             data=SimpleNamespace(code_rotation="XH"),
             lqcloud=SimpleNamespace(
+                source="log",
                 measurement_file=(
                     REPO_ROOT / "my_file/lqcloud/lqcloud_d3_surface_code/measurement.log"
                 ),

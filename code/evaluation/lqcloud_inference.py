@@ -28,6 +28,45 @@ def _candidate_memories(value: Any) -> List[List[str]]:
     return []
 
 
+def normalize_measurement_memory(
+    memory: Sequence[str],
+    *,
+    expected_width: int,
+    bit_order: str = "as_returned",
+    max_shots: int = 0,
+) -> List[List[int]]:
+    """Validate and convert ``Result.get_memory()`` strings to binary rows."""
+    if not isinstance(memory, (list, tuple)) or not memory:
+        raise ValueError("LQCloud result.get_memory() returned no measurement shots")
+
+    mode = str(bit_order).strip().lower()
+    if mode not in {"as_returned", "reverse"}:
+        raise ValueError("lqcloud.bit_order must be 'as_returned' or 'reverse'")
+
+    parsed: List[List[int]] = []
+    for shot_index, raw_bit_string in enumerate(memory):
+        if not isinstance(raw_bit_string, str):
+            raise ValueError(
+                f"Shot {shot_index} is {type(raw_bit_string).__name__}, expected a bit string"
+            )
+        bit_string = raw_bit_string.strip()
+        if len(bit_string) != int(expected_width):
+            raise ValueError(
+                f"Shot {shot_index} has {len(bit_string)} bits; expected {expected_width}."
+            )
+        if set(bit_string) - {"0", "1"}:
+            raise ValueError(f"Shot {shot_index} contains values other than 0 and 1")
+        if mode == "reverse":
+            bit_string = bit_string[::-1]
+        parsed.append([int(bit) for bit in bit_string])
+
+    if int(max_shots) > 0:
+        parsed = parsed[:int(max_shots)]
+    if not parsed:
+        raise ValueError(f"No hardware shots remain after applying max_shots={max_shots}")
+    return parsed
+
+
 def parse_measurement_log(
     path: str | Path,
     *,
@@ -57,27 +96,15 @@ def parse_measurement_log(
             "Expected a line like ['0101...', '1100...']."
         )
 
-    memory = max(candidates, key=len)
-    mode = str(bit_order).strip().lower()
-    if mode not in {"as_returned", "reverse"}:
-        raise ValueError("lqcloud.bit_order must be 'as_returned' or 'reverse'")
-
-    parsed: List[List[int]] = []
-    for shot_index, bit_string in enumerate(memory):
-        if len(bit_string) != int(expected_width):
-            raise ValueError(
-                f"Shot {shot_index} in {path} has {len(bit_string)} bits; "
-                f"expected {expected_width}."
-            )
-        if mode == "reverse":
-            bit_string = bit_string[::-1]
-        parsed.append([int(bit) for bit in bit_string])
-
-    if int(max_shots) > 0:
-        parsed = parsed[:int(max_shots)]
-    if not parsed:
-        raise ValueError(f"No hardware shots remain after applying max_shots={max_shots}")
-    return parsed
+    try:
+        return normalize_measurement_memory(
+            max(candidates, key=len),
+            expected_width=expected_width,
+            bit_order=bit_order,
+            max_shots=max_shots,
+        )
+    except ValueError as exc:
+        raise ValueError(f"Invalid measurement data in {path}: {exc}") from exc
 
 
 def _import_lqcloud_circuits():
@@ -90,6 +117,42 @@ def _import_lqcloud_circuits():
     finally:
         if added:
             sys.path.remove(repo_path)
+
+
+def _import_lqcloud_main():
+    repo_path = str(_REPO_ROOT)
+    added = repo_path not in sys.path
+    if added:
+        sys.path.insert(0, repo_path)
+    try:
+        return importlib.import_module("my_file.lqcloud.lqcloud_d3_surface_code.main")
+    finally:
+        if added:
+            sys.path.remove(repo_path)
+
+
+def collect_hardware_measurement_memory(
+    cfg,
+    *,
+    initial_state: Sequence[int],
+    hardware_runner=None,
+) -> Sequence[str]:
+    """Execute the configured LQCloud job and return ``result.get_memory()``."""
+    lq_cfg = cfg.lqcloud
+    if hardware_runner is None:
+        lq_main = _import_lqcloud_main()
+        hardware_runner = lq_main.run_hardware_experiment
+    result = hardware_runner(
+        ini_state=initial_state,
+        cycle=int(cfg.n_rounds),
+        shots=int(getattr(lq_cfg, "shots", 100)),
+        backend_name=str(getattr(lq_cfg, "backend_name", "QZ01-surface_code")),
+        circuit_type=str(getattr(lq_cfg, "circuit_type", "memory_z")),
+    )
+    memory = result.get_memory()
+    if memory is None:
+        raise ValueError("LQCloud result.get_memory() returned None")
+    return memory
 
 
 def _row_supports(matrix: Any) -> List[frozenset[int]]:
@@ -208,7 +271,11 @@ class HardwareSamples:
     basis: str
 
 
-def load_lqcloud_hardware_samples(cfg) -> HardwareSamples:
+def load_lqcloud_hardware_samples(
+    cfg,
+    *,
+    measurement_memory: Sequence[str] | None = None,
+) -> HardwareSamples:
     import numpy as np
     from qec.surface_code.memory_circuit import SurfaceCode
 
@@ -232,15 +299,34 @@ def load_lqcloud_hardware_samples(cfg) -> HardwareSamples:
         raise ValueError(f"lqcloud.initial_state must contain exactly {D * D} binary values")
 
     expected_width = T * (D * D - 1) + D * D
-    measurements = np.asarray(
-        parse_measurement_log(
-            _resolve_repo_path(lq_cfg.measurement_file),
+    source = str(getattr(lq_cfg, "source", "hardware")).strip().lower()
+    measurements_list = None
+    if measurement_memory is None:
+        if source == "hardware":
+            measurement_memory = collect_hardware_measurement_memory(
+                cfg,
+                initial_state=initial_state,
+            )
+        elif source == "log":
+            measurements_list = parse_measurement_log(
+                _resolve_repo_path(lq_cfg.measurement_file),
+                expected_width=expected_width,
+                bit_order=str(getattr(lq_cfg, "bit_order", "as_returned")),
+                max_shots=int(getattr(lq_cfg, "max_shots", 0)),
+            )
+            measurement_memory = None
+        else:
+            raise ValueError("lqcloud.source must be 'hardware' or 'log'")
+    if measurement_memory is not None:
+        measurements_list = normalize_measurement_memory(
+            measurement_memory,
             expected_width=expected_width,
             bit_order=str(getattr(lq_cfg, "bit_order", "as_returned")),
             max_shots=int(getattr(lq_cfg, "max_shots", 0)),
-        ),
-        dtype=np.bool_,
-    )
+        )
+    if measurements_list is None:
+        raise RuntimeError("LQCloud measurement source produced no data")
+    measurements = np.asarray(measurements_list, dtype=np.bool_)
 
     lq_circuits = _import_lqcloud_circuits()
     noise_cfg = getattr(lq_cfg, "stim_noise", None)
@@ -313,7 +399,7 @@ def _count_observable_mismatches(predictions, observables) -> int:
 
 
 def run_inference_modified(model, device, dist, cfg):
-    """Run Ising pre-decoding plus PyMatching on one LQCloud hardware log."""
+    """Decode the configured LQCloud measurement source with Ising plus PyMatching."""
     import numpy as np
     import pymatching
     import torch
@@ -427,7 +513,9 @@ def run_inference_modified(model, device, dist, cfg):
 __all__ = [
     "HardwareSamples",
     "build_model_detector_permutation",
+    "collect_hardware_measurement_memory",
     "load_lqcloud_hardware_samples",
+    "normalize_measurement_memory",
     "parse_measurement_log",
     "run_inference_modified",
 ]

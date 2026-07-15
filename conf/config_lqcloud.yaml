@@ -60,6 +60,11 @@ data:
 
 # === LQCloud hardware input ===
 lqcloud:
+  # hardware: submit the cloud circuit and decode result.get_memory() directly.
+  # log: explicit offline replay mode for tests/debugging only.
+  source: hardware
+  backend_name: QZ01-surface_code
+  shots: 100
   measurement_file: my_file/lqcloud/lqcloud_d3_surface_code/measurement.log
   circuit_type: memory_z
   initial_state: [0, 0, 0, 0, 0, 0, 0, 0, 0]
