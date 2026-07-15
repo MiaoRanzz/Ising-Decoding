@@ -85,13 +85,10 @@ def run_surface(cfg: DictConfig):
             model = _load_model(cfg, dist)
         run_inference(model, dist.device, dist, cfg)
     elif cfg.workflow.task == "integrate_to_nvidia":
+        from evaluation.lqcloud_inference import run_inference_modified
         DistributedManager.initialize()
         dist = DistributedManager()
-        decode_mode = os.environ.get("PREDECODER_DECODE_MODE", "").strip().lower()
-        if decode_mode == "pymatching_only":
-            model = torch.nn.Identity()
-        else:
-            model = _load_model(cfg, dist)
+        model = _load_model(cfg, dist)
         run_inference_modified(model, dist.device, dist, cfg)
     elif cfg.workflow.task == "generate_stim_data":
         from export.generate_test_data import generate_test_data
@@ -149,7 +146,7 @@ def run_surface(cfg: DictConfig):
     elif cfg.workflow.task in ("sampling", "visualize"):
         raise ValueError(
             f"workflow.task={cfg.workflow.task!r} is not supported in the early-access public release. "
-            "Supported workflows: train, inference, decoder_ablation."
+            "Supported workflows: train, inference, integrate_to_nvidia, decoder_ablation."
         )
 
 

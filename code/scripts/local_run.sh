@@ -21,6 +21,7 @@ set -euo pipefail
 # Examples:
 #   bash code/scripts/local_run.sh
 #   WORKFLOW=inference bash code/scripts/local_run.sh
+#   WORKFLOW=integrate_to_nvidia CONFIG_NAME=config_lqcloud bash code/scripts/local_run.sh
 #   WORKFLOW=generate_stim_data bash code/scripts/local_run.sh
 #   GPUS=4 bash code/scripts/local_run.sh
 #   CUDA_VISIBLE_DEVICES=1 bash code/scripts/local_run.sh        # use only GPU 1
@@ -42,7 +43,8 @@ set -euo pipefail
 #   ONNX_WORKFLOW=3 WORKFLOW=decoder_ablation bash code/scripts/local_run.sh   # load existing engine, then ablation
 #
 # Notes:
-# - Public config is `conf/config_public.yaml`. Users should edit only that file.
+# - Public config is `conf/config_public.yaml`; hardware integration uses
+#   `conf/config_lqcloud.yaml`.
 # - Training knobs are auto-managed in code (epochs, shots/epoch, batch schedule, etc.).
 # - SafeTensors (optional): after training, convert the best .pt checkpoint with
 #     code/export/checkpoint_to_safetensors.py (see README), then pass the result as:
@@ -50,7 +52,7 @@ set -euo pipefail
 
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-test1}"
 CONFIG_NAME="${CONFIG_NAME:-config_public}"   # conf/<name>.yaml (no extension)
-WORKFLOW="${WORKFLOW:-train}"                 # train | inference
+WORKFLOW="${WORKFLOW:-train}"                 # train | inference | integrate_to_nvidia
 WORKFLOW="$(echo "${WORKFLOW}" | tr '[:upper:]' '[:lower:]')"
 GPUS="${GPUS:-}"                              # if empty, auto-detect
 FRESH_START="${FRESH_START:-0}"               # 1 => don't load checkpoint
@@ -86,7 +88,9 @@ else
   RESUME_FLAG="++load_checkpoint=True"
 fi
 
-if [ "${WORKFLOW}" = "generate_stim_data" ]; then
+if [ "${WORKFLOW}" = "generate_stim_data" ] || [ "${WORKFLOW}" = "integrate_to_nvidia" ]; then
+  # Hardware logs are one finite data set. Decode them once instead of
+  # duplicating every shot independently on each visible GPU.
   GPUS=1
 else
   # GPU-only runs: require a visible GPU and nvidia-smi.

@@ -9,13 +9,14 @@ n_rounds: 9
 
 # === Workflow ===
 workflow:
-  task: inference  # train, inference
-  # simplify logs of inference to have only pymatching b4 and after predecoding. TODO: batch_size=1
+  task: integrate_to_nvidia
 
 # === Data (public surface only) ===
 data:
   # Surface code orientation (public naming): O1, O2, O3, O4
-  code_rotation: O1
+  # The lqcloud d=3 layout has horizontal X boundaries and vertical Z
+  # boundaries, which is NVIDIA's XH orientation (public alias O2).
+  code_rotation: O2
   # Optional HE acceleration flag, surfaced here for discoverability (other HE
   # knobs live in the internal defaults). Enables the 2-partition parallel
   # spacelike homological-equivalence path; see the "HE acceleration (advanced):
@@ -57,7 +58,28 @@ data:
     p_cnot_ZY: 0.0002
     p_cnot_ZZ: 0.0002
 
-# === Test ===
-test:
-  meas_basis_test: Z  # memory-z circuit
-  num_samples: 100    # run 100 times on the actual hardware
+# === LQCloud hardware input ===
+lqcloud:
+  measurement_file: my_file/lqcloud/lqcloud_d3_surface_code/measurement.log
+  circuit_type: memory_z
+  initial_state: [0, 0, 0, 0, 0, 0, 0, 0, 0]
+  reset: false
+  mirror: true
+
+  # lqcloud's get_memory() output is already consumed in this order by the
+  # existing data_process.py. Set to reverse only if a backend explicitly
+  # documents that its returned classical bit string is MSB-first.
+  bit_order: as_returned
+
+  # 0 means use every valid shot found in measurement_file.
+  max_shots: 0
+  batch_size: 256
+
+  # Error rates used only to build the LQCloud Stim detector error model and
+  # its PyMatching edge weights. They match circuits.py defaults.
+  stim_noise:
+    sq_error: 0.0011
+    cz_error: 0.0064
+    measure_error: 0.015
+    idle_z_error: 0.0
+    idle_dep_error: 0.019

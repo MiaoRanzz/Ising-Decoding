@@ -72,13 +72,21 @@ mirror=True:
 -----------------------------------
 """
 
+from __future__ import annotations
+
 from typing import Dict, Iterable, List, Tuple, Union
 
-import const
+try:
+    from . import const
+except ImportError:  # Support running this directory's scripts directly.
+    import const
 import numpy as np
 import stim
 
-from lqcloud import QuantumCircuit
+try:
+    from lqcloud import QuantumCircuit
+except ImportError:  # Stim-only decoding does not require the cloud SDK.
+    QuantumCircuit = None
 
 
 def stim_coord_convention(coord: Tuple[int, int]) -> Tuple[int, int]:
@@ -483,6 +491,11 @@ def build_cloud_circuit(
     cycle: int = 3,
     circuit_type: str = "memory_z",
 ) -> QuantumCircuit:
+    if QuantumCircuit is None:
+        raise ImportError(
+            "build_cloud_circuit requires the lqcloud SDK. "
+            "Install lqcloud to submit circuits; build_stim_circuit works without it."
+        )
     distance = const.DISTANCE
     reset = const.RESET
     mirror = const.MIRROR
