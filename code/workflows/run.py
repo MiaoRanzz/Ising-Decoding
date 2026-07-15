@@ -84,6 +84,15 @@ def run_surface(cfg: DictConfig):
         else:
             model = _load_model(cfg, dist)
         run_inference(model, dist.device, dist, cfg)
+    elif cfg.workflow.task == "integrate_to_nvidia":
+        DistributedManager.initialize()
+        dist = DistributedManager()
+        decode_mode = os.environ.get("PREDECODER_DECODE_MODE", "").strip().lower()
+        if decode_mode == "pymatching_only":
+            model = torch.nn.Identity()
+        else:
+            model = _load_model(cfg, dist)
+        run_inference_modified(model, dist.device, dist, cfg)
     elif cfg.workflow.task == "generate_stim_data":
         from export.generate_test_data import generate_test_data
         from hydra.core.hydra_config import HydraConfig

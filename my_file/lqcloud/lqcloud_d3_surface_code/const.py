@@ -1,0 +1,3 @@
+DISTANCE = 3
+RESET = False
+MIRROR = True

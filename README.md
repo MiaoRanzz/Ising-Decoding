@@ -114,18 +114,30 @@ Install examples (virtual environment is optional but recommended):
 # Optional: create and activate a virtual environment
 python -m venv .venv
 source .venv/bin/activate
+# used conda here
 
 # Optional: install CUDA-enabled PyTorch (example: pick any available cuXXX)
 # Pick one that matches your CUDA runtime; cu130 is known to work.
 export TORCH_CUDA=cu130
+# used: export TORCH_CUDA=cu12
 
 # Inference-only (training install is a superset)
 pip install -r code/requirements_public_inference.txt
+# choose -i https://pypi.tuna.tsinghua.edu.cn/simple
+# however: https://pypi.tuna.tsinghua.edu.cn/simple does not have the required torch version.
+# still use the original command
+# in /etc/pip/constraint.txt, the version of torch is locked
+# use unset PIP_CONSTRAINT to temporarily skip this lock
+unset PIP_CONSTRAINT
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+pip install -r code/requirements_public_inference.txt --no-deps # since the version is not pinned, use --no-deps
 
 # Training (includes inference deps, adjust to cu13 as appropriate)
-pip install -r code/requirements_public_train-cu12.txt
+pip install -r code/requirements_public_train-cu12.txt # use cu12
+# too slow, use wsl to download locally, then upload
 
 bash code/scripts/check_python_compat.sh
+# this command will create venv, do not run this if using conda
 ```
 
 Tip: To force CUDA-enabled PyTorch, set `TORCH_CUDA=cuXXX` (recommended `cu13x`) or
@@ -139,6 +151,7 @@ bash code/scripts/local_run.sh
 
 # Inference (loads a saved model from outputs/<exp>/models/*)
 WORKFLOW=inference bash code/scripts/local_run.sh
+# should be: env WORKFLOW=inference bash code/scripts/local_run.sh
 ```
 
 Inference note:
