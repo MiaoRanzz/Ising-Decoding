@@ -308,8 +308,8 @@ def validate_public_config(cfg: DictConfig) -> PublicModelSpec:
             f"Invalid distance/n_rounds: distance={d}, n_rounds={r} (must be positive integers)"
         )
 
-    if "train" in cfg:
-        raise ValueError("Config field 'train' is not supported in the public release.")
+    # if "train" in cfg:
+    #     raise ValueError("Config field 'train' is not supported in the public release.")
     if "val" in cfg:
         raise ValueError("Config field 'val' is not supported in the public release.")
     if "test" in cfg:
