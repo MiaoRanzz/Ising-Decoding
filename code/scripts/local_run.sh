@@ -50,9 +50,9 @@ set -euo pipefail
 #     code/export/checkpoint_to_safetensors.py (see README), then pass the result as:
 #     PREDECODER_SAFETENSORS_CHECKPOINT=<path>.safetensors WORKFLOW=inference bash code/scripts/local_run.sh
 
-EXPERIMENT_NAME="${EXPERIMENT_NAME:-test1}"
-CONFIG_NAME="${CONFIG_NAME:-config_public}"   # conf/<name>.yaml (no extension)
-WORKFLOW="${WORKFLOW:-train}"                 # train | inference | integrate_to_nvidia
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-ising_domestic_accurate}"
+CONFIG_NAME="${CONFIG_NAME:-config_domestic}"   # conf/<name>.yaml (no extension)
+WORKFLOW="${WORKFLOW:-train}"                 # train | inference
 WORKFLOW="$(echo "${WORKFLOW}" | tr '[:upper:]' '[:lower:]')"
 GPUS="${GPUS:-}"                              # if empty, auto-detect
 FRESH_START="${FRESH_START:-0}"               # 1 => don't load checkpoint
@@ -243,7 +243,7 @@ if [ "${GPUS}" -gt 1 ]; then
     code/workflows/run.py \
     --config-name="${CONFIG_NAME}" \
     workflow.task="${WORKFLOW}" \
-    +exp_tag="${EXPERIMENT_NAME}" \
+    ++exp_tag="${EXPERIMENT_NAME}" \
     ${RESUME_FLAG} \
     ${OVERRIDES} \
     2>&1 | tee -a "${LOG_FILE}"
@@ -251,7 +251,7 @@ else
   "${PYTHON_BIN}" -u code/workflows/run.py \
     --config-name="${CONFIG_NAME}" \
     workflow.task="${WORKFLOW}" \
-    +exp_tag="${EXPERIMENT_NAME}" \
+    ++exp_tag="${EXPERIMENT_NAME}" \
     ${RESUME_FLAG} \
     ${OVERRIDES} \
     2>&1 | tee -a "${LOG_FILE}"

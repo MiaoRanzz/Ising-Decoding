@@ -1,0 +1,70 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Public, single-file config for external users.
+#
+# Users should only edit the fields in this file.
+# Advanced/experimental fields are intentionally omitted and will be populated
+# from internal defaults (and validated to prevent unsupported overrides).
+
+# === Model selection (required) ===
+model_id: 111
+
+# === Values for evaluation. Training window is hardcoded to model receptive field. ===
+distance: 9
+n_rounds: 9
+
+# === Workflow ===
+workflow:
+  task: train  # train, inference
+  # simplify logs of inference to have only pymatching b4 and after predecoding. TODO: batch_size=1
+
+# === Data (public surface only) ===
+data:
+  # Surface code orientation (public naming): O1, O2, O3, O4
+  code_rotation: O1
+  # Circuit-level noise model (25-parameter). This is the default public noise specification.
+  # The defaults are chosen for p=0.003.
+  noise_model:
+    p_prep_X: 0.001000
+    p_prep_Z: 0.001000
+
+    p_meas_X: 0.010000
+    p_meas_Z: 0.010000
+
+    p_idle_cnot_X: 0.000333
+    p_idle_cnot_Y: 0.000333
+    p_idle_cnot_Z: 0.000333
+
+    p_idle_spam_X: 0.000667
+    p_idle_spam_Y: 0.000667
+    p_idle_spam_Z: 0.000667
+
+    p_cnot_IX: 0.000667
+    p_cnot_IY: 0.000667
+    p_cnot_IZ: 0.000667
+    p_cnot_XI: 0.000667
+    p_cnot_XX: 0.000667
+    p_cnot_XY: 0.000667
+    p_cnot_XZ: 0.000667
+    p_cnot_YI: 0.000667
+    p_cnot_YX: 0.000667
+    p_cnot_YY: 0.000667
+    p_cnot_YZ: 0.000667
+    p_cnot_ZI: 0.000667
+    p_cnot_ZX: 0.000667
+    p_cnot_ZY: 0.000667
+    p_cnot_ZZ: 0.000667
+

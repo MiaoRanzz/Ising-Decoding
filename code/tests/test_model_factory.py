@@ -16,6 +16,8 @@
 
 import sys
 import unittest
+
+import torch
 from pathlib import Path
 
 _repo_code = Path(__file__).resolve().parent.parent
@@ -49,3 +51,28 @@ class TestModelFactory(unittest.TestCase):
         self.assertIsNotNone(model)
         self.assertEqual(model.distance, cfg.distance)
         self.assertEqual(model.n_rounds, cfg.n_rounds)
+
+    def test_create_surface_model_factorized_v1(self):
+        cfg = get_mock_config()
+        cfg.code = "surface"
+        cfg.model.version = "predecoder_memory_factorized_v1"
+        model = ModelFactory.create_model(cfg)
+        self.assertIsNotNone(model)
+        self.assertEqual(model.distance, cfg.distance)
+        self.assertEqual(model.n_rounds, cfg.n_rounds)
+
+    def test_create_surface_model_st_fusion_v2(self):
+        cfg = get_mock_config()
+        cfg.code = "surface"
+        cfg.model.version = "predecoder_st_fusion_v2"
+        cfg.model.out_channels = 4
+        cfg.model.channels = 8
+        cfg.model.expand_channels = 12
+        cfg.model.num_blocks = 1
+        cfg.model.joint_groups = 3
+        cfg.model.norm_groups = 4
+        cfg.model.se_reduction = 4
+        model = ModelFactory.create_model(cfg)
+        x = torch.randn(2, 4, 3, 3, 3)
+        y = model(x)
+        self.assertEqual(tuple(y.shape), (2, 4, 3, 3, 3))
