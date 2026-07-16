@@ -37,9 +37,13 @@ class MixedNoiseBatchGenerator:
         task_idx = int(step) % self.num_tasks
         return task_idx, self.task_names[task_idx]
 
-    def generate_batch(self, step, batch_size):
+    def generate_batch(self, step, batch_size, **kwargs):
         task_idx, _ = self.get_current_task(step)
-        return self.generators[task_idx].generate_batch(step=step, batch_size=batch_size)
+        return self.generators[task_idx].generate_batch(
+            step=step,
+            batch_size=batch_size,
+            **kwargs,
+        )
 
 
 __all__ = ["MixedNoiseBatchGenerator"]

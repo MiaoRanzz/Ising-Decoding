@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import inspect
 import sys
 import tempfile
 import unittest
@@ -48,6 +49,13 @@ class _CompiledLikeWrapper(nn.Module):
 
 
 class TestEWC(unittest.TestCase):
+
+    def test_train_epoch_exposes_ewc_options(self):
+        from training.train import train_epoch
+
+        parameters = inspect.signature(train_epoch).parameters
+        self.assertIn("ewc_states", parameters)
+        self.assertIn("ewc_lambda", parameters)
 
     def test_penalty_is_zero_for_snapshot_and_positive_after_parameter_change(self):
         model = nn.Linear(2, 1, bias=False)

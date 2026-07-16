@@ -18,12 +18,18 @@ import inspect
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 _repo_code = Path(__file__).resolve().parent.parent
 if str(_repo_code) not in sys.path:
     sys.path.insert(0, str(_repo_code))
 
-from evaluation.metrics import configure_metrics, _extract_reduction_factor, compute_syndrome_density
+import evaluation.metrics as metrics
+from evaluation.metrics import (
+    configure_metrics,
+    _extract_reduction_factor,
+    compute_syndrome_density,
+)
 
 
 class TestConfigureMetrics(unittest.TestCase):
@@ -83,3 +89,86 @@ class TestComputeSyndromeDensitySignature(unittest.TestCase):
             "sdr_as_percent is a display-only flag in train.py and must not be added "
             "to compute_syndrome_density(); passing it causes TypeError at runtime.",
         )
+
+
+class TestColorLERExtraction(unittest.TestCase):
+
+    def test_extracts_color_logical_error_rate_mean_from_both_bases(self):
+        old_compute = metrics.compute_logical_error_rate
+        try:
+            metrics.compute_logical_error_rate = lambda *_args, **_kwargs: {
+                "X":
+                    {
+                        "logical_error_rate (mean)": 0.02,
+                        "logical_errors": 2,
+                        "chromobius_errors": 4,
+                    },
+                "Z":
+                    {
+                        "logical_error_rate (mean)": 0.04,
+                        "logical_errors": 4,
+                        "chromobius_errors": 8,
+                    },
+            }
+            ler, reduction, _speedup = metrics._compute_single_ler(
+                model=None,
+                device=None,
+                dist=None,
+                cfg=None,
+                generator=None,
+                rank=1,
+            )
+            self.assertAlmostEqual(ler, 0.03)
+            self.assertAlmostEqual(reduction, 2.0)
+        finally:
+            metrics.compute_logical_error_rate = old_compute
+
+
+class TestComputeSingleLerPreservesZero(unittest.TestCase):
+    """Regression tests for perfect (zero-error) LER extraction."""
+
+    def _extract_ler(self, result):
+        with patch.object(metrics, "compute_logical_error_rate", return_value=result):
+            ler, _, _ = metrics._compute_single_ler(
+                model=None,
+                device="cpu",
+                dist=None,
+                cfg=None,
+                generator=None,
+                rank=1,
+            )
+        return ler
+
+    def test_zero_ler_for_both_bases_is_preserved(self):
+        result = {
+            "X": {
+                "logical error ratio (mean)": 0.0,
+                "logical_error_rate": 0.4,
+            },
+            "Z": {
+                "logical error ratio (mean)": 0.0,
+                "logical_error_rate": 0.6,
+            },
+        }
+
+        self.assertEqual(self._extract_ler(result), 0.0)
+
+    def test_zero_ler_is_included_in_basis_average(self):
+        result = {
+            "X": {
+                "logical error ratio (mean)": 0.0
+            },
+            "Z": {
+                "logical error ratio (mean)": 0.2
+            },
+        }
+
+        self.assertEqual(self._extract_ler(result), 0.1)
+
+    def test_top_level_zero_ler_is_preserved(self):
+        result = {
+            "logical_error_rate": 0.0,
+            "ler": 0.9,
+        }
+
+        self.assertEqual(self._extract_ler(result), 0.0)

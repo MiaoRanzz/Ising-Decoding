@@ -13,10 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Public model registry for the early-access public release.
+Public model registry for the public release.
 
-External users choose a supported `model_id`. This registry maps model_id to:
-- the underlying architecture parameters (num_filters, kernel_size)
+External users choose `model_id` in {1..5} (surface/color) or "B" (color only).
+This registry maps model_id to:
+- the underlying architecture parameters (num_filters, kernel_size for the
+  convolutional models; a full `model_overrides` block for non-convolutional
+  models such as the cascade/bottleneck model "B")
 - the model receptive field R (in rounds / distance units)
 
 Receptive field convention matches `compare_receptive_field_with_window_data`
@@ -27,7 +30,7 @@ in `code/training/utils.py`:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 
 def compute_receptive_field(kernel_sizes: List[int]) -> int:
@@ -44,7 +47,7 @@ def compute_receptive_field(kernel_sizes: List[int]) -> int:
 
 @dataclass(frozen=True)
 class PublicModelSpec:
-    model_id: int
+    model_id: Union[int, str]
     num_filters: List[int]
     kernel_size: List[int]
     receptive_field: int
@@ -55,9 +58,32 @@ class PublicModelSpec:
     joint_groups: Optional[int] = None
     norm_groups: Optional[int] = None
     se_reduction: Optional[int] = None
+    # Non-convolutional models (e.g. the cascade/bottleneck model "B") are not
+    # described by num_filters/kernel_size. For those, `model_overrides` carries
+    # the full `model.*` block that should be written into the merged config.
+    # When set, it takes precedence over num_filters/kernel_size.
+    model_overrides: Optional[Dict[str, Any]] = None
 
 
-_MODEL_SPECS: Dict[int, PublicModelSpec] = {
+# Full model.* block for the cascade/bottleneck model "B" (color code only).
+# Kept as a module constant so the spec below stays a flat list of kwargs.
+# This matches the paper's Model B: a plain Conv3d stem + 5 bottleneck blocks
+# (~2.94M params). `activation` is informational — the cascade model uses SiLU
+# internally regardless of this field.
+_MODEL_B_OVERRIDES = {
+    "version": "predecoder_memory_cascade",
+    "plain_stem": True,
+    "dropout_p": 0.01,
+    "activation": "silu",
+    "embed_dim": 512,
+    "num_blocks": 6,
+    "bottleneck_ratio": 4,
+    "kernel_size": 3,
+    "input_channels": 4,
+    "out_channels": 4,
+}
+
+_MODEL_SPECS: Dict[Union[int, str], PublicModelSpec] = {
     # Model 1: 4 conv layers, k=3
     1:
         PublicModelSpec(
@@ -66,7 +92,6 @@ _MODEL_SPECS: Dict[int, PublicModelSpec] = {
             kernel_size=[3, 3, 3, 3],
             receptive_field=compute_receptive_field([3, 3, 3, 3]),
         ),
-    # Model 101: Fast temporal-spatial factorized conv candidate, R=9
     101:
         PublicModelSpec(
             model_id=101,
@@ -75,7 +100,6 @@ _MODEL_SPECS: Dict[int, PublicModelSpec] = {
             receptive_field=compute_receptive_field([3, 3, 3, 3]),
             model_version="predecoder_memory_factorized_v1",
         ),
-    # Model 102: Fast factorized conv + 1x1x1 refinement candidate, R=9
     102:
         PublicModelSpec(
             model_id=102,
@@ -84,7 +108,6 @@ _MODEL_SPECS: Dict[int, PublicModelSpec] = {
             receptive_field=compute_receptive_field([3, 3, 3, 1, 3]),
             model_version="predecoder_memory_factorized_v1",
         ),
-    # Model 110: Fast ST-Fusion R9-M candidate
     110:
         PublicModelSpec(
             model_id=110,
@@ -99,7 +122,6 @@ _MODEL_SPECS: Dict[int, PublicModelSpec] = {
             norm_groups=8,
             se_reduction=4,
         ),
-    # Model 111: Fast ST-Fusion R9-X candidate
     111:
         PublicModelSpec(
             model_id=111,
@@ -114,7 +136,6 @@ _MODEL_SPECS: Dict[int, PublicModelSpec] = {
             norm_groups=8,
             se_reduction=4,
         ),
-    # Model 112: FastHyper RF13 reproduction candidate
     112:
         PublicModelSpec(
             model_id=112,
@@ -161,18 +182,48 @@ _MODEL_SPECS: Dict[int, PublicModelSpec] = {
             kernel_size=[3, 3, 3, 3, 3, 3],
             receptive_field=compute_receptive_field([3, 3, 3, 3, 3, 3]),
         ),
+    # Model B: cascade architecture (predecoder_memory_cascade), matching the
+    # paper's Model B — plain Conv3d stem + 5 bottleneck blocks, ~2.94M params.
+    # Color code only; carries a full model override block instead of
+    # num_filters/kernel_size. R=13 keeps it within the color receptive-field
+    # limit. LR is fixed to the color default (1e-5)
+    # in config_validator.py.
+    "B":
+        PublicModelSpec(
+            model_id="B",
+            num_filters=[],
+            kernel_size=[],
+            receptive_field=13,
+            model_version="predecoder_memory_cascade",
+            model_overrides=_MODEL_B_OVERRIDES,
+        ),
 }
 
 
-def get_model_spec(model_id: int) -> PublicModelSpec:
-    """Return the public model spec for a supported model_id."""
-    supported = sorted(_MODEL_SPECS)
+def _normalize_model_id(model_id: Union[int, str]) -> Union[int, str]:
+    """Normalize a public model_id to its registry key.
+
+    Numeric ids (and numeric-looking strings, e.g. "1") map to ints; the
+    non-numeric alias for the cascade model normalizes to upper-case "B".
+    """
+    if isinstance(model_id, str):
+        key = model_id.strip()
+        try:
+            return int(key)
+        except ValueError:
+            return key.upper()
+    return int(model_id)
+
+
+def get_model_spec(model_id: Union[int, str]) -> PublicModelSpec:
+    """Return the public model spec for a supported numeric id or "B"."""
+    supported = [str(key) for key in _MODEL_SPECS]
     try:
-        mid = int(model_id)
+        key = _normalize_model_id(model_id)
     except Exception as e:
-        raise ValueError(f"model_id must be an int in {supported}, got: {model_id!r}") from e
-    if mid == 0:
+        raise ValueError(f"model_id must be one of {supported}, got: {model_id!r}") from e
+    if key == 0:
         raise ValueError("model_id=0 is not supported in the public release")
-    if mid not in _MODEL_SPECS:
-        raise ValueError(f"model_id must be in {supported}, got: {mid}")
-    return _MODEL_SPECS[mid]
+    if key not in _MODEL_SPECS:
+        raise ValueError(f"model_id must be one of {supported}, got: {model_id!r}")
+    return _MODEL_SPECS[key]

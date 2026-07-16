@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import time
+
 import torch
 from pathlib import Path
 
@@ -53,6 +55,7 @@ class QCDataGeneratorTorch:
         use_coset_search=False,
         coset_max_generators=20,
         use_dense_overlap=False,
+        use_parallel_spacelike=False,
         **_ignored,
     ):
         if global_rank is None:
@@ -102,6 +105,7 @@ class QCDataGeneratorTorch:
                         max_passes_w1=max_passes_w1,
                         use_weight2=use_weight2,
                         max_passes_w2=max_passes_w2,
+                        use_parallel_spacelike=use_parallel_spacelike,
                     ),
                     daemon=True,
                 )
@@ -211,6 +215,7 @@ class QCDataGeneratorTorch:
             use_coset_search=use_coset_search,
             coset_max_generators=coset_max_generators,
             use_dense_overlap=use_dense_overlap,
+            use_parallel_spacelike=use_parallel_spacelike,
         )
 
         if self._mixed:
@@ -266,7 +271,16 @@ class QCDataGeneratorTorch:
                 f"[QCDataGeneratorTorch] Initialized (d={self.distance}, r={self.n_rounds}, basis={b}, device={self.device})"
             )
 
-    def generate_batch(self, step, batch_size):
+    def generate_batch(
+        self,
+        step,
+        batch_size,
+        return_timing: bool = False,
+        profile_generator_subphases: bool = False,
+    ):
+        del profile_generator_subphases
+        t0 = time.perf_counter() if return_timing else None
+
         if self._early_compile_threads:
             for t in self._early_compile_threads:
                 # torch.compile warmup can be slow; 20 min cap prevents silent hangs.
@@ -279,7 +293,12 @@ class QCDataGeneratorTorch:
             sim = self.sim_X if (int(step) % 2 == 0) else self.sim_Z
         else:
             sim = self.sim
-        return sim.generate_batch(batch_size=int(batch_size))
+        trainX, trainY = sim.generate_batch(batch_size=int(batch_size))
+
+        if return_timing:
+            timing = {"generator_total_s": time.perf_counter() - t0}
+            return trainX, trainY, timing
+        return trainX, trainY
 
 
 __all__ = ["QCDataGeneratorTorch"]

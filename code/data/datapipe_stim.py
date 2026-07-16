@@ -25,12 +25,9 @@ import torch
 from torch.utils.data import Dataset
 
 from qec.surface_code.memory_circuit import MemoryCircuit
-from qec.surface_code.data_mapping import (
-    normalized_weight_mapping_Xstab_memory,
-    normalized_weight_mapping_Zstab_memory,
-    compute_stabX_to_data_index_map,
-    compute_stabZ_to_data_index_map,
-)
+from qec.surface_code.detector_input import SurfaceDetectorInputTransform
+from qec.surface_code.stim_sample_io import read_stim_detector_samples, resolve_stim_sample_paths
+from data.predecoder_transform import dets_to_predecoder_inputs
 
 
 class QCDataPipePreDecoder_Memory_inference(Dataset):
@@ -60,41 +57,23 @@ class QCDataPipePreDecoder_Memory_inference(Dataset):
             raise ValueError("error_mode not supported")
 
         D = self.distance
-        # (1,1,D,D) as torch
-        self.w_mapXgrid = normalized_weight_mapping_Xstab_memory(D, self.code_rotation).reshape(
-            D, D
-        ).unsqueeze(0).unsqueeze(0)
-        self.w_mapZgrid = normalized_weight_mapping_Zstab_memory(D, self.code_rotation).reshape(
-            D, D
-        ).unsqueeze(0).unsqueeze(0)
-
-        self.stabX_to_data_idx = compute_stabX_to_data_index_map(self.distance, self.code_rotation)
-        self.stabZ_to_data_idx = compute_stabZ_to_data_index_map(self.distance, self.code_rotation)
-        self._n_stab_x = len(self.stabX_to_data_idx)
-        self._n_stab_z = len(self.stabZ_to_data_idx)
+        self._input_transform_X = SurfaceDetectorInputTransform(
+            distance=self.distance,
+            rounds=self.n_rounds,
+            basis="X",
+            rotation=self.code_rotation,
+        )
+        self._input_transform_Z = SurfaceDetectorInputTransform(
+            distance=self.distance,
+            rounds=self.n_rounds,
+            basis="Z",
+            rotation=self.code_rotation,
+        )
 
         self._mixed = self.measure_basis in ("BOTH", "MIXED")
 
-        # Precompute constants for fast post-Stim transformation in __getitem__
-        T = self.n_rounds
-        self._half = (D * D - 1) // 2
-        self._zero_row = torch.zeros((self._half, 1), dtype=torch.uint8)
-        self._idx_map_x = torch.as_tensor(self.stabX_to_data_idx, dtype=torch.long)
-        self._idx_map_z = torch.as_tensor(self.stabZ_to_data_idx, dtype=torch.long)
-
-        # Precomputed presence maps (1, T, D, D) with masks applied; no clone/mask in hot path
-        w_x = self.w_mapXgrid.expand(1, T, D, D).to(torch.float32).clone()
-        w_z = self.w_mapZgrid.expand(1, T, D, D).to(torch.float32).clone()
-        self._presence_x_X = w_x.clone()
-        self._presence_z_X = w_z.clone()
-        self._presence_x_Z = w_x.clone()
-        self._presence_z_Z = w_z.clone()
-        self._presence_z_X[:, 0] = 0
-        self._presence_z_X[:, -1] = 0
-        self._presence_x_Z[:, 0] = 0
-        self._presence_x_Z[:, -1] = 0
-
         # If using explicit noise model, use a conservative scalar placeholder for MemoryCircuit's legacy slots.
+        # (Actual probabilities come from noise_model.)
         if noise_model is not None:
             p_placeholder = float(noise_model.get_max_probability())
         else:
@@ -161,9 +140,6 @@ class QCDataPipePreDecoder_Memory_inference(Dataset):
                 converter_Z.convert(measurements=meas_Z, append_observables=True)
             ).to(torch.uint8)
 
-            # Pre-compute all transformations for X and Z batches
-            self._precompute_transformations_X()
-            self._precompute_transformations_Z()
         else:
             self.circ = MemoryCircuit(
                 distance=D,
@@ -189,195 +165,190 @@ class QCDataPipePreDecoder_Memory_inference(Dataset):
                 converter.convert(measurements=meas, append_observables=True)
             ).to(torch.uint8)
 
-            # Pre-compute all transformations
-            self._precompute_transformations()
+    def __len__(self):
+        return self.num_samples
 
-    def _precompute_transformations(self):
-        """Pre-compute all transformations for all samples (non-mixed case)."""
-        D, T = self.distance, self.n_rounds
-        half = self._half
-        N = self.num_samples
+    def _build_example_from_detector_stream(
+        self,
+        _frame: torch.Tensor,
+        dets_and_obs: torch.Tensor,
+        use_basis: str,
+    ):
+        """Build a model example from the detector stream consumed by the decoder."""
+        transform = self._input_transform_X if use_basis == "X" else self._input_transform_Z
+        if dets_and_obs.numel() < transform.detector_width:
+            raise RuntimeError(
+                f"Detector vector has {dets_and_obs.numel()} values, "
+                f"expected at least {transform.detector_width}"
+            )
 
-        # Batch process all frames: (N, T, D^2-1) -> (N, half, T) for x and z
-        frames = self.meas  # (N, T, D^2-1)
-        x_raw = frames[:, :, :half].permute(0, 2, 1).contiguous()  # (N, half, T)
-        z_raw = frames[:, :, half:].permute(0, 2, 1).contiguous()  # (N, half, T)
+        dets = dets_and_obs[:transform.detector_width].view(1, transform.detector_width)
+        trainX, x_syn_diff, z_syn_diff, _ = transform.build_train_x(dets)
 
-        # XOR diff: add zero frame and diff along time
-        zero_batch = torch.zeros((N, half, 1), dtype=torch.uint8)
-        x_aug = torch.cat([zero_batch, x_raw], dim=2)  # (N, half, T+1)
-        z_aug = torch.cat([zero_batch, z_raw], dim=2)
-        x_syn_diff = (x_aug[:, :, 1:] ^ x_aug[:, :, :-1]).to(torch.int32
-                                                            ).contiguous()  # (N, half, T)
-        z_syn_diff = (z_aug[:, :, 1:] ^ z_aug[:, :, :-1]).to(torch.int32).contiguous()
+        return {
+            "x_syn_diff": x_syn_diff[0].contiguous(),  # (Sx, T) int32
+            "z_syn_diff": z_syn_diff[0].contiguous(),  # (Sz, T) int32
+            "trainX": trainX[0].contiguous(),  # (4, T, D, D) float32
+            "dets_and_obs": dets_and_obs,  # (num_detectors + num_observables,) uint8
+        }
 
-        # Mask based on basis
-        if self.measure_basis == "X":
-            z_syn_diff[:, :, 0] = 0
-            z_syn_diff[:, :, -1] = 0
-            x_present = self._presence_x_X  # (1, T, D, D)
-            z_present = self._presence_z_X  # (1, T, D, D)
-        else:  # "Z"
-            x_syn_diff[:, :, 0] = 0
-            x_syn_diff[:, :, -1] = 0
-            x_present = self._presence_x_Z  # (1, T, D, D)
-            z_present = self._presence_z_Z  # (1, T, D, D)
+    def __getitem__(self, idx):
+        if self._mixed:
+            if (idx % 2) == 0:  # even -> X
+                lidx = idx // 2
+                frame = self.meas_X[lidx]  # (Tr, D^2-1) uint8
+                dets_and_obs = self.dets_and_obs_X[lidx]  # (num_detectors + num_observables,) uint8
+                return self._build_example_from_detector_stream(frame, dets_and_obs, use_basis="X")
+            else:  # odd -> Z
+                lidx = idx // 2
+                frame = self.meas_Z[lidx]
+                dets_and_obs = self.dets_and_obs_Z[lidx]
+                return self._build_example_from_detector_stream(frame, dets_and_obs, use_basis="Z")
+        else:
+            frame = self.meas[idx]  # (Tr, D^2-1) uint8
+            dets_and_obs = self.dets_and_obs[idx]
+            return self._build_example_from_detector_stream(
+                frame,
+                dets_and_obs,
+                use_basis=self.measure_basis,
+            )
 
-        # Map to grid: (N, n_stab, T) -> (N, D*D, T) -> (N, T, D, D)
-        x_syn_stab = x_syn_diff[:, :self._n_stab_x, :]  # (N, n_stab_x, T)
-        z_syn_stab = z_syn_diff[:, :self._n_stab_z, :]  # (N, n_stab_z, T)
 
-        x_grid = torch.zeros(N, D * D, T, dtype=torch.float32)
-        z_grid = torch.zeros(N, D * D, T, dtype=torch.float32)
-        x_grid[:, self._idx_map_x, :] = x_syn_stab.to(torch.float32)
-        z_grid[:, self._idx_map_z, :] = z_syn_stab.to(torch.float32)
+class QCDataPipePreDecoder_Memory_from_stim_file(Dataset):
+    """
+    Datapipe for offline inference from Stim detector-sample files.
 
-        x_type = x_grid.reshape(N, D, D, T).permute(0, 3, 1, 2).contiguous()  # (N, T, D, D)
-        z_type = z_grid.reshape(N, D, D, T).permute(0, 3, 1, 2).contiguous()
+    The file stores detector events plus appended observables. Metadata is
+    validated against a freshly rebuilt MemoryCircuit before data is exposed.
 
-        # Stack: (N, 4, T, D, D)
-        # x_present, z_present: (1, T, D, D) -> expand to (N, T, D, D) -> (N, 1, T, D, D)
-        x_present_batch = x_present.expand(N, -1, -1, -1)  # (N, T, D, D)
-        z_present_batch = z_present.expand(N, -1, -1, -1)  # (N, T, D, D)
-        trainX = torch.cat(
-            [
-                x_type.unsqueeze(1),  # (N, 1, T, D, D)
-                z_type.unsqueeze(1),  # (N, 1, T, D, D)
-                x_present_batch.unsqueeze(1),  # (N, 1, T, D, D)
-                z_present_batch.unsqueeze(1),  # (N, 1, T, D, D)
-            ],
-            dim=1
-        ).contiguous()
+    Noise-model validation: when ``noise_model`` is provided (the typical
+    inference path), the datapipe computes a deterministic fingerprint of its
+    25-parameter dict and asks :func:`read_stim_detector_samples` to compare it
+    against the value recorded in the JSON metadata. Mismatches raise unless
+    ``strict_noise`` is ``False`` (in which case a warning is emitted). When
+    ``noise_model`` is ``None``, only the scalar ``p_error`` is checked.
 
-        self.x_syn_diff_all = x_syn_diff  # (N, half, T)
-        self.z_syn_diff_all = z_syn_diff  # (N, half, T)
-        self.trainX_all = trainX  # (N, 4, T, D, D)
+    Args:
+        distance, n_rounds, num_samples, error_mode, measure_basis,
+            code_rotation: Standard circuit parameters; ``num_samples`` may
+            truncate the loaded file to the first N shots when positive.
+        stim_samples_dir: Directory containing ``samples_{basis}.dets`` and
+            ``metadata_{basis}.json``.
+        p_error: Scalar physical error rate used by the active config. Compared
+            against ``metadata['p_error']`` when present.
+        noise_model: Optional explicit :class:`NoiseModel`. When set, its
+            ``sha256()`` is compared against ``metadata['noise_model_sha256']``.
+        strict_noise: ``True`` (default) raises on noise-fingerprint drift;
+            ``False`` downgrades the failure to a :class:`UserWarning`.
+    """
 
-    def _precompute_transformations_X(self):
-        """Pre-compute all transformations for X samples (mixed case)."""
-        D, T = self.distance, self.n_rounds
-        half = self._half
-        N = self.nX
+    def __init__(
+        self,
+        distance,
+        n_rounds,
+        num_samples,
+        error_mode,
+        stim_samples_dir,
+        p_error=0.005,
+        measure_basis='X',
+        code_rotation='XV',
+        noise_model=None,
+        strict_noise: bool = True,
+    ):
+        self.distance = int(distance)
+        self.n_rounds = max(int(n_rounds), 1)
+        self.measure_basis = str(measure_basis).upper()
+        self.code_rotation = code_rotation.upper() if code_rotation else 'XV'
+        self.requested_num_samples = int(num_samples) if num_samples is not None else 0
 
-        frames = self.meas_X  # (N, T, D^2-1)
-        x_raw = frames[:, :, :half].permute(0, 2, 1).contiguous()
-        z_raw = frames[:, :, half:].permute(0, 2, 1).contiguous()
+        if self.measure_basis not in ("X", "Z"):
+            raise ValueError(
+                "Stim file datapipe expects one basis at a time. "
+                f"Got measure_basis={measure_basis!r}."
+            )
+        if error_mode != "circuit_level_surface_custom":
+            raise ValueError("error_mode not supported")
 
-        zero_batch = torch.zeros((N, half, 1), dtype=torch.uint8)
-        x_aug = torch.cat([zero_batch, x_raw], dim=2)
-        z_aug = torch.cat([zero_batch, z_raw], dim=2)
-        x_syn_diff = (x_aug[:, :, 1:] ^ x_aug[:, :, :-1]).to(torch.int32).contiguous()
-        z_syn_diff = (z_aug[:, :, 1:] ^ z_aug[:, :, :-1]).to(torch.int32).contiguous()
+        D = self.distance
+        if noise_model is not None:
+            p_placeholder = float(noise_model.get_max_probability())
+            noise_sha = noise_model.sha256()
+            noise_label = "25-param"
+        else:
+            p_placeholder = float(p_error)
+            noise_sha = None
+            noise_label = "simple"
 
-        z_syn_diff[:, :, 0] = 0
-        z_syn_diff[:, :, -1] = 0
-        x_present = self._presence_x_X  # (1, T, D, D)
-        z_present = self._presence_z_X  # (1, T, D, D)
+        self.circ = MemoryCircuit(
+            distance=D,
+            idle_error=p_placeholder,
+            sqgate_error=p_placeholder,
+            tqgate_error=p_placeholder,
+            spam_error=(2.0 / 3.0) * p_placeholder,
+            n_rounds=self.n_rounds,
+            basis=self.measure_basis,
+            code_rotation=self.code_rotation,
+            noise_model=noise_model,
+            add_boundary_detectors=True,
+        )
+        self.circ.set_error_rates()
 
-        x_syn_stab = x_syn_diff[:, :self._n_stab_x, :]
-        z_syn_stab = z_syn_diff[:, :self._n_stab_z, :]
+        samples_path, metadata_path = resolve_stim_sample_paths(
+            stim_samples_dir, self.measure_basis
+        )
+        dets_and_obs, metadata = read_stim_detector_samples(
+            samples_path=samples_path,
+            metadata_path=metadata_path,
+            distance=self.distance,
+            n_rounds=self.n_rounds,
+            basis=self.measure_basis,
+            code_rotation=self.code_rotation,
+            num_detectors=self.circ.stim_circuit.num_detectors,
+            num_observables=self.circ.stim_circuit.num_observables,
+            p_error=float(p_error),
+            noise_model_sha256=noise_sha,
+            noise_model_label=noise_label,
+            strict_noise=bool(strict_noise),
+        )
+        if self.requested_num_samples > 0:
+            dets_and_obs = dets_and_obs[:self.requested_num_samples]
 
-        x_grid = torch.zeros(N, D * D, T, dtype=torch.float32)
-        z_grid = torch.zeros(N, D * D, T, dtype=torch.float32)
-        x_grid[:, self._idx_map_x, :] = x_syn_stab.to(torch.float32)
-        z_grid[:, self._idx_map_z, :] = z_syn_stab.to(torch.float32)
+        self.samples_path = samples_path
+        self.metadata_path = metadata_path
+        self.metadata = metadata
+        self.dets_and_obs = torch.from_numpy(dets_and_obs).to(torch.uint8).contiguous()
+        self.num_samples = int(self.dets_and_obs.shape[0])
+        self._half = (D * D - 1) // 2
 
-        x_type = x_grid.reshape(N, D, D, T).permute(0, 3, 1, 2).contiguous()
-        z_type = z_grid.reshape(N, D, D, T).permute(0, 3, 1, 2).contiguous()
+        self._precompute_transformations_from_dets()
 
-        x_present_batch = x_present.expand(N, -1, -1, -1)
-        z_present_batch = z_present.expand(N, -1, -1, -1)
-        trainX = torch.cat(
-            [
-                x_type.unsqueeze(1),
-                z_type.unsqueeze(1),
-                x_present_batch.unsqueeze(1),
-                z_present_batch.unsqueeze(1),
-            ],
-            dim=1
-        ).contiguous()
-
-        self.x_syn_diff_X = x_syn_diff
-        self.z_syn_diff_X = z_syn_diff
-        self.trainX_X = trainX
-
-    def _precompute_transformations_Z(self):
-        """Pre-compute all transformations for Z samples (mixed case)."""
-        D, T = self.distance, self.n_rounds
-        half = self._half
-        N = self.nZ
-
-        frames = self.meas_Z  # (N, T, D^2-1)
-        x_raw = frames[:, :, :half].permute(0, 2, 1).contiguous()
-        z_raw = frames[:, :, half:].permute(0, 2, 1).contiguous()
-
-        zero_batch = torch.zeros((N, half, 1), dtype=torch.uint8)
-        x_aug = torch.cat([zero_batch, x_raw], dim=2)
-        z_aug = torch.cat([zero_batch, z_raw], dim=2)
-        x_syn_diff = (x_aug[:, :, 1:] ^ x_aug[:, :, :-1]).to(torch.int32).contiguous()
-        z_syn_diff = (z_aug[:, :, 1:] ^ z_aug[:, :, :-1]).to(torch.int32).contiguous()
-
-        x_syn_diff[:, :, 0] = 0
-        x_syn_diff[:, :, -1] = 0
-        x_present = self._presence_x_Z  # (1, T, D, D)
-        z_present = self._presence_z_Z  # (1, T, D, D)
-
-        x_syn_stab = x_syn_diff[:, :self._n_stab_x, :]
-        z_syn_stab = z_syn_diff[:, :self._n_stab_z, :]
-
-        x_grid = torch.zeros(N, D * D, T, dtype=torch.float32)
-        z_grid = torch.zeros(N, D * D, T, dtype=torch.float32)
-        x_grid[:, self._idx_map_x, :] = x_syn_stab.to(torch.float32)
-        z_grid[:, self._idx_map_z, :] = z_syn_stab.to(torch.float32)
-
-        x_type = x_grid.reshape(N, D, D, T).permute(0, 3, 1, 2).contiguous()
-        z_type = z_grid.reshape(N, D, D, T).permute(0, 3, 1, 2).contiguous()
-
-        x_present_batch = x_present.expand(N, -1, -1, -1)
-        z_present_batch = z_present.expand(N, -1, -1, -1)
-        trainX = torch.cat(
-            [
-                x_type.unsqueeze(1),
-                z_type.unsqueeze(1),
-                x_present_batch.unsqueeze(1),
-                z_present_batch.unsqueeze(1),
-            ],
-            dim=1
-        ).contiguous()
-
-        self.x_syn_diff_Z = x_syn_diff
-        self.z_syn_diff_Z = z_syn_diff
-        self.trainX_Z = trainX
+    def _precompute_transformations_from_dets(self):
+        num_obs = self.circ.stim_circuit.num_observables
+        dets = self.dets_and_obs[:, :-num_obs].contiguous()
+        train_x, x_syn_diff, z_syn_diff = dets_to_predecoder_inputs(
+            dets,
+            distance=self.distance,
+            n_rounds=self.n_rounds,
+            basis=self.measure_basis,
+            code_rotation=self.code_rotation,
+        )
+        self.x_syn_diff_all = x_syn_diff
+        self.z_syn_diff_all = z_syn_diff
+        self.trainX_all = train_x
 
     def __len__(self):
         return self.num_samples
 
     def __getitem__(self, idx):
-        """Fast indexing into pre-computed transformations."""
-        if self._mixed:
-            if (idx % 2) == 0:  # even -> X
-                lidx = idx // 2
-                return {
-                    "x_syn_diff": self.x_syn_diff_X[lidx],  # (half, T)
-                    "z_syn_diff": self.z_syn_diff_X[lidx],  # (half, T)
-                    "trainX": self.trainX_X[lidx],  # (4, T, D, D)
-                    "dets_and_obs": self.dets_and_obs_X[lidx],  # (num_detectors + num_observables,)
-                }
-            else:  # odd -> Z
-                lidx = idx // 2
-                return {
-                    "x_syn_diff": self.x_syn_diff_Z[lidx],
-                    "z_syn_diff": self.z_syn_diff_Z[lidx],
-                    "trainX": self.trainX_Z[lidx],
-                    "dets_and_obs": self.dets_and_obs_Z[lidx],
-                }
-        else:
-            return {
-                "x_syn_diff": self.x_syn_diff_all[idx],  # (half, T)
-                "z_syn_diff": self.z_syn_diff_all[idx],  # (half, T)
-                "trainX": self.trainX_all[idx],  # (4, T, D, D)
-                "dets_and_obs": self.dets_and_obs[idx],  # (num_detectors + num_observables,)
-            }
+        return {
+            "x_syn_diff": self.x_syn_diff_all[idx],
+            "z_syn_diff": self.z_syn_diff_all[idx],
+            "trainX": self.trainX_all[idx],
+            "dets_and_obs": self.dets_and_obs[idx],
+        }
 
 
-__all__ = ['QCDataPipePreDecoder_Memory_inference']
+__all__ = [
+    'QCDataPipePreDecoder_Memory_inference',
+    'QCDataPipePreDecoder_Memory_from_stim_file',
+]

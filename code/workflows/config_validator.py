@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Public config normalization / validation for the early-access public release.
+Public config normalization / validation for the public release.
 
 Responsibilities:
 - Fail-fast if the user tries to set hidden/experimental fields (via Hydra CLI `+foo=...`)
@@ -49,13 +49,17 @@ _PUBLIC_MODEL_ID_TO_LR = {
     3: 1e-4,
     4: 2e-4,
     5: 1e-4,
-    # Fast architecture candidates: keep the original fast training LR.
     101: 3e-4,
     102: 3e-4,
     110: 3e-4,
     111: 3e-4,
     112: 2e-4,
 }
+_PUBLIC_COLOR_LR = 1e-5
+
+
+def _default_public_noise_model() -> Dict[str, float]:
+    return {"p": 0.003}
 
 
 def _default_precomputed_frames_dir() -> str:
@@ -78,6 +82,18 @@ def _get_env_bool(name: str, default: bool) -> bool:
     if val in ("0", "false", "no", "off", ""):
         return False
     return True
+
+
+def _normalize_code(value: Any) -> str:
+    """Normalize the public code-family selector."""
+    if value is None:
+        return "surface"
+    code = str(value).strip().lower()
+    if code in ("surface", "surface_code"):
+        return "surface"
+    if code in ("color", "color_code"):
+        return "color"
+    raise ValueError("Invalid code={!r}. Use 'surface' or 'color'.".format(value))
 
 
 def _normalize_code_rotation(value: Any) -> str:
@@ -144,6 +160,7 @@ def _base_hidden_defaults_dict() -> Dict[str, Any]:
                 "timelike_he": True,
                 "num_he_cycles": 1,
                 "use_weight2_timelike": False,
+                "use_parallel_spacelike": False,
                 "max_passes_w1": 8,
                 "max_passes_w2": 4,
                 "decompose_y": True,
@@ -156,6 +173,7 @@ def _base_hidden_defaults_dict() -> Dict[str, Any]:
                 "enable_correlated_pymatching": False,
                 "code_rotation": "XV",
                 "noise_model": None,
+                "skip_noise_upscaling": False,
             },
         "model":
             {
@@ -177,7 +195,7 @@ def _base_hidden_defaults_dict() -> Dict[str, Any]:
                 "accumulate_steps": 2,
                 "checkpoint_interval": 1,
                 "save_every_datasets": 5,
-                "epochs": 50,
+                "epochs": 100,
             },
         # NOTE: temporarily reduced for faster iteration during refactor/testing.
         "val": {
@@ -259,6 +277,67 @@ def _base_hidden_defaults_dict() -> Dict[str, Any]:
     }
 
 
+def _apply_code_specific_defaults(
+    merged: DictConfig, code: str, model_spec: PublicModelSpec
+) -> None:
+    """Patch hidden defaults that differ by code family."""
+    merged.code = code
+
+    if "data" not in merged:
+        merged.data = {}
+    if "test" not in merged:
+        merged.test = {}
+    if "model" not in merged:
+        merged.model = {}
+
+    if merged.data.noise_model is None:
+        merged.data.noise_model = _default_public_noise_model()
+
+    if code == "surface":
+        merged.data.timelike_he = True
+        merged.data.decompose_y = True
+        merged.data.error_mode = "circuit_level_surface_custom"
+        merged.test.p_error = 0.006
+        return
+
+    # Color-code public defaults. These mirror the Torch/cuStabilizer color
+    # path validated during PR68 follow-up smoke runs.
+    merged.data.superdense = True
+    merged.data.schedule = "nearest-neighbor"
+    merged.data.enable_z_feedforward = True
+    merged.data.apply_data_x_override = True
+    merged.data.apply_spacelike_he = True
+    merged.data.he_max_iterations = 16
+    merged.data.use_coset_search = False
+    merged.data.timelike_he = False
+    merged.data.use_weight2_timelike = False
+    merged.data.use_weight3_timelike = False
+    merged.data.decompose_y = False
+    merged.data.error_mode = "circuit_level_color_code"
+    merged.data.p_error = None
+    merged.data.p_min = 0.003
+    merged.data.p_max = 0.003
+
+    # The Conv3D head may be widened beyond the four public output channels;
+    # PreDecoderModelMemory_v1 slices back to out_channels in forward().
+    filters = list(model_spec.num_filters)
+    if filters:
+        filters[-1] = max(int(filters[-1]), 16)
+        merged.model.num_filters = filters
+    merged.model.dropout_p = 0.01
+
+    merged.test.p_error = 0.003
+    merged.test.noise_model_family = "legacy"
+    merged.test.noise_instruction_semantics = "current"
+    merged.test.noise_mode = "legacy"
+    merged.test.gidney_style_noise = False
+    if "dataloader" not in merged.test:
+        merged.test.dataloader = {}
+    merged.test.dataloader.num_workers = 0
+    merged.test.dataloader.persistent_workers = False
+    merged.test.dataloader.prefetch_factor = None
+
+
 def _select(cfg: DictConfig, key: str) -> Tuple[bool, Any]:
     """
     Return (exists, value) for a dot-path in cfg.
@@ -294,9 +373,21 @@ def validate_public_config(cfg: DictConfig) -> PublicModelSpec:
     """
     # model_id must exist in public config
     if "model_id" not in cfg:
-        raise ValueError("Missing required field: 'model_id' (choose a supported model_id).")
+        raise ValueError("Missing required field: 'model_id' (choose 1..5 or 'B').")
 
+    code = _normalize_code(getattr(cfg, "code", "surface"))
     model_spec = get_model_spec(cfg.model_id)
+    if code == "color" and int(model_spec.receptive_field) > 13:
+        raise ValueError(
+            "code='color' currently supports public model_ids with receptive field <= 13 "
+            "(choose model_id 1, 2, 4, 5, or B)."
+        )
+    # The cascade/bottleneck model "B" is only released for the color code.
+    if model_spec.model_version == "predecoder_memory_cascade" and code != "color":
+        raise ValueError(
+            "model_id='B' (cascade/bottleneck) is only supported with code='color' "
+            "in this release."
+        )
 
     # Public config requires distance/n_rounds (evaluation targets)
     if "distance" not in cfg or "n_rounds" not in cfg:
@@ -364,12 +455,33 @@ def validate_public_config(cfg: DictConfig) -> PublicModelSpec:
                 "Config field 'data.precomputed_frames_dir' is not supported in the public release. "
                 "Remove it from the config/CLI overrides."
             )
-        allowed_data_keys = {"code_rotation", "noise_model", "noise_model_mixture"}
+        # `use_compile` and `use_parallel_spacelike` are HE-acceleration flags
+        # surfaced in the public release. Both default False; users opt in via
+        # `conf/config_public.yaml` or CLI override. See README.md, section
+        # "HE acceleration (advanced): parallel spacelike" for the contract.
+        allowed_data_keys = {
+            "code_rotation",
+            "noise_model",
+            "skip_noise_upscaling",
+            "use_compile",
+            "use_parallel_spacelike",
+        }
         for k in cfg.data.keys():
             if k not in allowed_data_keys:
                 raise ValueError(
                     f"Config field 'data.{k}' is not supported in the public release. "
                     f"Allowed data fields are: {sorted(allowed_data_keys)}"
+                )
+        # These two flags are part of the public config surface, so keep their
+        # accepted type stricter than hidden/internal HE knobs that are merged
+        # from trusted defaults. OmegaConf accepts strings like "True"/"yes",
+        # which would otherwise flow into downstream `bool(...)` casts and
+        # become truthy regardless of the user's intent.
+        for bool_key in ("skip_noise_upscaling", "use_compile", "use_parallel_spacelike"):
+            if bool_key in cfg.data and not isinstance(cfg.data[bool_key], bool):
+                raise ValueError(
+                    f"Config field 'data.{bool_key}' must be a boolean "
+                    f"(got {type(cfg.data[bool_key]).__name__}: {cfg.data[bool_key]!r})."
                 )
         # Validate rotation value (accept O1..O4; also allow internal XV/XH/ZV/ZH for compatibility).
         if "code_rotation" in cfg.data:
@@ -408,6 +520,7 @@ def apply_public_defaults_and_model(cfg: DictConfig, model_spec: PublicModelSpec
     # Merge: base provides full training-ready config; public cfg overrides user-visible fields.
     merged = OmegaConf.merge(base_cfg, cfg)
     OmegaConf.set_struct(merged, False)
+    code = _normalize_code(getattr(merged, "code", "surface"))
 
     # In the public release:
     # - cfg.distance / cfg.n_rounds are the *evaluation targets* the user cares about
@@ -436,24 +549,39 @@ def apply_public_defaults_and_model(cfg: DictConfig, model_spec: PublicModelSpec
     # Apply model architecture from registry
     if "model" not in merged:
         merged.model = {}
-    merged.model.version = model_spec.model_version
-    merged.model.num_filters = list(model_spec.num_filters)
-    merged.model.kernel_size = list(model_spec.kernel_size)
-    if model_spec.channels is not None:
-        merged.model.channels = int(model_spec.channels)
-        merged.model.expand_channels = int(model_spec.expand_channels)
-        merged.model.num_blocks = int(model_spec.num_blocks)
-        merged.model.joint_groups = int(model_spec.joint_groups)
-        merged.model.norm_groups = int(model_spec.norm_groups)
-        merged.model.se_reduction = int(model_spec.se_reduction)
+    if model_spec.model_overrides:
+        # Non-convolutional model (e.g. cascade "B"): the registry carries the
+        # full model.* block. Write it verbatim and drop conv-stack-only fields
+        # inherited from the hidden defaults so they can't confuse the builder.
+        merged.model.version = model_spec.model_version
+        for key, value in model_spec.model_overrides.items():
+            merged.model[key] = value
+        if "num_filters" in merged.model:
+            merged.model.pop("num_filters")
+    else:
+        merged.model.version = model_spec.model_version
+        merged.model.num_filters = list(model_spec.num_filters)
+        merged.model.kernel_size = list(model_spec.kernel_size)
+        if model_spec.channels is not None:
+            merged.model.channels = int(model_spec.channels)
+            merged.model.expand_channels = int(model_spec.expand_channels)
+            merged.model.num_blocks = int(model_spec.num_blocks)
+            merged.model.joint_groups = int(model_spec.joint_groups)
+            merged.model.norm_groups = int(model_spec.norm_groups)
+            merged.model.se_reduction = int(model_spec.se_reduction)
 
-    # Public release: hard-code optimizer.lr based on model choice.
+    _apply_code_specific_defaults(merged, code, model_spec)
+
+    # Public release: hard-code optimizer.lr based on code family/model choice.
     # (User is not allowed to override optimizer settings.)
     if "optimizer" not in merged:
         merged.optimizer = {}
-    lr = _PUBLIC_MODEL_ID_TO_LR.get(int(model_spec.model_id))
-    if lr is None:
-        raise ValueError(f"No public LR mapping for model_id={model_spec.model_id!r}")
+    if code == "color":
+        lr = _PUBLIC_COLOR_LR
+    else:
+        lr = _PUBLIC_MODEL_ID_TO_LR.get(int(model_spec.model_id))
+        if lr is None:
+            raise ValueError(f"No public LR mapping for model_id={model_spec.model_id!r}")
     merged.optimizer.lr = float(lr)
 
     # Public release: production-like batch schedule defaults.
@@ -462,7 +590,10 @@ def apply_public_defaults_and_model(cfg: DictConfig, model_spec: PublicModelSpec
     if "batch_schedule" not in merged:
         merged.batch_schedule = {}
     merged.batch_schedule.enabled = True
-    if int(model_spec.model_id) == 3:
+    # Heavier models use a smaller batch schedule: model 3 (k=5 stack) and the
+    # cascade/bottleneck model "B" (embed_dim=512).
+    is_cascade = model_spec.model_version == "predecoder_memory_cascade"
+    if str(model_spec.model_id) == "3" or is_cascade:
         merged.batch_schedule.initial = 256
         merged.batch_schedule.final = 1024
     else:

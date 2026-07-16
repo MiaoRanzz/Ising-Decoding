@@ -52,18 +52,156 @@ def _ensure_inference_io_channels(cfg):
             cfg.model.num_filters = filters
 
 
+def _as_list(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    if hasattr(value, "__iter__") and not isinstance(value, (bytes, bytearray, dict)):
+        return list(value)
+    return [value]
+
+
+def _basis_list(value):
+    bases = [str(item).upper() for item in _as_list(value)]
+    if any(basis in ("BOTH", "MIXED") for basis in bases):
+        return ["X", "Z"]
+    for basis in bases:
+        if basis not in ("X", "Z"):
+            raise ValueError(f"Unsupported color threshold basis {basis!r}")
+    return bases
+
+
+def _threshold_value(cfg, name, fallback=None):
+    threshold_cfg = getattr(cfg, "threshold", None)
+    if threshold_cfg is not None and hasattr(threshold_cfg, name):
+        value = getattr(threshold_cfg, name)
+        if value is not None:
+            return value
+    return fallback
+
+
+def _resolve_color_threshold_settings(cfg):
+    test_cfg = getattr(cfg, "test", cfg)
+    distances = [
+        int(item) for item in _as_list(
+            _threshold_value(
+                cfg, "distances", [getattr(test_cfg, "distance", getattr(cfg, "distance"))]
+            )
+        )
+    ]
+    p_values = [
+        float(item) for item in _as_list(
+            _threshold_value(
+                cfg, "p_values", getattr(test_cfg, "p_values", [getattr(test_cfg, "p_error")])
+            )
+        )
+    ]
+
+    threshold_cfg = getattr(cfg, "threshold", None)
+    n_rounds_cfg = getattr(threshold_cfg, "n_rounds", None) if threshold_cfg is not None else None
+    if n_rounds_cfg is None:
+        n_rounds = {int(d): int(d) for d in distances}
+    else:
+        n_rounds_values = [int(item) for item in _as_list(n_rounds_cfg)]
+        if len(n_rounds_values) == 1:
+            n_rounds = {int(d): int(n_rounds_values[0]) for d in distances}
+        elif len(n_rounds_values) == len(distances):
+            n_rounds = {int(d): int(r) for d, r in zip(distances, n_rounds_values)}
+        else:
+            raise ValueError(
+                "threshold.n_rounds must be null, scalar, or match threshold.distances length"
+            )
+
+    num_samples = int(_threshold_value(cfg, "num_samples", getattr(test_cfg, "num_samples", 0)))
+    if num_samples <= 0:
+        raise ValueError("Color threshold requires threshold.num_samples or test.num_samples > 0")
+
+    bases = _basis_list(_threshold_value(cfg, "basis", getattr(test_cfg, "meas_basis_test", "X")))
+    return {
+        "distances": distances,
+        "p_values": p_values,
+        "n_rounds": n_rounds,
+        "num_samples": num_samples,
+        "bases": bases,
+    }
+
+
+def _record_resolved_model_path(cfg, model_path):
+    """Record the resolved checkpoint path on cfg so color aggregations can find it."""
+    try:
+        cfg.resolved_model_checkpoint_path = model_path
+    except Exception:
+        OmegaConf.update(
+            cfg, "resolved_model_checkpoint_path", model_path, merge=False, force_add=True
+        )
+
+
+def _apply_public_inference_env_overrides(cfg) -> None:
+    try:
+        test_cfg = getattr(cfg, "test", None)
+        if test_cfg is None:
+            return
+        env_samples = os.environ.get("PREDECODER_INFERENCE_NUM_SAMPLES")
+        if env_samples:
+            test_cfg.num_samples = int(env_samples)
+        env_latency = os.environ.get("PREDECODER_INFERENCE_LATENCY_SAMPLES")
+        if env_latency:
+            test_cfg.latency_num_samples = int(env_latency)
+        env_basis = os.environ.get("PREDECODER_INFERENCE_MEAS_BASIS")
+        if env_basis:
+            test_cfg.meas_basis_test = str(env_basis)
+    except Exception:
+        pass
+
+
+def _is_standalone_color_config(cfg: DictConfig, code_name: str) -> bool:
+    """Whether a color config should bypass the public-config validator.
+
+    The public config (``conf/config_public.yaml``) is intentionally narrow: it
+    has no ``test``/``train``/``val`` sections — the validator builds those from
+    defaults — so it always flows through ``validate_public_config`` for both
+    surface and color.
+
+    Color can also be driven by the standalone color configs
+    (``conf/config_color_*.yaml``, ``conf/config_inference_color_model_5.yaml``)
+    that spell out the full config schema themselves (explicit
+    ``test``/``train``/``val`` sections, threshold sweeps). Those bypass the
+    validator — it would reject those sections — and go straight to
+    ``run_color``.
+    """
+    if not code_name.startswith("color"):
+        return False
+    return any(section in cfg for section in ("test", "train", "val"))
+
+
 @hydra.main(version_base="1.3", config_path="../../conf", config_name="config")
 def run(cfg: DictConfig) -> None:
-    # Early-access public release: validate public surface, then merge in hidden defaults.
-    # NOTE: Validation is done BEFORE merging defaults so we can fail fast on injected fields.
-    model_spec = validate_public_config(cfg)
-    cfg = apply_public_defaults_and_model(cfg, model_spec)
+    code_name = str(getattr(cfg, "code", "surface")).lower()
+
+    # The narrow public config (conf/config_public.yaml) is validated and then
+    # has defaults merged in. This covers BOTH surface and color: the validator
+    # builds a fully-populated, code-specific config (see
+    # apply_public_defaults_and_model). The standalone color configs spell out
+    # the full schema themselves and bypass the validator (see below).
+    if not _is_standalone_color_config(cfg, code_name):
+        # Validate BEFORE merging defaults so we fail fast on unsupported fields.
+        model_spec = validate_public_config(cfg)
+        cfg = apply_public_defaults_and_model(cfg, model_spec)
 
     torch.backends.cuda.matmul.allow_tf32 = cfg.enable_matmul_tf32
     torch.backends.cudnn.allow_tf32 = cfg.enable_cudnn_tf32
 
-    if cfg.code == "surface" or cfg.code == "surface_partition":
+    if code_name in ("surface", "surface_partition"):
         run_surface(cfg)
+    elif code_name.startswith("color"):
+        run_color(cfg)
+    else:
+        raise ValueError(
+            f"Invalid cfg.code={cfg.code!r} (expected 'surface'/'surface_partition' or 'color*')."
+        )
 
 
 def run_surface(cfg: DictConfig):
@@ -78,8 +216,68 @@ def run_surface(cfg: DictConfig):
         from evaluation.inference import run_inference
         DistributedManager.initialize()
         dist = DistributedManager()
-        model = _load_model(cfg, dist)
+        decode_mode = os.environ.get("PREDECODER_DECODE_MODE", "").strip().lower()
+        if decode_mode == "pymatching_only":
+            model = torch.nn.Identity()
+        else:
+            model = _load_model(cfg, dist)
         run_inference(model, dist.device, dist, cfg)
+    elif cfg.workflow.task == "generate_stim_data":
+        from export.generate_test_data import generate_test_data
+        from hydra.core.hydra_config import HydraConfig
+        from omegaconf import OmegaConf
+
+        basis_cfg = str(getattr(cfg.test, "meas_basis_test", "both")).upper()
+        bases = ["X", "Z"] if basis_cfg in ("BOTH", "MIXED") else [basis_cfg]
+        if any(b not in ("X", "Z") for b in bases):
+            raise ValueError(f"Invalid test.meas_basis_test={basis_cfg!r}; expected X, Z, or both.")
+
+        num_samples = int(getattr(cfg.test, "num_samples", 1000))
+        # The public config rejects test.* overrides, so the shot count is
+        # otherwise fixed at the merged default; honor the same env var the
+        # inference workflows use. Unlike those (which silently ignore bad
+        # values), fail fast here — this workflow's only purpose is sampling.
+        env_samples = os.environ.get("PREDECODER_INFERENCE_NUM_SAMPLES")
+        if env_samples:
+            try:
+                num_samples = int(env_samples)
+            except ValueError:
+                num_samples = -1
+            if num_samples <= 0:
+                raise ValueError(
+                    "PREDECODER_INFERENCE_NUM_SAMPLES must be a positive integer, "
+                    f"got {env_samples!r}"
+                )
+        output_dir = os.path.join(HydraConfig.get().runtime.output_dir, "stim_samples")
+        noise_model_cfg = getattr(cfg.data, "noise_model", None)
+        noise_model_params = None
+        if noise_model_cfg is not None:
+            noise_model_params = OmegaConf.to_container(noise_model_cfg, resolve=True)
+
+        # The generate_stim_data workflow ONLY writes Stim sample artifacts
+        # (samples_{basis}.dets + metadata_{basis}.json). The CUDA-Q .bin
+        # artifacts are produced by a separate workflow (see generate_test_data
+        # CLI with --stim-artifacts/--no-cudaq-artifacts) to keep the offline
+        # decoding output dir narrowly scoped.
+        write_cudaq_artifacts = False
+
+        print(
+            "[generate_stim_data] Writing Stim detector samples "
+            f"to {output_dir} for basis={bases}, shots={num_samples}"
+        )
+        for basis in bases:
+            generate_test_data(
+                distance=int(cfg.distance),
+                n_rounds=int(cfg.n_rounds),
+                basis=basis,
+                p_error=float(getattr(cfg.test, "p_error", 0.003)),
+                code_rotation=str(getattr(cfg.data, "code_rotation", "XV")),
+                noise_model_params=noise_model_params,
+                num_samples=num_samples,
+                output_dir=output_dir,
+                write_stim_artifacts=True,
+                write_cudaq_artifacts=write_cudaq_artifacts,
+            )
     elif cfg.workflow.task == "data":
         DistributedManager.initialize()
         dist = DistributedManager()
@@ -94,8 +292,336 @@ def run_surface(cfg: DictConfig):
         decoder_ablation_study(model, dist.device, dist, cfg)
     elif cfg.workflow.task in ("sampling", "visualize"):
         raise ValueError(
-            f"workflow.task={cfg.workflow.task!r} is not supported in the early-access public release. "
+            f"workflow.task={cfg.workflow.task!r} is not supported. "
             "Supported workflows: train, inference, decoder_ablation."
+        )
+
+
+def run_color(cfg: DictConfig):
+    """
+    Color-code workflow runner.
+
+    Supports:
+    - train: Training with Chromobius-based LER validation
+    - inference: Run inference and compute LER with a trained model
+    - threshold: Threshold sweep across multiple p values
+    - sdr: Syndrome-density-reduction sweep
+    - chromobius_timing: Single-shot chromobius timing sweep
+
+    Driven either by the public config (conf/config_public.yaml with
+    `code: color`) or by the standalone color configs (conf/config_color_*.yaml,
+    conf/config_inference_color_model_5.yaml), which spell out the full config
+    schema (test/train/val sections, threshold sweeps) and bypass the
+    public-config validator.
+    """
+    task = str(getattr(cfg.workflow, "task", "train")).lower()
+
+    if task == "train":
+        train_main(cfg)
+    elif task == "inference":
+        from evaluation.logical_error_rate_color import count_logical_errors_color
+
+        DistributedManager.initialize()
+        dist = DistributedManager()
+        model = _load_model(cfg, dist)
+        _apply_public_inference_env_overrides(cfg)
+
+        if dist.rank == 0:
+            print("[Color Code Inference] Running LER computation...")
+            print(
+                f"[Color Code Inference] Distance: {cfg.test.distance}, Rounds: {cfg.test.n_rounds}"
+            )
+            print(
+                f"[Color Code Inference] p_error: {cfg.test.p_error}, Basis: {cfg.test.meas_basis_test}"
+            )
+
+        result = count_logical_errors_color(
+            model,
+            dist.device,
+            dist,
+            cfg,
+            include_diagnostics=True,
+            log_summary=True,
+        )
+
+        if dist.rank == 0:
+            print("\n" + "=" * 60)
+            print("Color Code Inference Results")
+            print("=" * 60)
+            for basis, data in result.items():
+                print(f"\n{basis}-basis:")
+                for key, value in data.items():
+                    print(f"  {key}: {value}")
+
+            result_path = os.path.join(cfg.output, "inference_results.json")
+            os.makedirs(cfg.output, exist_ok=True)
+            with open(result_path, "w") as f:
+                json.dump(result, f, indent=2)
+            print(f"\nResults saved to: {result_path}")
+
+    elif task == "threshold":
+        from evaluation.color_threshold_results import append_threshold_results
+        from evaluation.logical_error_rate_color import count_logical_errors_color
+
+        DistributedManager.initialize()
+        dist = DistributedManager()
+        model = _load_model(cfg, dist)
+        model_checkpoint_path = getattr(cfg, "resolved_model_checkpoint_path", None)
+        if model_checkpoint_path is None:
+            raise RuntimeError(
+                "Color threshold aggregation requires a resolved model checkpoint path"
+            )
+
+        settings = _resolve_color_threshold_settings(cfg)
+
+        if dist.rank == 0:
+            print("[Color Code Threshold] Running LER count sweep")
+            print(f"[Color Code Threshold] distances: {settings['distances']}")
+            print(f"[Color Code Threshold] p_values:  {settings['p_values']}")
+            print(f"[Color Code Threshold] bases:     {settings['bases']}")
+            print(f"[Color Code Threshold] num_samples={settings['num_samples']}")
+
+        rows = []
+        original = {
+            "distance": getattr(cfg, "distance", None),
+            "n_rounds": getattr(cfg, "n_rounds", None),
+            "test.distance": getattr(cfg.test, "distance", None),
+            "test.n_rounds": getattr(cfg.test, "n_rounds", None),
+            "test.p_error": getattr(cfg.test, "p_error", None),
+            "test.meas_basis_test": getattr(cfg.test, "meas_basis_test", None),
+            "test.num_samples": getattr(cfg.test, "num_samples", None),
+        }
+        try:
+            for d in settings["distances"]:
+                n_rounds = settings["n_rounds"][int(d)]
+                cfg.distance = int(d)
+                cfg.n_rounds = int(n_rounds)
+                cfg.test.distance = int(d)
+                cfg.test.n_rounds = int(n_rounds)
+                cfg.test.num_samples = int(settings["num_samples"])
+
+                for p in settings["p_values"]:
+                    cfg.test.p_error = float(p)
+                    for basis in settings["bases"]:
+                        cfg.test.meas_basis_test = basis
+                        if dist.rank == 0:
+                            print(
+                                f"[Color Code Threshold] Evaluating d={d}, R={n_rounds}, p={p:g}, basis={basis}"
+                            )
+
+                        result = count_logical_errors_color(
+                            model,
+                            dist.device,
+                            dist,
+                            cfg,
+                            include_diagnostics=False,
+                            log_summary=False,
+                        )
+                        data = result[basis]
+                        row = {
+                            "distance": int(d),
+                            "n_rounds": int(n_rounds),
+                            "p": float(p),
+                            "basis": basis,
+                            "logical_errors": int(data["logical_errors"]),
+                            "num_shots": int(data["num_shots"]),
+                            "chromobius_errors": int(data["chromobius_errors"]),
+                        }
+                        rows.append(row)
+                        if dist.rank == 0:
+                            print(
+                                "[Color Code Threshold] "
+                                f"d={d}, R={n_rounds}, p={p:g}, basis={basis}: "
+                                f"PD+Chromobius {row['logical_errors']}/{row['num_shots']} logical errors, "
+                                f"Chromobius {row['chromobius_errors']}/{row['num_shots']} logical errors"
+                            )
+        finally:
+            cfg.distance = original["distance"]
+            cfg.n_rounds = original["n_rounds"]
+            cfg.test.distance = original["test.distance"]
+            cfg.test.n_rounds = original["test.n_rounds"]
+            cfg.test.p_error = original["test.p_error"]
+            cfg.test.meas_basis_test = original["test.meas_basis_test"]
+            cfg.test.num_samples = original["test.num_samples"]
+
+        if dist.rank == 0:
+            result_path, _ = append_threshold_results(cfg, rows, model_checkpoint_path)
+            print(f"[Color Code Threshold] Aggregated results saved to: {result_path}")
+
+    elif task == "sdr":
+        from evaluation.color_sdr_results import append_sdr_results
+        from evaluation.logical_error_rate_color import compute_syndrome_density_reduction_color
+
+        DistributedManager.initialize()
+        dist = DistributedManager()
+        model = _load_model(cfg, dist)
+        model_checkpoint_path = getattr(cfg, "resolved_model_checkpoint_path", None)
+        if model_checkpoint_path is None:
+            raise RuntimeError("Color SDR aggregation requires a resolved model checkpoint path")
+
+        settings = _resolve_color_threshold_settings(cfg)
+
+        if dist.rank == 0:
+            print("[Color Code SDR] Running syndrome-density reduction sweep")
+            print(f"[Color Code SDR] distances: {settings['distances']}")
+            print(f"[Color Code SDR] p_values:  {settings['p_values']}")
+            print(f"[Color Code SDR] bases:     {settings['bases']}")
+            print(f"[Color Code SDR] num_samples={settings['num_samples']}")
+
+        rows = []
+        original = {
+            "distance": getattr(cfg, "distance", None),
+            "n_rounds": getattr(cfg, "n_rounds", None),
+            "test.distance": getattr(cfg.test, "distance", None),
+            "test.n_rounds": getattr(cfg.test, "n_rounds", None),
+            "test.p_error": getattr(cfg.test, "p_error", None),
+            "test.meas_basis_test": getattr(cfg.test, "meas_basis_test", None),
+            "test.num_samples": getattr(cfg.test, "num_samples", None),
+        }
+        try:
+            for d in settings["distances"]:
+                n_rounds = settings["n_rounds"][int(d)]
+                cfg.distance = int(d)
+                cfg.n_rounds = int(n_rounds)
+                cfg.test.distance = int(d)
+                cfg.test.n_rounds = int(n_rounds)
+                cfg.test.num_samples = int(settings["num_samples"])
+
+                for p in settings["p_values"]:
+                    cfg.test.p_error = float(p)
+                    for basis in settings["bases"]:
+                        cfg.test.meas_basis_test = basis
+                        if dist.rank == 0:
+                            print(
+                                f"[Color Code SDR] Evaluating d={d}, R={n_rounds}, p={p:g}, basis={basis}"
+                            )
+
+                        result = compute_syndrome_density_reduction_color(
+                            model, dist.device, dist, cfg
+                        )
+                        row = {
+                            "distance": int(d),
+                            "n_rounds": int(n_rounds),
+                            "p": float(p),
+                            "basis": basis,
+                            "input_syndrome_ones": int(result["input_syndrome_ones"]),
+                            "residual_syndrome_ones": int(result["residual_syndrome_ones"]),
+                            "syndrome_elements": int(result["syndrome_elements"]),
+                        }
+                        rows.append(row)
+                        if dist.rank == 0:
+                            print(
+                                "[Color Code SDR] "
+                                f"d={d}, R={n_rounds}, p={p:g}, basis={basis}: "
+                                f"input={result['input_syndrome_density']:.6g}, "
+                                f"residual={result['residual_syndrome_density']:.6g}, "
+                                f"SDR={result['reduction_factor']:.6g}"
+                            )
+        finally:
+            cfg.distance = original["distance"]
+            cfg.n_rounds = original["n_rounds"]
+            cfg.test.distance = original["test.distance"]
+            cfg.test.n_rounds = original["test.n_rounds"]
+            cfg.test.p_error = original["test.p_error"]
+            cfg.test.meas_basis_test = original["test.meas_basis_test"]
+            cfg.test.num_samples = original["test.num_samples"]
+
+        if dist.rank == 0:
+            result_path, _ = append_sdr_results(cfg, rows, model_checkpoint_path)
+            print(f"[Color Code SDR] Aggregated results saved to: {result_path}")
+
+    elif task == "chromobius_timing":
+        from evaluation.color_chromobius_timing_results import append_chromobius_timing_results
+        from evaluation.logical_error_rate_color import compute_chromobius_single_shot_timing_color
+
+        DistributedManager.initialize()
+        dist = DistributedManager()
+        model = _load_model(cfg, dist)
+        model_checkpoint_path = getattr(cfg, "resolved_model_checkpoint_path", None)
+        if model_checkpoint_path is None:
+            raise RuntimeError(
+                "Color Chromobius timing aggregation requires a resolved model checkpoint path"
+            )
+
+        settings = _resolve_color_threshold_settings(cfg)
+
+        if dist.rank == 0:
+            print("[Color Code Chromobius Timing] Running single-shot timing sweep")
+            print(f"[Color Code Chromobius Timing] distances: {settings['distances']}")
+            print(f"[Color Code Chromobius Timing] p_values:  {settings['p_values']}")
+            print(f"[Color Code Chromobius Timing] bases:     {settings['bases']}")
+            print(f"[Color Code Chromobius Timing] num_samples={settings['num_samples']}")
+
+        rows = []
+        original = {
+            "distance": getattr(cfg, "distance", None),
+            "n_rounds": getattr(cfg, "n_rounds", None),
+            "test.distance": getattr(cfg.test, "distance", None),
+            "test.n_rounds": getattr(cfg.test, "n_rounds", None),
+            "test.p_error": getattr(cfg.test, "p_error", None),
+            "test.meas_basis_test": getattr(cfg.test, "meas_basis_test", None),
+            "test.num_samples": getattr(cfg.test, "num_samples", None),
+        }
+        try:
+            for d in settings["distances"]:
+                n_rounds = settings["n_rounds"][int(d)]
+                cfg.distance = int(d)
+                cfg.n_rounds = int(n_rounds)
+                cfg.test.distance = int(d)
+                cfg.test.n_rounds = int(n_rounds)
+                cfg.test.num_samples = int(settings["num_samples"])
+
+                for p in settings["p_values"]:
+                    cfg.test.p_error = float(p)
+                    for basis in settings["bases"]:
+                        cfg.test.meas_basis_test = basis
+                        if dist.rank == 0:
+                            print(
+                                "[Color Code Chromobius Timing] "
+                                f"Evaluating d={d}, R={n_rounds}, p={p:g}, basis={basis}"
+                            )
+
+                        timing = compute_chromobius_single_shot_timing_color(
+                            model, dist.device, dist, cfg
+                        )
+
+                        row = {
+                            "distance": int(d),
+                            "n_rounds": int(n_rounds),
+                            "p": float(p),
+                            "basis": basis,
+                            "original_syndromes": timing["original_syndromes"],
+                            "residual_syndromes": timing["residual_syndromes"],
+                        }
+                        rows.append(row)
+                        if dist.rank == 0:
+                            original_stats = timing["original_syndromes"]
+                            residual_stats = timing["residual_syndromes"]
+                            print(
+                                "[Color Code Chromobius Timing] "
+                                f"d={d}, R={n_rounds}, p={p:g}, basis={basis}: "
+                                f"original avg={original_stats['avg_us_per_round']:.6g} us/round "
+                                f"({original_stats['shots']} shots), "
+                                f"residual avg={residual_stats['avg_us_per_round']:.6g} us/round "
+                                f"({residual_stats['shots']} shots)"
+                            )
+        finally:
+            cfg.distance = original["distance"]
+            cfg.n_rounds = original["n_rounds"]
+            cfg.test.distance = original["test.distance"]
+            cfg.test.n_rounds = original["test.n_rounds"]
+            cfg.test.p_error = original["test.p_error"]
+            cfg.test.meas_basis_test = original["test.meas_basis_test"]
+            cfg.test.num_samples = original["test.num_samples"]
+
+        if dist.rank == 0:
+            result_path, _ = append_chromobius_timing_results(cfg, rows, model_checkpoint_path)
+            print(f"[Color Code Chromobius Timing] Aggregated results saved to: {result_path}")
+
+    else:
+        raise NotImplementedError(
+            f"Color-code workflow.task={cfg.workflow.task!r} is not supported. "
+            "Supported tasks: 'train', 'inference', 'threshold', 'sdr', 'chromobius_timing'."
         )
 
 
@@ -114,19 +640,21 @@ def find_best_model(path, *, rank: int = 0):
     for filename in os.listdir(path):
         if not filename.endswith(".pt"):
             continue
-        if filename.startswith("PreDecoderModelMemory_"):
+        if filename.startswith("PreDecoder"):
             try:
-                value = float(filename.split(".")[2])  # Gets epoch number
+                value = float(filename.rsplit(".", 2)[1])
                 model_files.append((filename, value))
                 if value > max_value:
                     max_value = value
                     best_file = filename
             except (IndexError, ValueError) as e:
                 print(f"Warning: could not parse epoch from filename {filename}: {e}")
-        else:
+                named_pt_files.append(filename)
+        elif not filename.startswith("checkpoint."):
             named_pt_files.append(filename)
 
-    # Fall back to named .pt files when no epoch-numbered checkpoints are present
+    # Fall back to named release/model files when no epoch-numbered weights are present.
+    # Training checkpoints are intentionally excluded because they do not contain model weights.
     if best_file is None and named_pt_files:
         named_pt_files.sort()
         best_file = named_pt_files[-1]
@@ -207,6 +735,25 @@ def _load_model(cfg, dist):
             model_id=None,
             device=str(dist.device),
         )
+
+        # The cascade model "B" is color-code only: loading it into a surface
+        # runtime config would silently run the surface workflow with a color
+        # cascade model, so fail fast instead of warning.
+        loaded_spec_model_id = metadata.get("model_id")
+        if loaded_spec_model_id is not None:
+            from model.registry import get_model_spec
+            code_name = str(getattr(cfg, "code", "surface")).lower()
+            spec = get_model_spec(loaded_spec_model_id)
+            if (
+                spec.model_version == "predecoder_memory_cascade" and
+                not code_name.startswith("color")
+            ):
+                raise ValueError(
+                    f"SafeTensors checkpoint has model_id={loaded_spec_model_id} "
+                    f"(color-code cascade model), but the runtime config has "
+                    f"code={code_name!r}. Re-run with code=color to use this model."
+                )
+
         if dist.rank == 0:
             loaded_model_id = metadata.get("model_id", "unknown")
             dtype = metadata.get("quant_format", "fp32")
@@ -227,6 +774,7 @@ def _load_model(cfg, dist):
 
         if metadata.get("quant_format") == "fp16":
             cfg.enable_fp16 = True
+        _record_resolved_model_path(cfg, safetensors_path)
         return model
 
     # Direct file path override (for named pretrained models without epoch numbers)
@@ -242,6 +790,7 @@ def _load_model(cfg, dist):
             model = model.half()
         state_dict = _load_state_dict_from_pt(model_checkpoint_file, dist.device)
         model.load_state_dict(state_dict)
+        _record_resolved_model_path(cfg, model_checkpoint_file)
         if dist.rank == 0:
             param_count = sum(p.numel() for p in model.parameters())
             print(f"Model loaded ({param_count:,} parameters)")
@@ -307,6 +856,7 @@ def _load_model(cfg, dist):
 
     state_dict = _load_state_dict_from_pt(model_path, dist.device)
     model.load_state_dict(state_dict)
+    _record_resolved_model_path(cfg, model_path)
 
     if dist.rank == 0:
         param_count = sum(p.numel() for p in model.parameters())
