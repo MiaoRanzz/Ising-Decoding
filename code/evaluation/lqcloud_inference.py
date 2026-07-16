@@ -398,13 +398,43 @@ def _count_observable_mismatches(predictions, observables) -> int:
     return int(np.any(predictions != observables, axis=1).sum())
 
 
+def _time_lqcloud_pymatching_latency(
+    matcher,
+    baseline_syndromes,
+    residual_syndromes,
+    *,
+    n_rounds: int,
+    num_samples: int,
+    warmup_iterations: int,
+    timer,
+) -> tuple[float, float, int]:
+    """Time the available hardware shots using NVIDIA's latency definition."""
+    available = min(len(baseline_syndromes), len(residual_syndromes))
+    sample_count = min(max(int(num_samples), 0), available)
+    if sample_count == 0:
+        return float("nan"), float("nan"), 0
+
+    baseline_us, predecoder_us = timer(
+        matcher=matcher,
+        baseline_syndromes=baseline_syndromes[:sample_count],
+        residual_syndromes=residual_syndromes[:sample_count],
+        n_rounds=int(n_rounds),
+        warmup_iterations=max(int(warmup_iterations), 0),
+    )
+    return float(baseline_us), float(predecoder_us), sample_count
+
+
 def run_inference_modified(model, device, dist, cfg):
     """Decode the configured LQCloud measurement source with Ising plus PyMatching."""
     import numpy as np
     import pymatching
     import torch
 
-    from evaluation.logical_error_rate import PreDecoderMemoryEvalModule, _build_stab_maps
+    from evaluation.logical_error_rate import (
+        PreDecoderMemoryEvalModule,
+        _build_stab_maps,
+        _time_single_shot_latency_stim,
+    )
 
     if int(getattr(dist, "world_size", 1)) != 1:
         raise ValueError("integrate_to_nvidia must run with one process/GPU")
@@ -468,6 +498,23 @@ def run_inference_modified(model, device, dist, cfg):
     )
     raw_errors = int(np.any(samples.observables != 0, axis=1).sum())
     shots = int(samples.observables.shape[0])
+    latency_num_samples = int(
+        getattr(cfg.lqcloud, "latency_num_samples", shots)
+    )
+    latency_warmup_iterations = int(
+        getattr(cfg.lqcloud, "latency_warmup_iterations", 50)
+    )
+    baseline_us_per_round, predecoder_us_per_round, latency_samples = (
+        _time_lqcloud_pymatching_latency(
+            matcher,
+            samples.lq_dets,
+            residual_lq_arr,
+            n_rounds=int(cfg.n_rounds),
+            num_samples=latency_num_samples,
+            warmup_iterations=latency_warmup_iterations,
+            timer=_time_single_shot_latency_stim,
+        )
+    )
 
     result = {
         "shots": shots,
@@ -482,6 +529,9 @@ def run_inference_modified(model, device, dist, cfg):
         "ising_plus_pymatching_logical_error_rate": corrected_errors / shots,
         "input_detector_density": float(samples.lq_dets.mean()),
         "residual_detector_density": float(residual_lq_arr.mean()),
+        "latency_samples": latency_samples,
+        "pymatch latency (baseline µs/round)": baseline_us_per_round,
+        "pymatch latency (after predecoder µs/round)": predecoder_us_per_round,
     }
 
     if dist.rank == 0:
@@ -505,6 +555,11 @@ def run_inference_modified(model, device, dist, cfg):
         print(
             f"  Detector density: {result['input_detector_density']:.6f} -> "
             f"{result['residual_detector_density']:.6f}"
+        )
+        print(
+            f"  PyMatching latency ({latency_samples} single-shot samples):\n"
+            f"    Baseline:         {baseline_us_per_round:.6f} us/round\n"
+            f"    After predecoder: {predecoder_us_per_round:.6f} us/round"
         )
         print("[LQCloud Summary] " + json.dumps(result, sort_keys=True))
     return result

@@ -4,7 +4,10 @@
 model_id: 1  # Choose 1, 2, 3, 4, or 5
 
 # === Values for evaluation. Training window is hardcoded to model receptive field. ===
-distance: 3  # lqcloud supports only distance 3 surface code for now
+# The current LQCloud layout/circuit supports only d=3; changing this value
+# alone is not enough to run another code distance.
+distance: 3
+# Configurable, but must be at least 2 for detector construction.
 n_rounds: 9
 
 # === Workflow ===
@@ -23,8 +26,8 @@ data:
   # parallel spacelike" section in README.md for the pros/cons and constraints.
   use_compile: False # Required to see the speedup from use_parallel_spacelike=True.
   use_parallel_spacelike: False
-  # Circuit-level noise model (25-parameter). This is the default public noise specification.
-  # The defaults are chosen for p=0.003.
+  # Circuit-level noise model (25-parameter). This inherited public setting is
+  # not used to generate LQCloud hardware measurements or the LQCloud Stim DEM.
   noise_model:
     # State preparation errors (2)
     p_prep_X: 0.002 # |+> state-prep fails with this probability (apply Z), 2*p/3
@@ -64,7 +67,13 @@ lqcloud:
   # log: explicit offline replay mode for tests/debugging only.
   source: hardware
   backend_name: QZ01-surface_code
+  # Total hardware executions requested from LQCloud.
   shots: 100
+  # Number of returned hardware shots decoded one-by-one for latency. The
+  # integration automatically caps this at the number of available shots.
+  # Set to 0 to disable latency timing.
+  latency_num_samples: 100
+  latency_warmup_iterations: 50
   measurement_file: my_file/lqcloud/lqcloud_d3_surface_code/measurement.log
   circuit_type: memory_z
   initial_state: [0, 0, 0, 0, 0, 0, 0, 0, 0]
@@ -76,7 +85,7 @@ lqcloud:
   # documents that its returned classical bit string is MSB-first.
   bit_order: as_returned
 
-  # 0 means use every valid shot found in measurement_file.
+  # 0 means use every valid shot returned by hardware or found in the log.
   max_shots: 0
   batch_size: 256
 

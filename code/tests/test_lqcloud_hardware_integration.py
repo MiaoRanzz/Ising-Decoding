@@ -15,6 +15,7 @@ if str(CODE_ROOT) not in sys.path:
     sys.path.insert(0, str(CODE_ROOT))
 
 from evaluation.lqcloud_inference import (
+    _time_lqcloud_pymatching_latency,
     build_model_detector_permutation,
     collect_hardware_measurement_memory,
     load_lqcloud_hardware_samples,
@@ -30,6 +31,45 @@ HAS_QEC_DEPS = all(
 
 
 class TestLQCloudMeasurementParser(unittest.TestCase):
+
+    def test_latency_uses_configured_subset_and_original_timer_contract(self):
+        calls = {}
+
+        def fake_timer(**kwargs):
+            calls.update(kwargs)
+            return 12.5, 4.25
+
+        baseline_us, predecoder_us, sample_count = _time_lqcloud_pymatching_latency(
+            matcher="matcher",
+            baseline_syndromes=list(range(5)),
+            residual_syndromes=list(range(4)),
+            n_rounds=9,
+            num_samples=3,
+            warmup_iterations=7,
+            timer=fake_timer,
+        )
+
+        self.assertEqual((baseline_us, predecoder_us, sample_count), (12.5, 4.25, 3))
+        self.assertEqual(calls["matcher"], "matcher")
+        self.assertEqual(calls["baseline_syndromes"], [0, 1, 2])
+        self.assertEqual(calls["residual_syndromes"], [0, 1, 2])
+        self.assertEqual(calls["n_rounds"], 9)
+        self.assertEqual(calls["warmup_iterations"], 7)
+
+    def test_latency_can_be_disabled(self):
+        baseline_us, predecoder_us, sample_count = _time_lqcloud_pymatching_latency(
+            matcher=None,
+            baseline_syndromes=[0],
+            residual_syndromes=[0],
+            n_rounds=9,
+            num_samples=0,
+            warmup_iterations=50,
+            timer=lambda **_: self.fail("disabled latency must not call the timer"),
+        )
+
+        self.assertTrue(baseline_us != baseline_us)
+        self.assertTrue(predecoder_us != predecoder_us)
+        self.assertEqual(sample_count, 0)
 
     def _write_log(self, text: str) -> Path:
         tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False, encoding="utf-8")
