@@ -143,6 +143,7 @@ def collect_hardware_measurement_memory(
         lq_main = _import_lqcloud_main()
         hardware_runner = lq_main.run_hardware_experiment
     result = hardware_runner(
+        distance=int(cfg.distance),
         ini_state=initial_state,
         cycle=int(cfg.n_rounds),
         shots=int(getattr(lq_cfg, "shots", 100)),
@@ -281,8 +282,6 @@ def load_lqcloud_hardware_samples(
 
     D = int(cfg.distance)
     T = int(cfg.n_rounds)
-    if D != 3:
-        raise ValueError(f"The current LQCloud hardware layout supports distance=3, got {D}")
 
     lq_cfg = cfg.lqcloud
     circuit_type = str(getattr(lq_cfg, "circuit_type", "memory_z")).strip().lower()
@@ -294,9 +293,16 @@ def load_lqcloud_hardware_samples(
     if reset or not mirror:
         raise ValueError("The QZ01 integration currently requires reset=false and mirror=true")
 
-    initial_state = [int(v) for v in getattr(lq_cfg, "initial_state", [0] * (D * D))]
+    configured_initial_state = getattr(lq_cfg, "initial_state", None)
+    if configured_initial_state is None:
+        initial_state = [0] * (D * D)
+    else:
+        initial_state = [int(v) for v in configured_initial_state]
+
     if len(initial_state) != D * D or any(v not in (0, 1) for v in initial_state):
-        raise ValueError(f"lqcloud.initial_state must contain exactly {D * D} binary values")
+        raise ValueError(
+            f"lqcloud.initial_state must contain exactly {D * D} binary values"
+        )
 
     expected_width = T * (D * D - 1) + D * D
     source = str(getattr(lq_cfg, "source", "hardware")).strip().lower()

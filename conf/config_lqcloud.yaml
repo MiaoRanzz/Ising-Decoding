@@ -76,7 +76,7 @@ lqcloud:
   latency_warmup_iterations: 50
   measurement_file: my_file/lqcloud/lqcloud_d3_surface_code/measurement.log
   circuit_type: memory_z
-  initial_state: [0, 0, 0, 0, 0, 0, 0, 0, 0]
+  initial_state: null
   reset: false
   mirror: true
 

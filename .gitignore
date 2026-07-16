@@ -58,6 +58,7 @@ outputs/
 logs/
 my_tr_log/
 my_inf_log/
+my_lqcloud_integration_log
 /code/ai_model/outputs/**
 
 # Notebooks

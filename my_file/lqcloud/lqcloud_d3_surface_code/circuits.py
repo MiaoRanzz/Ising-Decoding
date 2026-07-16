@@ -490,13 +490,16 @@ def build_cloud_circuit(
     ini_state: Iterable[int],
     cycle: int = 3,
     circuit_type: str = "memory_z",
+    distance: int | None = None,
 ) -> QuantumCircuit:
     if QuantumCircuit is None:
         raise ImportError(
             "build_cloud_circuit requires the lqcloud SDK. "
             "Install lqcloud to submit circuits; build_stim_circuit works without it."
         )
-    distance = const.DISTANCE
+    if distance is None:
+        distance = const.DISTANCE
+    distance = int(distance)
     reset = const.RESET
     mirror = const.MIRROR
     assert cycle >= 2

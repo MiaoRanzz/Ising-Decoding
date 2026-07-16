@@ -18,6 +18,7 @@ except ImportError:  # Support running this file directly.
 
 def run_hardware_experiment(
     *,
+    distance: int | None = None,
     ini_state: Optional[Iterable[int]] = None,
     cycle: int = 9,
     shots: int = 100,
@@ -30,19 +31,28 @@ def run_hardware_experiment(
     ``provider`` is injectable for local tests. When omitted, the same
     ``LQCloudProvider`` construction used by the original script is used.
     """
+    if distance is None:
+        distance = const.DISTANCE
+    distance = int(distance)
+
+    # 让其他仍使用 const.DISTANCE 的代码保持同步
+    const.DISTANCE = distance
+
     if ini_state is None:
-        ini_state = [0] * (const.DISTANCE**2)
+        ini_state = [0] * (distance**2)
+
     ini_state = [int(value) for value in ini_state]
-    if len(ini_state) != const.DISTANCE**2 or any(value not in (0, 1) for value in ini_state):
+    if len(ini_state) != distance**2 or any(value not in (0, 1) for value in ini_state):
         raise ValueError(
-            f"ini_state must contain exactly {const.DISTANCE**2} binary values"
+            f"ini_state must contain exactly {distance**2} binary values"
         )
     if int(cycle) < 2:
         raise ValueError("cycle must be at least 2")
     if int(shots) <= 0:
         raise ValueError("shots must be positive")
 
-    qc = circuits.build_cloud_circuit(
+    qc = circuiqc = circuits.build_cloud_circuit(
+        distance=distance,
         ini_state=ini_state,
         cycle=int(cycle),
         circuit_type=str(circuit_type),
