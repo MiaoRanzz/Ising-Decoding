@@ -39,6 +39,10 @@ workflow:
   task: train  # train, inference
   # simplify logs of inference to have only pymatching b4 and after predecoding. TODO: batch_size=1
 
+# Global decoder used to compute LER during training validation. Inference always
+# evaluates both PyMatching and Union-Find for the surface-code workflow.
+validation_decoder: pymatching  # pymatching or unionfind
+
 # === Data ===
 data:
   # Surface code orientation (public naming): O1, O2, O3, O4. Ignored for color code.

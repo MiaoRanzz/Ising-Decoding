@@ -226,6 +226,7 @@ def _base_hidden_defaults_dict() -> Dict[str, Any]:
                 "end_epoch": 3,
             },
         "validation_ler": True,
+        "validation_decoder": "pymatching",
         "early_stopping": {
             "enabled": True,
             "patience": 100
@@ -377,6 +378,15 @@ def validate_public_config(cfg: DictConfig) -> PublicModelSpec:
 
     code = _normalize_code(getattr(cfg, "code", "surface"))
     model_spec = get_model_spec(cfg.model_id)
+    validation_decoder = str(getattr(cfg, "validation_decoder", "pymatching")).strip().lower()
+    if validation_decoder not in ("pymatching", "unionfind"):
+        raise ValueError(
+            "Invalid validation_decoder. Choose 'pymatching' or 'unionfind'."
+        )
+    if code == "color" and validation_decoder != "pymatching":
+        raise ValueError(
+            "validation_decoder='unionfind' is currently supported only for the surface code."
+        )
     if code == "color" and int(model_spec.receptive_field) > 13:
         raise ValueError(
             "code='color' currently supports public model_ids with receptive field <= 13 "

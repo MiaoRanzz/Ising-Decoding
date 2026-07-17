@@ -401,11 +401,11 @@ def _time_lqcloud_pymatching_latency(
 
 
 def run_inference_modified(model, device, dist, cfg):
-    """Decode the configured LQCloud measurement source with Ising plus PyMatching."""
+    """Decode LQCloud samples with both global decoders, with/without Ising."""
     import numpy as np
-    import pymatching
     import torch
 
+    from evaluation.decoder_backends import PYMATCHING, UNIONFIND, build_decoder
     from evaluation.logical_error_rate import (
         PreDecoderMemoryEvalModule,
         _build_stab_maps,
@@ -426,10 +426,16 @@ def run_inference_modified(model, device, dist, cfg):
         decompose_errors=True,
         approximate_disjoint_errors=True,
     )
-    matcher = pymatching.Matching.from_detector_error_model(dem)
+    matcher = build_decoder(dem, PYMATCHING)
+    unionfind_decoder = build_decoder(dem, UNIONFIND)
     baseline_predictions = matcher.decode_batch(samples.lq_dets)
     baseline_errors = _count_observable_mismatches(
         baseline_predictions,
+        samples.observables,
+    )
+    unionfind_baseline_predictions = unionfind_decoder.decode_batch(samples.lq_dets)
+    unionfind_baseline_errors = _count_observable_mismatches(
+        unionfind_baseline_predictions,
         samples.observables,
     )
 
@@ -444,6 +450,7 @@ def run_inference_modified(model, device, dist, cfg):
 
     batch_size = max(int(getattr(cfg.lqcloud, "batch_size", 256)), 1)
     final_predictions = []
+    unionfind_final_predictions = []
     residual_lq_rows = []
     with torch.inference_mode():
         for start in range(0, samples.model_dets.shape[0], batch_size):
@@ -463,13 +470,25 @@ def run_inference_modified(model, device, dist, cfg):
                 matcher.decode_batch(residual_lq),
                 dtype=np.uint8,
             ).reshape(-1)
+            unionfind_residual_prediction = np.asarray(
+                unionfind_decoder.decode_batch(residual_lq),
+                dtype=np.uint8,
+            ).reshape(-1)
             final_predictions.append((pre_logical.reshape(-1) ^ residual_prediction).reshape(-1, 1))
+            unionfind_final_predictions.append(
+                (pre_logical.reshape(-1) ^ unionfind_residual_prediction).reshape(-1, 1)
+            )
             residual_lq_rows.append(residual_lq)
 
     final_predictions_arr = np.concatenate(final_predictions, axis=0)
     residual_lq_arr = np.concatenate(residual_lq_rows, axis=0)
     corrected_errors = _count_observable_mismatches(
         final_predictions_arr,
+        samples.observables,
+    )
+    unionfind_final_predictions_arr = np.concatenate(unionfind_final_predictions, axis=0)
+    unionfind_corrected_errors = _count_observable_mismatches(
+        unionfind_final_predictions_arr,
         samples.observables,
     )
     raw_errors = int(np.any(samples.observables != 0, axis=1).sum())
@@ -491,6 +510,17 @@ def run_inference_modified(model, device, dist, cfg):
             timer=_time_single_shot_latency_stim,
         )
     )
+    unionfind_baseline_us_per_round, unionfind_predecoder_us_per_round, _ = (
+        _time_lqcloud_pymatching_latency(
+            unionfind_decoder,
+            samples.lq_dets,
+            residual_lq_arr,
+            n_rounds=int(cfg.n_rounds),
+            num_samples=latency_num_samples,
+            warmup_iterations=latency_warmup_iterations,
+            timer=_time_single_shot_latency_stim,
+        )
+    )
 
     result = {
         "shots": shots,
@@ -503,11 +533,17 @@ def run_inference_modified(model, device, dist, cfg):
         "pymatching_logical_error_rate": baseline_errors / shots,
         "ising_plus_pymatching_logical_errors": corrected_errors,
         "ising_plus_pymatching_logical_error_rate": corrected_errors / shots,
+        "unionfind_logical_errors": unionfind_baseline_errors,
+        "unionfind_logical_error_rate": unionfind_baseline_errors / shots,
+        "ising_plus_unionfind_logical_errors": unionfind_corrected_errors,
+        "ising_plus_unionfind_logical_error_rate": unionfind_corrected_errors / shots,
         "input_detector_density": float(samples.lq_dets.mean()),
         "residual_detector_density": float(residual_lq_arr.mean()),
         "latency_samples": latency_samples,
         "pymatch latency (baseline µs/round)": baseline_us_per_round,
         "pymatch latency (after predecoder µs/round)": predecoder_us_per_round,
+        "unionfind latency (baseline µs/round)": unionfind_baseline_us_per_round,
+        "unionfind latency (after predecoder µs/round)": unionfind_predecoder_us_per_round,
     }
 
     if dist.rank == 0:
@@ -529,6 +565,14 @@ def run_inference_modified(model, device, dist, cfg):
             f"{result['ising_plus_pymatching_logical_error_rate']:>12.6f}"
         )
         print(
+            f"  {'Union-Find':<30}{unionfind_baseline_errors:>16}"
+            f"{result['unionfind_logical_error_rate']:>12.6f}"
+        )
+        print(
+            f"  {'Ising pre-decoder + Union-Find':<30}{unionfind_corrected_errors:>16}"
+            f"{result['ising_plus_unionfind_logical_error_rate']:>12.6f}"
+        )
+        print(
             f"  Detector density: {result['input_detector_density']:.6f} -> "
             f"{result['residual_detector_density']:.6f}"
         )
@@ -536,6 +580,11 @@ def run_inference_modified(model, device, dist, cfg):
             f"  PyMatching latency ({latency_samples} single-shot samples):\n"
             f"    Baseline:         {baseline_us_per_round:.6f} us/round\n"
             f"    After predecoder: {predecoder_us_per_round:.6f} us/round"
+        )
+        print(
+            f"  Union-Find latency ({latency_samples} single-shot samples):\n"
+            f"    Baseline:         {unionfind_baseline_us_per_round:.6f} us/round\n"
+            f"    After predecoder: {unionfind_predecoder_us_per_round:.6f} us/round"
         )
         print("[LQCloud Summary] " + json.dumps(result, sort_keys=True))
     return result

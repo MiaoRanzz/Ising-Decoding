@@ -338,13 +338,13 @@ def _compute_single_ler(model, device, dist, cfg, generator, rank):
             if isinstance(x_data, dict) and isinstance(z_data, dict):
                 x_logical_errors = x_data.get('logical errors', x_data.get('logical_errors'))
                 x_pymatch_flips = x_data.get(
-                    'pymatch flips',
-                    x_data.get('chromobius_errors'),
+                    'baseline logical errors',
+                    x_data.get('pymatch flips', x_data.get('chromobius_errors')),
                 )
                 z_logical_errors = z_data.get('logical errors', z_data.get('logical_errors'))
                 z_pymatch_flips = z_data.get(
-                    'pymatch flips',
-                    z_data.get('chromobius_errors'),
+                    'baseline logical errors',
+                    z_data.get('pymatch flips', z_data.get('chromobius_errors')),
                 )
 
                 if all(

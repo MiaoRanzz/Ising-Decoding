@@ -71,6 +71,15 @@ def _extract_basis_metrics(basis_dict: Dict[str, Any]) -> Tuple[float, float, fl
     return ler_after, ler_baseline, lat_after, lat_baseline
 
 
+def _extract_unionfind_metrics(basis_dict: Dict[str, Any]) -> Tuple[float, float, float, float]:
+    """Return Union-Find LER/latency after and before the pre-decoder."""
+    ler_after = _safe_float(basis_dict.get("logical error ratio (unionfind predecoder mean)"))
+    ler_baseline = _safe_float(basis_dict.get("logical error ratio (unionfind mean)"))
+    lat_baseline = _safe_float(basis_dict.get("unionfind latency (baseline µs/round)"))
+    lat_after = _safe_float(basis_dict.get("unionfind latency (after predecoder µs/round)"))
+    return ler_after, ler_baseline, lat_after, lat_baseline
+
+
 def run_inference(model, device, dist, cfg) -> None:
     """
     Run a single inference evaluation and print a compact summary.
@@ -180,6 +189,12 @@ def run_inference(model, device, dist, cfg) -> None:
 
     x_after, x_base, x_lat_after, x_lat_base = _extract_basis_metrics(result["X"])
     z_after, z_base, z_lat_after, z_lat_base = _extract_basis_metrics(result["Z"])
+    x_uf_after, x_uf_base, x_uf_lat_after, x_uf_lat_base = _extract_unionfind_metrics(
+        result["X"]
+    )
+    z_uf_after, z_uf_base, z_uf_lat_after, z_uf_lat_base = _extract_unionfind_metrics(
+        result["Z"]
+    )
 
     def _avg(a: float, b: float) -> float:
         vals = [v for v in (a, b) if v == v]  # NaN check
@@ -187,6 +202,8 @@ def run_inference(model, device, dist, cfg) -> None:
 
     avg_lat_base = _avg(x_lat_base, z_lat_base)
     avg_lat_after = _avg(x_lat_after, z_lat_after)
+    avg_uf_lat_base = _avg(x_uf_lat_base, z_uf_lat_base)
+    avg_uf_lat_after = _avg(x_uf_lat_after, z_uf_lat_after)
 
     # Speedup = baseline latency / after latency
     x_speedup = (x_lat_base / x_lat_after) if (x_lat_after > 0.0) else float("nan")
@@ -204,10 +221,35 @@ def run_inference(model, device, dist, cfg) -> None:
     print(
         f"  {'PyMatching latency - Avg (µs/round):':<{label_w}}{avg_lat_base:>15.3f}  {avg_lat_after:>17.3f}"
     )
-    print(f"  {'LER - X basis:':<{label_w}}{x_base:>15.6f}  {x_after:>17.6f}")
-    print(f"  {'LER - Z basis:':<{label_w}}{z_base:>15.6f}  {z_after:>17.6f}")
     print(
-        f"  {'LER - Avg:':<{label_w}}{_avg(x_base, z_base):>15.6f}  {_avg(x_after, z_after):>17.6f}"
+        f"  {'Union-Find latency - X basis (µs/round):':<{label_w}}"
+        f"{x_uf_lat_base:>15.3f}  {x_uf_lat_after:>17.3f}"
+    )
+    print(
+        f"  {'Union-Find latency - Z basis (µs/round):':<{label_w}}"
+        f"{z_uf_lat_base:>15.3f}  {z_uf_lat_after:>17.3f}"
+    )
+    print(
+        f"  {'Union-Find latency - Avg (µs/round):':<{label_w}}"
+        f"{avg_uf_lat_base:>15.3f}  {avg_uf_lat_after:>17.3f}"
+    )
+    print(f"  {'PyMatching LER - X basis:':<{label_w}}{x_base:>15.6f}  {x_after:>17.6f}")
+    print(f"  {'PyMatching LER - Z basis:':<{label_w}}{z_base:>15.6f}  {z_after:>17.6f}")
+    print(
+        f"  {'PyMatching LER - Avg:':<{label_w}}"
+        f"{_avg(x_base, z_base):>15.6f}  {_avg(x_after, z_after):>17.6f}"
+    )
+    print(
+        f"  {'Union-Find LER - X basis:':<{label_w}}"
+        f"{x_uf_base:>15.6f}  {x_uf_after:>17.6f}"
+    )
+    print(
+        f"  {'Union-Find LER - Z basis:':<{label_w}}"
+        f"{z_uf_base:>15.6f}  {z_uf_after:>17.6f}"
+    )
+    print(
+        f"  {'Union-Find LER - Avg:':<{label_w}}"
+        f"{_avg(x_uf_base, z_uf_base):>15.6f}  {_avg(x_uf_after, z_uf_after):>17.6f}"
     )
     print(f"  {'PyMatching speedup (Avg X/Z):':<{label_w}}{avg_speedup:>15.3f}x")
 
@@ -242,5 +284,21 @@ def run_inference(model, device, dist, cfg) -> None:
                     "avg_after_predecoder": float(avg_lat_after),
                 },
             "pymatching_speedup_avg_xz": float(avg_speedup),
+            "unionfind_ler": {
+                "x_basis_no_predecoder": float(x_uf_base),
+                "x_basis_after_predecoder": float(x_uf_after),
+                "z_basis_no_predecoder": float(z_uf_base),
+                "z_basis_after_predecoder": float(z_uf_after),
+                "avg_no_predecoder": float(_avg(x_uf_base, z_uf_base)),
+                "avg_after_predecoder": float(_avg(x_uf_after, z_uf_after)),
+            },
+            "unionfind_latency_us_per_round": {
+                "x_basis_no_predecoder": float(x_uf_lat_base),
+                "x_basis_after_predecoder": float(x_uf_lat_after),
+                "z_basis_no_predecoder": float(z_uf_lat_base),
+                "z_basis_after_predecoder": float(z_uf_lat_after),
+                "avg_no_predecoder": float(avg_uf_lat_base),
+                "avg_after_predecoder": float(avg_uf_lat_after),
+            },
         }
         print("[Inference Summary] " + _json.dumps(summary, sort_keys=True))

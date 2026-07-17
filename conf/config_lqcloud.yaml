@@ -14,6 +14,10 @@ n_rounds: 9
 workflow:
   task: integrate_to_nvidia
 
+# Used only if this config is switched to workflow.task=train. LQCloud inference
+# always reports both PyMatching and Union-Find.
+validation_decoder: pymatching
+
 # === Data (public surface only) ===
 data:
   # Surface code orientation (public naming): O1, O2, O3, O4

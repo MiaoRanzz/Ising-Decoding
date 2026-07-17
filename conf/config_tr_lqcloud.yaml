@@ -12,6 +12,9 @@ workflow:
   task: train  # train, inference
   # simplify logs of inference to have only pymatching b4 and after predecoding. TODO: batch_size=1
 
+# LER backend used during training validation. Inference evaluates both.
+validation_decoder: pymatching  # pymatching or unionfind
+
 # === Training ===
 train:
   epochs: 30

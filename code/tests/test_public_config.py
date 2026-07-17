@@ -29,6 +29,47 @@ from workflows.config_validator import apply_public_defaults_and_model, validate
 
 class TestPublicConfig(unittest.TestCase):
 
+    def test_validation_decoder_is_public_and_defaults_to_pymatching(self):
+        minimal = OmegaConf.create({"model_id": 1, "distance": 9, "n_rounds": 9})
+        spec = validate_public_config(minimal)
+        merged = apply_public_defaults_and_model(minimal, spec)
+        self.assertEqual(str(merged.validation_decoder), "pymatching")
+
+        unionfind = OmegaConf.create(
+            {
+                "model_id": 1,
+                "distance": 9,
+                "n_rounds": 9,
+                "validation_decoder": "unionfind",
+            }
+        )
+        spec = validate_public_config(unionfind)
+        merged = apply_public_defaults_and_model(unionfind, spec)
+        self.assertEqual(str(merged.validation_decoder), "unionfind")
+
+        invalid = OmegaConf.create(
+            {
+                "model_id": 1,
+                "distance": 9,
+                "n_rounds": 9,
+                "validation_decoder": "not-a-decoder",
+            }
+        )
+        with self.assertRaises(ValueError):
+            validate_public_config(invalid)
+
+        color_unionfind = OmegaConf.create(
+            {
+                "code": "color",
+                "model_id": 1,
+                "distance": 9,
+                "n_rounds": 9,
+                "validation_decoder": "unionfind",
+            }
+        )
+        with self.assertRaises(ValueError):
+            validate_public_config(color_unionfind)
+
     def test_registry_receptive_field_formula(self):
         self.assertEqual(compute_receptive_field([3, 3, 3, 3]), 9)
         self.assertEqual(compute_receptive_field([5, 5, 5, 5]), 17)

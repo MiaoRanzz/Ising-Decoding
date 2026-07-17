@@ -35,7 +35,7 @@
 # Timing instrumentation:
 #   PREDECODER_ENABLE_TIMING_INSTRUMENTATION  (bool, default: 0)
 #   cfg.test.enable_timing_instrumentation    (bool, default: false)
-#       Enables per-phase timing, PyMatching decode analysis, syndrome
+#       Enables per-phase timing, selected-decoder analysis, syndrome
 #       density stats, and MWPM speedup breakdown.
 #
 # DataLoader workers (env override for container/shm safety):
@@ -47,15 +47,22 @@
 #   [LER Config] ONNX_WORKFLOW=torch-only | torch.compile=on |
 #       channels_last_3d=on | prefetcher=on | timing=off
 # ============================================================================
-import pymatching
 import numpy as np
 import torch
 import torch.nn as nn
 import sys
 import os
+from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
 from typing import Optional
+
+from evaluation.decoder_backends import (
+    PYMATCHING,
+    UNIONFIND,
+    build_decoder,
+    validation_decoder_name,
+)
 
 
 def _is_compiled(model: nn.Module) -> bool:
@@ -69,6 +76,31 @@ def _is_compiled(model: nn.Module) -> bool:
 
 def _decode_batch(matcher, detectors, enable_correlated):
     return matcher.decode_batch(detectors, enable_correlations=enable_correlated)
+
+
+@dataclass
+class DecoderRunResult:
+    """Per-basis decoder counts while retaining the historical tuple interface."""
+
+    num_samples: int
+    primary_backend: str
+    baseline_errors: dict
+    predecoder_errors: dict
+    latency_us_per_round: dict
+
+    def __iter__(self):
+        """Keep old five-value unpacking working for external callers."""
+        yield int(self.predecoder_errors[self.primary_backend])
+        yield int(self.num_samples)
+        yield int(self.baseline_errors.get(PYMATCHING, self.baseline_errors[self.primary_backend]))
+        legacy_latency = self.latency_us_per_round.get(
+            PYMATCHING,
+            self.latency_us_per_round.get(
+                self.primary_backend, (float("nan"), float("nan"))
+            ),
+        )
+        yield float(legacy_latency[0])
+        yield float(legacy_latency[1])
 
 
 class OnnxWorkflow(IntEnum):
@@ -784,100 +816,89 @@ class PreDecoderMemoryEvalModule(nn.Module):
 
 
 def count_logical_errors_with_errorbar(model, device, dist, cfg):
-    #logical_errors.item(), total_samples, num_pymatch_errors
     result = {}
 
-    if cfg.test.meas_basis_test.lower() in ("both", "mixed"):
-        orig = cfg.test.meas_basis_test
-        # First run X, then Z
-        for i in range(2):
-            if i == 0:
-                cfg.test.meas_basis_test = "X"
-            else:
-                cfg.test.meas_basis_test = "Z"
-            verbose = bool(getattr(cfg.test, "verbose_inference", False)
-                          ) or bool(getattr(cfg.test, "verbose", False))
-            t0 = time.time()
-            num_errors, num_shots, pymatch_predictions, baseline_us_per_round, predecoder_us_per_round = run_inference_and_decode_pre_decoder_memory(
-                model, device, dist, cfg
-            )
-            tf = time.time()
-            if verbose and dist.rank == 0:
-                print(f"Time taken for {cfg.test.meas_basis_test}: {tf - t0:.3f}s")
+    def _standard_error(errors: int, shots: int) -> float:
+        probability = float(errors) / float(shots)
+        return float(np.sqrt(probability * (1.0 - probability) / float(shots)))
 
-            # Because each element is either 1 or 0, the sum_i of x_i == the sum_i of x_i^2.
-            var = (num_errors - num_errors * num_errors / float(num_shots)) / num_shots
-            stddev = np.sqrt(var)
-            pymatch_var = (
-                pymatch_predictions - pymatch_predictions * pymatch_predictions / float(num_shots)
-            ) / num_shots
-            pymatch_stddev = np.sqrt(pymatch_var)
-
-            result[cfg.test.meas_basis_test] = {
-                "num shots":
-                    int(num_shots),
-                "logical errors":
-                    int(num_errors),
-                "pymatch flips":
-                    int(pymatch_predictions),
-                "logical error ratio (mean)":
-                    float(num_errors / num_shots),
-                "logical error ratio (standard error)":
-                    float(stddev / np.sqrt(num_shots)),
-                "logical error ratio (pymatch mean)":
-                    float(pymatch_predictions / float(num_shots)),
-                "logical error ratio (pymatch standard error)":
-                    float(pymatch_stddev / np.sqrt(num_shots)),
-                "pymatch latency (baseline µs/round)":
-                    float(baseline_us_per_round),
-                "pymatch latency (after predecoder µs/round)":
-                    float(predecoder_us_per_round),
-            }
-        cfg.test.meas_basis_test = orig
-    else:
-        num_errors, num_shots, pymatch_predictions, baseline_us_per_round, predecoder_us_per_round = run_inference_and_decode_pre_decoder_memory(
-            model, device, dist, cfg
-        )
-
-        # Because each element is either 1 or 0, the sum_i of x_i == the sum_i of x_i^2.
-        var = (num_errors - num_errors * num_errors / float(num_shots)) / num_shots
-        stddev = np.sqrt(var)
-        pymatch_var = (
-            pymatch_predictions - pymatch_predictions * pymatch_predictions / float(num_shots)
-        ) / num_shots
-        pymatch_stddev = np.sqrt(pymatch_var)
-
-        result[cfg.test.meas_basis_test] = {
-            "num shots":
-                int(num_shots),
-            "logical errors":
-                int(num_errors),
-            "pymatch flips":
-                int(pymatch_predictions),
-            "logical error ratio (mean)":
-                float(num_errors / num_shots),
-            "logical error ratio (standard error)":
-                float(stddev / np.sqrt(num_shots)),
-            "logical error ratio (pymatch mean)":
-                float(pymatch_predictions / float(num_shots)),
-            "logical error ratio (pymatch standard error)":
-                float(pymatch_stddev / np.sqrt(num_shots)),
-            "pymatch latency (baseline µs/round)":
-                float(baseline_us_per_round),
-            "pymatch latency (after predecoder µs/round)":
-                float(predecoder_us_per_round),
+    def _basis_metrics(run: DecoderRunResult) -> dict:
+        shots = int(run.num_samples)
+        primary = run.primary_backend
+        primary_errors = int(run.predecoder_errors[primary])
+        primary_baseline = int(run.baseline_errors[primary])
+        metrics = {
+            "num shots": shots,
+            "validation decoder": primary,
+            "logical errors": primary_errors,
+            "baseline logical errors": primary_baseline,
+            "logical error ratio (mean)": float(primary_errors / shots),
+            "logical error ratio (standard error)": _standard_error(primary_errors, shots),
+            "baseline logical error ratio (mean)": float(primary_baseline / shots),
         }
+        if PYMATCHING in run.baseline_errors:
+            pm_base = int(run.baseline_errors[PYMATCHING])
+            pm_after = int(run.predecoder_errors[PYMATCHING])
+            pm_latency = run.latency_us_per_round.get(
+                PYMATCHING, (float("nan"), float("nan"))
+            )
+            metrics.update(
+                {
+                    "pymatch flips": pm_base,
+                    "pymatching logical errors": pm_after,
+                    "logical error ratio (pymatch mean)": float(pm_base / shots),
+                    "logical error ratio (pymatch standard error)": _standard_error(pm_base, shots),
+                    "logical error ratio (pymatch predecoder mean)": float(pm_after / shots),
+                    "pymatch latency (baseline µs/round)": float(pm_latency[0]),
+                    "pymatch latency (after predecoder µs/round)": float(pm_latency[1]),
+                }
+            )
+        if UNIONFIND in run.baseline_errors:
+            uf_base = int(run.baseline_errors[UNIONFIND])
+            uf_after = int(run.predecoder_errors[UNIONFIND])
+            uf_latency = run.latency_us_per_round.get(
+                UNIONFIND, (float("nan"), float("nan"))
+            )
+            metrics.update(
+                {
+                    "unionfind flips": uf_base,
+                    "unionfind logical errors": uf_after,
+                    "logical error ratio (unionfind mean)": float(uf_base / shots),
+                    "logical error ratio (unionfind standard error)": _standard_error(uf_base, shots),
+                    "logical error ratio (unionfind predecoder mean)": float(uf_after / shots),
+                    "unionfind latency (baseline µs/round)": float(uf_latency[0]),
+                    "unionfind latency (after predecoder µs/round)": float(uf_latency[1]),
+                }
+            )
+        return metrics
+
+    original_basis = cfg.test.meas_basis_test
+    bases = ["X", "Z"] if str(original_basis).lower() in ("both", "mixed") else [original_basis]
+    try:
+        for basis in bases:
+            cfg.test.meas_basis_test = basis
+            verbose = bool(getattr(cfg.test, "verbose_inference", False)) or bool(
+                getattr(cfg.test, "verbose", False)
+            )
+            t0 = time.time()
+            run = run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg)
+            if verbose and dist.rank == 0:
+                print(f"Time taken for {basis}: {time.time() - t0:.3f}s")
+            result[str(basis)] = _basis_metrics(run)
+    finally:
+        cfg.test.meas_basis_test = original_basis
     return result
 
 
 @torch.inference_mode()
-def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dict:
+def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> DecoderRunResult:
     """
     Runs inference with the trained model, forms residual syndromes consistent with the DEM,
-    and computes the final logical error rate with PyMatching.
+    and computes final logical error rates with the selected decoder backend(s).
 
     Returns:
-        (num_logic_errors, num_samples, num_pymatch_errors, baseline_us_per_round, predecoder_us_per_round)
+        DecoderRunResult containing baseline/pre-decoder counts and latency for
+        each backend. It remains unpackable as the historical five-value tuple.
     """
 
     th_data = float(getattr(cfg.test, "th_data", 0.0))
@@ -898,6 +919,10 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
     verbose = bool(getattr(cfg.test, "verbose_inference", False)
                   ) or bool(getattr(cfg.test, "verbose", False))
     decode_mode = _get_decode_mode(cfg)
+    workflow_task = str(getattr(getattr(cfg, "workflow", None), "task", "")).lower()
+    primary_backend = validation_decoder_name(cfg) if workflow_task == "train" else PYMATCHING
+    compare_all_backends = workflow_task == "inference" and decode_mode != "pymatching_only"
+    backend_names = [PYMATCHING, UNIONFIND] if compare_all_backends else [primary_backend]
     decode_output_dir = _get_decode_output_dir(cfg)
     basis = str(getattr(cfg.test, "meas_basis_test", "X")).upper()
     if basis not in ("X", "Z"):
@@ -915,6 +940,7 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
         else:
             print(f"[LER] Sampling mode: threshold (th_data={th_data}, th_syn={th_syn})")
         print(f"[LER] Decode mode: {decode_mode}")
+        print(f"[LER] Decoder backend(s): {', '.join(backend_names)}")
 
     enable_timing_instrumentation = bool(getattr(cfg.test, "enable_timing_instrumentation", False))
     enable_timing_instrumentation = _get_env_bool(
@@ -1002,17 +1028,18 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
     dem_build_s = 0.0
     dem_decode_s = 0.0
 
-    # --- Build PyMatching from the circuit's exact detector ordering ---
+    # --- Build decoder backends from the circuit's exact detector ordering ---
     # NOTE: With explicit noise models we use PAULI_CHANNEL_2, which requires
     # approximate_disjoint_errors=True when extracting a detector error model.
     t_dem_build_start = time.perf_counter()
     det_model = circuit.detector_error_model(
         decompose_errors=True, approximate_disjoint_errors=True
     )
-    matcher = pymatching.Matching.from_detector_error_model(det_model)
+    decoders = {name: build_decoder(det_model, name) for name in backend_names}
+    primary_decoder = decoders[primary_backend]
     dem_build_s += time.perf_counter() - t_dem_build_start
 
-    # Baseline: PyMatching directly on Stim detectors (no pre-decoder), for reference
+    # Baseline: each selected decoder directly on Stim detectors (no pre-decoder).
     # Each GPU computes baseline on its OWN samples
     stim_dets = np.asarray(test_dataset.dets_and_obs[:, :-circuit.num_observables], dtype=np.uint8)
     assert stim_dets.shape[1] == det_model.num_detectors, \
@@ -1030,15 +1057,24 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
         for i in range(take):
             latency_baseline_rows.append(stim_dets[i].copy())
 
-    t_dem_decode = time.perf_counter()
-    baseline_pred = matcher.decode_batch(stim_dets)
-    dem_decode_s += time.perf_counter() - t_dem_decode
-
-    baseline_pred = np.asarray(baseline_pred, dtype=np.uint8).reshape(-1, circuit.num_observables)
-    num_pymatch_errors = int((baseline_pred != stim_obs).sum())
+    baseline_predictions = {}
+    baseline_errors = {}
+    baseline_decode_s = {}
+    for name, decoder in decoders.items():
+        t_dem_decode = time.perf_counter()
+        prediction = decoder.decode_batch(stim_dets)
+        elapsed = time.perf_counter() - t_dem_decode
+        baseline_decode_s[name] = elapsed
+        dem_decode_s += elapsed
+        prediction = np.asarray(prediction, dtype=np.uint8).reshape(
+            -1, circuit.num_observables
+        )
+        baseline_predictions[name] = prediction
+        baseline_errors[name] = int(np.any(prediction != stim_obs, axis=1).sum())
     if dist.rank == 0:
         _save_decode_array(decode_output_dir, basis, "observables", stim_obs)
-        _save_decode_array(decode_output_dir, basis, "pymatching_predictions", baseline_pred)
+        for name, prediction in baseline_predictions.items():
+            _save_decode_array(decode_output_dir, basis, f"{name}_predictions", prediction)
 
     if decode_mode == "pymatching_only":
         if dist.rank == 0:
@@ -1054,8 +1090,13 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                 f"[DEM Timing] build={dem_build_s:.2f}s decode={dem_decode_s:.2f}s "
                 f"(basis={basis}, decode_mode=pymatching_only)"
             )
-        return num_pymatch_errors, int(stim_obs.shape[0]
-                                      ), num_pymatch_errors, float("nan"), float("nan")
+        return DecoderRunResult(
+            num_samples=int(stim_obs.shape[0]),
+            primary_backend=primary_backend,
+            baseline_errors=baseline_errors,
+            predecoder_errors=dict(baseline_errors),
+            latency_us_per_round={},
+        )
 
     # --- DataLoader: NO DistributedSampler - each GPU processes ALL of its own samples ---
     test_loader_kwargs = dict(cfg.test.dataloader)
@@ -1339,7 +1380,7 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
     num_obs = circuit.num_observables
     assert num_obs == 1, f"Expected 1 observable, got {num_obs}"
 
-    logical_errors = 0
+    logical_errors = {name: 0 for name in backend_names}
     total_samples = 0
 
     use_prefetcher = device.type == "cuda"
@@ -1358,7 +1399,10 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
     ) / stim_dets.size if stim_dets.size > 0 else 0.0
     floor_time_per_round = None
     detector_shape = None
-    final_prediction_rows = [] if dist.rank == 0 and decode_output_dir is not None else None
+    final_prediction_rows = (
+        {name: [] for name in backend_names}
+        if dist.rank == 0 and decode_output_dir is not None else None
+    )
     residual_rows = [] if dist.rank == 0 and decode_output_dir is not None else None
 
     t_start = time.perf_counter()
@@ -1430,22 +1474,19 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
         if timing_rank0:
             residual_syndrome_density_sum += float(residual_np.sum()) / residual_np.size
 
-        t_dem_decode = time.perf_counter()
-        pred_obs = matcher.decode_batch(residual_np)  # (B,) or (B,1)
-        t_dem_decode_end = time.perf_counter()
-        batch_pred_time = t_dem_decode_end - t_dem_decode
-        t_pm_time += batch_pred_time
-        if timing_rank0 and predecoder_batch_times is not None:
-            predecoder_batch_times.append(batch_pred_time)
-        dem_decode_s += time.perf_counter() - t_dem_decode
+        predictions_by_backend = {}
+        for name, decoder in decoders.items():
+            t_dem_decode = time.perf_counter()
+            predictions_by_backend[name] = decoder.decode_batch(residual_np)
+            batch_pred_time = time.perf_counter() - t_dem_decode
+            dem_decode_s += batch_pred_time
+            if name == primary_backend:
+                t_pm_time += batch_pred_time
+                if timing_rank0 and predecoder_batch_times is not None:
+                    predecoder_batch_times.append(batch_pred_time)
 
         _t_postdecode = time.perf_counter()
-        pred_obs_t = torch.as_tensor(pred_obs, dtype=torch.long)  # stays on CPU
         pre_L_cpu = pre_L.cpu() if pre_L.is_cuda else pre_L
-        pred_obs_t = pred_obs_t.view(-1).contiguous()  # always (B,)
-        final_L = (pre_L_cpu + pred_obs_t).remainder_(2)  # (B,)
-        if final_prediction_rows is not None:
-            final_prediction_rows.append(final_L.numpy().reshape(-1, 1).copy())
         if residual_rows is not None:
             residual_rows.append(residual_np.copy())
 
@@ -1454,7 +1495,12 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
         gt_obs_cpu = gt_obs.cpu() if gt_obs.is_cuda else gt_obs
         gt_obs_cpu = gt_obs_cpu.view(-1).contiguous()  # (B,)
 
-        logical_errors += int((final_L != gt_obs_cpu).sum())
+        for name, pred_obs in predictions_by_backend.items():
+            pred_obs_t = torch.as_tensor(pred_obs, dtype=torch.long).view(-1).contiguous()
+            final_L = (pre_L_cpu + pred_obs_t).remainder(2)
+            logical_errors[name] += int((final_L != gt_obs_cpu).sum())
+            if final_prediction_rows is not None:
+                final_prediction_rows[name].append(final_L.numpy().reshape(-1, 1).copy())
         total_samples += B
         t_post_decode_s += time.perf_counter() - _t_postdecode
 
@@ -1464,7 +1510,7 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
     t_dataloader_s = (t_end - t_start) - (
         t_to_device_s + t_model_time + t_postmodel_s + t_cpu_copy_s + t_pm_time + t_post_decode_s
     )
-    t_pm_baseline_s = dem_decode_s - t_pm_time
+    t_pm_baseline_s = baseline_decode_s[primary_backend]
 
     if timing_rank0:
         print(f"\n[Phase Timing] Breakdown across {num_batches} batches:")
@@ -1543,24 +1589,27 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
             )
 
     if dist.world_size > 1:
-        t_log = torch.tensor(logical_errors, device=device, dtype=torch.long)
         t_n = torch.tensor(total_samples, device=device, dtype=torch.long)
-        t_pymatch = torch.tensor(num_pymatch_errors, device=device, dtype=torch.long)
-        torch.distributed.all_reduce(t_log, op=torch.distributed.ReduceOp.SUM)
         torch.distributed.all_reduce(t_n, op=torch.distributed.ReduceOp.SUM)
-        torch.distributed.all_reduce(t_pymatch, op=torch.distributed.ReduceOp.SUM)
-        logical_errors = int(t_log.item())
         total_samples = int(t_n.item())
-        num_pymatch_errors = int(t_pymatch.item())
+        for name in backend_names:
+            counts = torch.tensor(
+                [logical_errors[name], baseline_errors[name]], device=device, dtype=torch.long
+            )
+            torch.distributed.all_reduce(counts, op=torch.distributed.ReduceOp.SUM)
+            logical_errors[name] = int(counts[0].item())
+            baseline_errors[name] = int(counts[1].item())
 
     if dist.rank == 0:
-        if final_prediction_rows:
-            _save_decode_array(
-                decode_output_dir,
-                basis,
-                "ising_decoding_pymatching_predictions",
-                np.concatenate(final_prediction_rows, axis=0),
-            )
+        if final_prediction_rows is not None:
+            for name, rows in final_prediction_rows.items():
+                if rows:
+                    _save_decode_array(
+                        decode_output_dir,
+                        basis,
+                        f"ising_decoding_{name}_predictions",
+                        np.concatenate(rows, axis=0),
+                    )
         if residual_rows:
             _save_decode_array(
                 decode_output_dir,
@@ -1571,27 +1620,27 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
 
     # Latency: single-shot (batch_size=1, matcher.decode) on a small subset on rank 0 only,
     # timed after the main loop for a clean CPU state.
-    baseline_us_per_round = float("nan")
-    predecoder_us_per_round = float("nan")
+    latency_us_per_round = {}
     if dist.rank == 0 and latency_baseline_rows is not None and latency_predecoder_rows is not None:
-        baseline_us_per_round, predecoder_us_per_round = _time_single_shot_latency_stim(
-            matcher=matcher,
-            baseline_syndromes=np.asarray(latency_baseline_rows, dtype=np.uint8),
-            residual_syndromes=np.asarray(latency_predecoder_rows, dtype=np.uint8),
-            n_rounds=int(cfg.n_rounds),
-            warmup_iterations=50,
-        )
+        for name, decoder in decoders.items():
+            latency_us_per_round[name] = _time_single_shot_latency_stim(
+                matcher=decoder,
+                baseline_syndromes=np.asarray(latency_baseline_rows, dtype=np.uint8),
+                residual_syndromes=np.asarray(latency_predecoder_rows, dtype=np.uint8),
+                n_rounds=int(cfg.n_rounds),
+                warmup_iterations=50,
+            )
 
     # Floor time: decode an all-zeros syndrome to measure fixed overhead
     if timing_rank0:
         n_r = max(int(cfg.n_rounds), 1)
         zero_syn = np.zeros((1, det_model.num_detectors), dtype=np.uint8)
         for _ in range(20):
-            _ = matcher.decode(zero_syn[0])
+            _ = primary_decoder.decode(zero_syn[0])
         _floor_times = []
         for _ in range(100):
             _ft0 = time.perf_counter()
-            _ = matcher.decode(zero_syn[0])
+            _ = primary_decoder.decode(zero_syn[0])
             _floor_times.append(time.perf_counter() - _ft0)
         floor_time_per_round = float(np.mean(_floor_times)) / n_r
 
@@ -1609,7 +1658,13 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
             f"(basis={basis}, batches={num_batches})"
         )
 
-    return logical_errors, total_samples, num_pymatch_errors, baseline_us_per_round, predecoder_us_per_round
+    return DecoderRunResult(
+        num_samples=total_samples,
+        primary_backend=primary_backend,
+        baseline_errors=baseline_errors,
+        predecoder_errors=logical_errors,
+        latency_us_per_round=latency_us_per_round,
+    )
 
 
 @torch.inference_mode()
