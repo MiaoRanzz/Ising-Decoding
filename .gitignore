@@ -85,8 +85,9 @@ predecoder_train_*.out
 predecoder_train_*.err
 sbatch_logs/
 
-# TODOs
+# Some auxiliary files
 TODO*.md
+Command.md
 
 # lqcloud measurements
 lqcloud_measurements/
