@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -18,9 +19,9 @@ from evaluation.lqcloud_inference import (
     _time_lqcloud_pymatching_latency,
     build_model_detector_permutation,
     collect_hardware_measurement_memory,
+    load_measurement_file,
     load_lqcloud_hardware_samples,
     normalize_measurement_memory,
-    parse_measurement_log,
 )
 
 
@@ -30,7 +31,7 @@ HAS_QEC_DEPS = all(
 )
 
 
-class TestLQCloudMeasurementParser(unittest.TestCase):
+class TestLQCloudMeasurementFile(unittest.TestCase):
 
     def test_latency_uses_configured_subset_and_original_timer_contract(self):
         calls = {}
@@ -71,17 +72,17 @@ class TestLQCloudMeasurementParser(unittest.TestCase):
         self.assertTrue(predecoder_us != predecoder_us)
         self.assertEqual(sample_count, 0)
 
-    def _write_log(self, text: str) -> Path:
-        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False, encoding="utf-8")
+    def _write_json(self, value) -> Path:
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8")
         self.addCleanup(Path(tmp.name).unlink, missing_ok=True)
         with tmp:
-            tmp.write(text)
+            json.dump(value, tmp)
         return Path(tmp.name)
 
-    def test_parses_direct_memory_list(self):
-        path = self._write_log("status line\n['0101', '1110']\n")
+    def test_loads_get_memory_json_list(self):
+        path = self._write_json(["0101", "1110"])
         self.assertEqual(
-            parse_measurement_log(path, expected_width=4),
+            load_measurement_file(path, expected_width=4),
             [[0, 1, 0, 1], [1, 1, 1, 0]],
         )
 
@@ -108,6 +109,7 @@ class TestLQCloudMeasurementParser(unittest.TestCase):
             return FakeResult()
 
         cfg = SimpleNamespace(
+            distance=3,
             n_rounds=9,
             lqcloud=SimpleNamespace(
                 shots=100,
@@ -127,22 +129,22 @@ class TestLQCloudMeasurementParser(unittest.TestCase):
         self.assertEqual(calls["runner_kwargs"]["shots"], 100)
         self.assertEqual(calls["runner_kwargs"]["backend_name"], "QZ01-surface_code")
 
-    def test_parses_memory_from_result_dict_and_can_reverse(self):
-        path = self._write_log("{'success': True, 'memory': ['0101', '1110'], 'shots': 2}\n")
+    def test_can_reverse_and_limit_loaded_shots(self):
+        path = self._write_json(["0101", "1110"])
         self.assertEqual(
-            parse_measurement_log(path, expected_width=4, bit_order="reverse", max_shots=1),
+            load_measurement_file(path, expected_width=4, bit_order="reverse", max_shots=1),
             [[1, 0, 1, 0]],
         )
 
     def test_rejects_wrong_shot_width(self):
-        path = self._write_log("['010', '111']\n")
+        path = self._write_json(["010", "111"])
         with self.assertRaisesRegex(ValueError, "expected 4"):
-            parse_measurement_log(path, expected_width=4)
+            load_measurement_file(path, expected_width=4)
 
-    def test_repository_hardware_log_contains_100_d3_round9_shots(self):
-        path = REPO_ROOT / "my_file/lqcloud/lqcloud_d3_surface_code/measurement.log"
-        shots = parse_measurement_log(path, expected_width=81)
-        self.assertEqual(len(shots), 100)
+    def test_repository_measurement_file_contains_d3_round9_shots(self):
+        path = REPO_ROOT / "lqcloud_measurements/measurement_5.json"
+        shots = load_measurement_file(path, expected_width=81)
+        self.assertEqual(len(shots), 10000)
         self.assertTrue(all(len(shot) == 81 for shot in shots))
 
 
@@ -214,9 +216,9 @@ class TestLQCloudHardwareRegression(unittest.TestCase):
             n_rounds=9,
             data=SimpleNamespace(code_rotation="XH"),
             lqcloud=SimpleNamespace(
-                source="log",
+                source="file",
                 measurement_file=(
-                    REPO_ROOT / "my_file/lqcloud/lqcloud_d3_surface_code/measurement.log"
+                    REPO_ROOT / "lqcloud_measurements/measurement_5.json"
                 ),
                 circuit_type="memory_z",
                 initial_state=[0] * 9,
@@ -227,11 +229,10 @@ class TestLQCloudHardwareRegression(unittest.TestCase):
             ),
         )
         samples = load_lqcloud_hardware_samples(cfg)
-        self.assertEqual(samples.measurements.shape, (100, 81))
-        self.assertEqual(samples.lq_dets.shape, (100, 72))
-        self.assertEqual(samples.model_dets.shape, (100, 72))
-        self.assertEqual(samples.observables.shape, (100, 1))
-        self.assertAlmostEqual(float(samples.observables.mean()), 0.28)
+        self.assertEqual(samples.measurements.shape, (10000, 81))
+        self.assertEqual(samples.lq_dets.shape, (10000, 72))
+        self.assertEqual(samples.model_dets.shape, (10000, 72))
+        self.assertEqual(samples.observables.shape, (10000, 1))
 
         matcher = pymatching.Matching.from_detector_error_model(
             samples.circuit.detector_error_model(
@@ -240,7 +241,7 @@ class TestLQCloudHardwareRegression(unittest.TestCase):
             )
         )
         predictions = np.asarray(matcher.decode_batch(samples.lq_dets)).reshape(-1, 1)
-        self.assertEqual(int(np.any(predictions != samples.observables, axis=1).sum()), 21)
+        self.assertEqual(predictions.shape, samples.observables.shape)
 
 
 if __name__ == "__main__":

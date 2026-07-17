@@ -4,10 +4,8 @@
 
 from __future__ import annotations
 
-import ast
 import importlib
 import json
-import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,19 +13,6 @@ from typing import Any, Iterable, List, Sequence
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-
-
-def _candidate_memories(value: Any) -> List[List[str]]:
-    if isinstance(value, dict):
-        value = value.get("memory")
-    if not isinstance(value, (list, tuple)) or not value:
-        return []
-    if all(isinstance(item, str) and set(item.strip()) <= {"0", "1"} for item in value):
-        return [[item.strip() for item in value]]
-    return []
-
-
 def normalize_measurement_memory(
     memory: Sequence[str],
     *,
@@ -67,43 +52,28 @@ def normalize_measurement_memory(
     return parsed
 
 
-def parse_measurement_log(
+def load_measurement_file(
     path: str | Path,
     *,
     expected_width: int,
     bit_order: str = "as_returned",
     max_shots: int = 0,
 ) -> List[List[int]]:
-    """Extract the largest printed ``get_memory()`` list from an LQCloud log."""
+    """Load a JSON file containing the list returned by ``result.get_memory()``."""
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"LQCloud measurement file does not exist: {path}")
 
-    text = _ANSI_ESCAPE.sub("", path.read_text(encoding="utf-8", errors="replace"))
-    candidates: List[List[str]] = []
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or not (line.startswith("[") or line.startswith("{")):
-            continue
-        try:
-            candidates.extend(_candidate_memories(ast.literal_eval(line)))
-        except (SyntaxError, ValueError):
-            continue
-
-    if not candidates:
-        raise ValueError(
-            f"No printed LQCloud memory list was found in {path}. "
-            "Expected a line like ['0101...', '1100...']."
-        )
-
     try:
+        with path.open("r", encoding="utf-8") as file:
+            memory = json.load(file)
         return normalize_measurement_memory(
-            max(candidates, key=len),
+            memory,
             expected_width=expected_width,
             bit_order=bit_order,
             max_shots=max_shots,
         )
-    except ValueError as exc:
+    except (json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"Invalid measurement data in {path}: {exc}") from exc
 
 
@@ -313,8 +283,8 @@ def load_lqcloud_hardware_samples(
                 cfg,
                 initial_state=initial_state,
             )
-        elif source == "log":
-            measurements_list = parse_measurement_log(
+        elif source == "file":
+            measurements_list = load_measurement_file(
                 _resolve_repo_path(lq_cfg.measurement_file),
                 expected_width=expected_width,
                 bit_order=str(getattr(lq_cfg, "bit_order", "as_returned")),
@@ -322,7 +292,7 @@ def load_lqcloud_hardware_samples(
             )
             measurement_memory = None
         else:
-            raise ValueError("lqcloud.source must be 'hardware' or 'log'")
+            raise ValueError("lqcloud.source must be 'hardware' or 'file'")
     if measurement_memory is not None:
         measurements_list = normalize_measurement_memory(
             measurement_memory,
@@ -575,8 +545,8 @@ __all__ = [
     "HardwareSamples",
     "build_model_detector_permutation",
     "collect_hardware_measurement_memory",
+    "load_measurement_file",
     "load_lqcloud_hardware_samples",
     "normalize_measurement_memory",
-    "parse_measurement_log",
     "run_inference_modified",
 ]

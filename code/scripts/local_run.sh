@@ -89,7 +89,7 @@ else
 fi
 
 if [ "${WORKFLOW}" = "generate_stim_data" ] || [ "${WORKFLOW}" = "integrate_to_nvidia" ]; then
-  # Hardware logs are one finite data set. Decode them once instead of
+  # LQCloud measurements are one finite data set. Decode them once instead of
   # duplicating every shot independently on each visible GPU.
   GPUS=1
 else

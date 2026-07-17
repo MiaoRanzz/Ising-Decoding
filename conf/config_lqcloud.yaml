@@ -63,9 +63,9 @@ data:
 
 # === LQCloud hardware input ===
 lqcloud:
-  # hardware: submit the cloud circuit and decode result.get_memory() directly.
-  # log: explicit offline replay mode for tests/debugging only.
-  source: hardware
+  # file: load the list previously saved from result.get_memory().
+  # hardware: submit the cloud circuit and decode the returned data directly.
+  source: file
   backend_name: QZ01-surface_code
   # Total hardware executions requested from LQCloud.
   shots: 100
@@ -74,7 +74,7 @@ lqcloud:
   # Set to 0 to disable latency timing.
   latency_num_samples: 100
   latency_warmup_iterations: 50
-  measurement_file: my_file/lqcloud/lqcloud_d3_surface_code/measurement.log
+  measurement_file: lqcloud_measurements/measurement_5.json # only work when setting source: file
   circuit_type: memory_z
   initial_state: null
   reset: false
@@ -85,7 +85,7 @@ lqcloud:
   # documents that its returned classical bit string is MSB-first.
   bit_order: as_returned
 
-  # 0 means use every valid shot returned by hardware or found in the log.
+  # 0 means use every valid shot returned by hardware or found in the file.
   max_shots: 0
   batch_size: 256
 
