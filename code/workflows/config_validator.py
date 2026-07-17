@@ -465,6 +465,7 @@ def validate_public_config(cfg: DictConfig) -> PublicModelSpec:
             "skip_noise_upscaling",
             "use_compile",
             "use_parallel_spacelike",
+            "noise_model_mixture",
         }
         for k in cfg.data.keys():
             if k not in allowed_data_keys:

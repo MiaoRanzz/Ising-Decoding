@@ -6,14 +6,14 @@
 # Validation and inference keep using data.noise_model below.
 
 model_id: 111
-distance: 9
+distance: 3
 n_rounds: 9
 
 workflow:
   task: train
 
 data:
-  code_rotation: O1
+  code_rotation: O2
   noise_model:
     p_prep_X: 0.0010000
     p_prep_Z: 0.0010000
@@ -177,3 +177,40 @@ data:
         p_cnot_ZX: 0.0010005
         p_cnot_ZY: 0.0010005
         p_cnot_ZZ: 0.0010005
+
+# === LQCloud hardware input ===
+lqcloud:
+  # hardware: submit the cloud circuit and decode result.get_memory() directly.
+  # log: explicit offline replay mode for tests/debugging only.
+  source: hardware
+  backend_name: QZ01-surface_code
+  # Total hardware executions requested from LQCloud.
+  shots: 100
+  # Number of returned hardware shots decoded one-by-one for latency. The
+  # integration automatically caps this at the number of available shots.
+  # Set to 0 to disable latency timing.
+  latency_num_samples: 100
+  latency_warmup_iterations: 50
+  measurement_file: my_file/lqcloud/lqcloud_d3_surface_code/measurement.log
+  circuit_type: memory_z
+  initial_state: null
+  reset: false
+  mirror: true
+
+  # lqcloud's get_memory() output is already consumed in this order by the
+  # existing data_process.py. Set to reverse only if a backend explicitly
+  # documents that its returned classical bit string is MSB-first.
+  bit_order: as_returned
+
+  # 0 means use every valid shot returned by hardware or found in the log.
+  max_shots: 0
+  batch_size: 256
+
+  # Error rates used only to build the LQCloud Stim detector error model and
+  # its PyMatching edge weights. They match circuits.py defaults.
+  stim_noise:
+    sq_error: 0.0011
+    cz_error: 0.0064
+    measure_error: 0.015
+    idle_z_error: 0.0
+    idle_dep_error: 0.019
