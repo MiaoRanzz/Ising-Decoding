@@ -51,7 +51,7 @@ def run_hardware_experiment(
     if int(shots) <= 0:
         raise ValueError("shots must be positive")
 
-    qc = circuiqc = circuits.build_cloud_circuit(
+    qc = circuits.build_cloud_circuit(
         distance=distance,
         ini_state=ini_state,
         cycle=int(cycle),
