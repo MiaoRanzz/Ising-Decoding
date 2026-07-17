@@ -86,4 +86,4 @@ predecoder_train_*.err
 sbatch_logs/
 
 # TODOs
-TODO.md
+TODO*.md
