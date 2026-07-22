@@ -91,3 +91,6 @@ Command.md
 
 # lqcloud measurements
 lqcloud_measurements/
+
+# Third-party code
+third_party/uf_decoder/

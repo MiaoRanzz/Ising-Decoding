@@ -17,7 +17,7 @@ validation_decoder: pymatching
 backend:
   pymatching: true
   ldpc_unionfind: true
-  nbi_hyq_unionfind: false
+  nbi_hyq_unionfind: true
 
 data:
   code_rotation: O2
