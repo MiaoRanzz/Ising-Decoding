@@ -773,8 +773,8 @@ def run_inference_modified(model, device, dist, cfg):
                 approximate_disjoint_errors=True,
             )
             decoders = {name: build_decoder(dem, name) for name in backend_names}
-        elif samples.basis != cfg.test.meas_basis_test:
-            raise ValueError("All LQCloud measurement files must use the same circuit basis")
+        elif samples.model_basis != cfg.test.meas_basis_test:
+            raise ValueError("All LQCloud measurement files must use the same model-domain basis")
 
         file_result = _decode_lqcloud_samples(
             samples,
