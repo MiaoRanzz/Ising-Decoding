@@ -16,6 +16,8 @@ if str(CODE_ROOT) not in sys.path:
     sys.path.insert(0, str(CODE_ROOT))
 
 from evaluation.lqcloud_inference import (
+    _aggregate_lqcloud_file_results,
+    _measurement_files,
     _time_lqcloud_pymatching_latency,
     build_model_detector_permutation,
     collect_hardware_measurement_memory,
@@ -141,6 +143,47 @@ class TestLQCloudMeasurementFile(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "expected 4"):
             load_measurement_file(path, expected_width=4)
 
+    def test_measurement_directory_lists_json_files_in_name_order(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            directory = Path(tmp_dir)
+            for name in ("measurement_002.json", "measurement_001.json", "notes.txt"):
+                (directory / name).touch()
+
+            self.assertEqual(
+                [path.name for path in _measurement_files(directory)],
+                ["measurement_001.json", "measurement_002.json"],
+            )
+
+    def test_file_results_are_aggregated_by_shot_and_latency_sample_count(self):
+        def file_result(shots, errors, density, latency_samples, latency):
+            return {
+                "shots": shots,
+                "basis": "Z",
+                "raw_logical_errors": errors,
+                "pymatching_logical_errors": errors,
+                "ising_plus_pymatching_logical_errors": errors,
+                "unionfind_logical_errors": errors,
+                "ising_plus_unionfind_logical_errors": errors,
+                "input_detector_density": density,
+                "residual_detector_density": density / 2,
+                "latency_samples": latency_samples,
+                "pymatch latency (baseline µs/round)": latency,
+                "pymatch latency (after predecoder µs/round)": latency / 2,
+                "unionfind latency (baseline µs/round)": latency * 2,
+                "unionfind latency (after predecoder µs/round)": latency,
+            }
+
+        result = _aggregate_lqcloud_file_results(
+            [file_result(2, 1, 0.1, 2, 10.0), file_result(8, 2, 0.2, 4, 20.0)],
+            distance=3,
+            n_rounds=9,
+        )
+
+        self.assertEqual((result["files"], result["shots"]), (2, 10))
+        self.assertAlmostEqual(result["raw_logical_error_rate"], 0.3)
+        self.assertAlmostEqual(result["input_detector_density"], 0.18)
+        self.assertAlmostEqual(result["pymatch latency (baseline µs/round)"], 50.0 / 3.0)
+
     def test_repository_measurement_file_contains_d3_round9_shots(self):
         path = REPO_ROOT / "lqcloud_measurements/measurement_5.json"
         shots = load_measurement_file(path, expected_width=81)
@@ -217,7 +260,7 @@ class TestLQCloudHardwareRegression(unittest.TestCase):
             data=SimpleNamespace(code_rotation="XH"),
             lqcloud=SimpleNamespace(
                 source="file",
-                measurement_file=(
+                measurement_source=(
                     REPO_ROOT / "lqcloud_measurements/measurement_5.json"
                 ),
                 circuit_type="memory_z",

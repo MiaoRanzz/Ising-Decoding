@@ -77,6 +77,22 @@ def load_measurement_file(
         raise ValueError(f"Invalid measurement data in {path}: {exc}") from exc
 
 
+def _measurement_files(source: str | Path) -> List[Path]:
+    """Return the JSON measurement files represented by a file or directory source."""
+    source = Path(source)
+    if source.is_file():
+        return [source]
+    if source.is_dir():
+        files = sorted(
+            path for path in source.iterdir()
+            if path.is_file() and path.suffix.lower() == ".json"
+        )
+        if files:
+            return files
+        raise ValueError(f"LQCloud measurement directory contains no JSON files: {source}")
+    raise FileNotFoundError(f"LQCloud measurement source does not exist: {source}")
+
+
 def _import_lqcloud_circuits():
     repo_path = str(_REPO_ROOT)
     added = repo_path not in sys.path
@@ -246,6 +262,8 @@ def load_lqcloud_hardware_samples(
     cfg,
     *,
     measurement_memory: Sequence[str] | None = None,
+    measurement_path: str | Path | None = None,
+    max_shots: int | None = None,
 ) -> HardwareSamples:
     import numpy as np
     from qec.surface_code.memory_circuit import SurfaceCode
@@ -276,6 +294,7 @@ def load_lqcloud_hardware_samples(
 
     expected_width = T * (D * D - 1) + D * D
     source = str(getattr(lq_cfg, "source", "hardware")).strip().lower()
+    shot_limit = int(getattr(lq_cfg, "max_shots", 0)) if max_shots is None else int(max_shots)
     measurements_list = None
     if measurement_memory is None:
         if source == "hardware":
@@ -284,11 +303,19 @@ def load_lqcloud_hardware_samples(
                 initial_state=initial_state,
             )
         elif source == "file":
+            path = _resolve_repo_path(
+                measurement_path if measurement_path is not None else lq_cfg.measurement_source
+            )
+            if not path.is_file():
+                raise ValueError(
+                    f"Expected one JSON measurement file, got {path}. "
+                    "Directories are processed one file at a time by run_inference_modified."
+                )
             measurements_list = load_measurement_file(
-                _resolve_repo_path(lq_cfg.measurement_file),
+                path,
                 expected_width=expected_width,
                 bit_order=str(getattr(lq_cfg, "bit_order", "as_returned")),
-                max_shots=int(getattr(lq_cfg, "max_shots", 0)),
+                max_shots=shot_limit,
             )
             measurement_memory = None
         else:
@@ -298,7 +325,7 @@ def load_lqcloud_hardware_samples(
             measurement_memory,
             expected_width=expected_width,
             bit_order=str(getattr(lq_cfg, "bit_order", "as_returned")),
-            max_shots=int(getattr(lq_cfg, "max_shots", 0)),
+            max_shots=shot_limit,
         )
     if measurements_list is None:
         raise RuntimeError("LQCloud measurement source produced no data")
@@ -400,58 +427,40 @@ def _time_lqcloud_pymatching_latency(
     return float(baseline_us), float(predecoder_us), sample_count
 
 
-def run_inference_modified(model, device, dist, cfg):
-    """Decode LQCloud samples with both global decoders, with/without Ising."""
+def _decode_lqcloud_samples(
+    samples: HardwareSamples,
+    pipeline,
+    matcher,
+    unionfind_decoder,
+    *,
+    device,
+    batch_size: int,
+    n_rounds: int,
+    latency_num_samples: int | None,
+    latency_warmup_iterations: int,
+    timer,
+) -> dict:
+    """Decode one measurement file without retaining its batch outputs."""
     import numpy as np
     import torch
 
-    from evaluation.decoder_backends import PYMATCHING, UNIONFIND, build_decoder
-    from evaluation.logical_error_rate import (
-        PreDecoderMemoryEvalModule,
-        _build_stab_maps,
-        _time_single_shot_latency_stim,
-    )
-
-    if int(getattr(dist, "world_size", 1)) != 1:
-        raise ValueError("integrate_to_nvidia must run with one process/GPU")
-    if str(getattr(cfg.test, "decode_mode", "")).strip().lower() == "pymatching_only":
-        raise ValueError("integrate_to_nvidia requires the Ising pre-decoder model")
-
-    samples = load_lqcloud_hardware_samples(cfg)
-    cfg.test.meas_basis_test = samples.basis
-    cfg.test.n_rounds = int(cfg.n_rounds)
-    cfg.test.num_samples = int(samples.model_dets.shape[0])
-
-    dem = samples.circuit.detector_error_model(
-        decompose_errors=True,
-        approximate_disjoint_errors=True,
-    )
-    matcher = build_decoder(dem, PYMATCHING)
-    unionfind_decoder = build_decoder(dem, UNIONFIND)
+    shots = int(samples.observables.shape[0])
     baseline_predictions = matcher.decode_batch(samples.lq_dets)
-    baseline_errors = _count_observable_mismatches(
-        baseline_predictions,
-        samples.observables,
-    )
+    baseline_errors = _count_observable_mismatches(baseline_predictions, samples.observables)
     unionfind_baseline_predictions = unionfind_decoder.decode_batch(samples.lq_dets)
     unionfind_baseline_errors = _count_observable_mismatches(
         unionfind_baseline_predictions,
         samples.observables,
     )
+    raw_errors = int(np.any(samples.observables != 0, axis=1).sum())
 
-    model.eval()
-    try:
-        model = model.to(memory_format=torch.channels_last_3d)
-    except Exception:
-        pass
-    maps = _build_stab_maps(int(cfg.distance), str(cfg.data.code_rotation))
-    pipeline = PreDecoderMemoryEvalModule(model, cfg, maps, device).to(device)
-    pipeline.eval()
-
-    batch_size = max(int(getattr(cfg.lqcloud, "batch_size", 256)), 1)
-    final_predictions = []
-    unionfind_final_predictions = []
-    residual_lq_rows = []
+    corrected_errors = 0
+    unionfind_corrected_errors = 0
+    residual_detector_ones = 0
+    requested_latency_samples = shots if latency_num_samples is None else int(latency_num_samples)
+    latency_limit = min(max(requested_latency_samples, 0), shots)
+    residual_latency_rows = []
+    latency_rows = 0
     with torch.inference_mode():
         for start in range(0, samples.model_dets.shape[0], batch_size):
             stop = min(start + batch_size, samples.model_dets.shape[0])
@@ -469,45 +478,40 @@ def run_inference_modified(model, device, dist, cfg):
             residual_prediction = np.asarray(
                 matcher.decode_batch(residual_lq),
                 dtype=np.uint8,
-            ).reshape(-1)
+            ).reshape(-1, 1)
             unionfind_residual_prediction = np.asarray(
                 unionfind_decoder.decode_batch(residual_lq),
                 dtype=np.uint8,
-            ).reshape(-1)
-            final_predictions.append((pre_logical.reshape(-1) ^ residual_prediction).reshape(-1, 1))
-            unionfind_final_predictions.append(
-                (pre_logical.reshape(-1) ^ unionfind_residual_prediction).reshape(-1, 1)
+            ).reshape(-1, 1)
+            final_prediction = pre_logical.reshape(-1, 1) ^ residual_prediction
+            unionfind_final_prediction = pre_logical.reshape(-1, 1) ^ unionfind_residual_prediction
+            observables = samples.observables[start:stop]
+            corrected_errors += _count_observable_mismatches(final_prediction, observables)
+            unionfind_corrected_errors += _count_observable_mismatches(
+                unionfind_final_prediction,
+                observables,
             )
-            residual_lq_rows.append(residual_lq)
+            residual_detector_ones += int(residual_lq.sum())
 
-    final_predictions_arr = np.concatenate(final_predictions, axis=0)
-    residual_lq_arr = np.concatenate(residual_lq_rows, axis=0)
-    corrected_errors = _count_observable_mismatches(
-        final_predictions_arr,
-        samples.observables,
-    )
-    unionfind_final_predictions_arr = np.concatenate(unionfind_final_predictions, axis=0)
-    unionfind_corrected_errors = _count_observable_mismatches(
-        unionfind_final_predictions_arr,
-        samples.observables,
-    )
-    raw_errors = int(np.any(samples.observables != 0, axis=1).sum())
-    shots = int(samples.observables.shape[0])
-    latency_num_samples = int(
-        getattr(cfg.lqcloud, "latency_num_samples", shots)
-    )
-    latency_warmup_iterations = int(
-        getattr(cfg.lqcloud, "latency_warmup_iterations", 50)
-    )
+            remaining_latency_rows = latency_limit - latency_rows
+            if remaining_latency_rows > 0:
+                take = min(remaining_latency_rows, len(residual_lq))
+                residual_latency_rows.append(residual_lq[:take].copy())
+                latency_rows += take
+
+    if residual_latency_rows:
+        residual_lq_arr = np.concatenate(residual_latency_rows, axis=0)
+    else:
+        residual_lq_arr = np.empty((0, samples.lq_dets.shape[1]), dtype=np.uint8)
     baseline_us_per_round, predecoder_us_per_round, latency_samples = (
         _time_lqcloud_pymatching_latency(
             matcher,
             samples.lq_dets,
             residual_lq_arr,
-            n_rounds=int(cfg.n_rounds),
-            num_samples=latency_num_samples,
+            n_rounds=n_rounds,
+            num_samples=requested_latency_samples,
             warmup_iterations=latency_warmup_iterations,
-            timer=_time_single_shot_latency_stim,
+            timer=timer,
         )
     )
     unionfind_baseline_us_per_round, unionfind_predecoder_us_per_round, _ = (
@@ -515,18 +519,15 @@ def run_inference_modified(model, device, dist, cfg):
             unionfind_decoder,
             samples.lq_dets,
             residual_lq_arr,
-            n_rounds=int(cfg.n_rounds),
-            num_samples=latency_num_samples,
+            n_rounds=n_rounds,
+            num_samples=requested_latency_samples,
             warmup_iterations=latency_warmup_iterations,
-            timer=_time_single_shot_latency_stim,
+            timer=timer,
         )
     )
-
-    result = {
+    return {
         "shots": shots,
         "basis": samples.basis,
-        "distance": int(cfg.distance),
-        "n_rounds": int(cfg.n_rounds),
         "raw_logical_errors": raw_errors,
         "raw_logical_error_rate": raw_errors / shots,
         "pymatching_logical_errors": baseline_errors,
@@ -538,7 +539,7 @@ def run_inference_modified(model, device, dist, cfg):
         "ising_plus_unionfind_logical_errors": unionfind_corrected_errors,
         "ising_plus_unionfind_logical_error_rate": unionfind_corrected_errors / shots,
         "input_detector_density": float(samples.lq_dets.mean()),
-        "residual_detector_density": float(residual_lq_arr.mean()),
+        "residual_detector_density": residual_detector_ones / samples.lq_dets.size,
         "latency_samples": latency_samples,
         "pymatch latency (baseline µs/round)": baseline_us_per_round,
         "pymatch latency (after predecoder µs/round)": predecoder_us_per_round,
@@ -546,30 +547,193 @@ def run_inference_modified(model, device, dist, cfg):
         "unionfind latency (after predecoder µs/round)": unionfind_predecoder_us_per_round,
     }
 
+
+def _aggregate_lqcloud_file_results(file_results: List[dict], *, distance: int, n_rounds: int) -> dict:
+    """Combine per-file metrics without treating unequal shot counts equally."""
+    if not file_results:
+        raise RuntimeError("LQCloud measurement source produced no data")
+
+    shots = sum(int(file_result["shots"]) for file_result in file_results)
+
+    def total(name: str) -> int:
+        return sum(int(file_result[name]) for file_result in file_results)
+
+    def weighted_by_shots(name: str) -> float:
+        return sum(
+            float(file_result[name]) * int(file_result["shots"])
+            for file_result in file_results
+        ) / shots
+
+    latency_samples = sum(int(file_result["latency_samples"]) for file_result in file_results)
+
+    def weighted_by_latency_samples(name: str) -> float:
+        if latency_samples == 0:
+            return float("nan")
+        return sum(
+            float(file_result[name]) * int(file_result["latency_samples"])
+            for file_result in file_results
+            if int(file_result["latency_samples"]) > 0
+        ) / latency_samples
+
+    raw_errors = total("raw_logical_errors")
+    pymatching_errors = total("pymatching_logical_errors")
+    ising_pymatching_errors = total("ising_plus_pymatching_logical_errors")
+    unionfind_errors = total("unionfind_logical_errors")
+    ising_unionfind_errors = total("ising_plus_unionfind_logical_errors")
+    return {
+        "shots": shots,
+        "files": len(file_results),
+        "basis": file_results[0]["basis"],
+        "distance": distance,
+        "n_rounds": n_rounds,
+        "raw_logical_errors": raw_errors,
+        "raw_logical_error_rate": raw_errors / shots,
+        "pymatching_logical_errors": pymatching_errors,
+        "pymatching_logical_error_rate": pymatching_errors / shots,
+        "ising_plus_pymatching_logical_errors": ising_pymatching_errors,
+        "ising_plus_pymatching_logical_error_rate": ising_pymatching_errors / shots,
+        "unionfind_logical_errors": unionfind_errors,
+        "unionfind_logical_error_rate": unionfind_errors / shots,
+        "ising_plus_unionfind_logical_errors": ising_unionfind_errors,
+        "ising_plus_unionfind_logical_error_rate": ising_unionfind_errors / shots,
+        "input_detector_density": weighted_by_shots("input_detector_density"),
+        "residual_detector_density": weighted_by_shots("residual_detector_density"),
+        "latency_samples": latency_samples,
+        "pymatch latency (baseline µs/round)": weighted_by_latency_samples(
+            "pymatch latency (baseline µs/round)"
+        ),
+        "pymatch latency (after predecoder µs/round)": weighted_by_latency_samples(
+            "pymatch latency (after predecoder µs/round)"
+        ),
+        "unionfind latency (baseline µs/round)": weighted_by_latency_samples(
+            "unionfind latency (baseline µs/round)"
+        ),
+        "unionfind latency (after predecoder µs/round)": weighted_by_latency_samples(
+            "unionfind latency (after predecoder µs/round)"
+        ),
+        "file_results": file_results,
+    }
+
+
+def run_inference_modified(model, device, dist, cfg):
+    """Decode LQCloud samples with both global decoders, with/without Ising."""
+    import torch
+
+    from evaluation.decoder_backends import PYMATCHING, UNIONFIND, build_decoder
+    from evaluation.logical_error_rate import (
+        PreDecoderMemoryEvalModule,
+        _build_stab_maps,
+        _time_single_shot_latency_stim,
+    )
+
+    if int(getattr(dist, "world_size", 1)) != 1:
+        raise ValueError("integrate_to_nvidia must run with one process/GPU")
+    if str(getattr(cfg.test, "decode_mode", "")).strip().lower() == "pymatching_only":
+        raise ValueError("integrate_to_nvidia requires the Ising pre-decoder model")
+
+    model.eval()
+    try:
+        model = model.to(memory_format=torch.channels_last_3d)
+    except Exception:
+        pass
+    batch_size = max(int(getattr(cfg.lqcloud, "batch_size", 256)), 1)
+    latency_num_samples = getattr(cfg.lqcloud, "latency_num_samples", None)
+    latency_warmup_iterations = int(
+        getattr(cfg.lqcloud, "latency_warmup_iterations", 50)
+    )
+    source = str(getattr(cfg.lqcloud, "source", "hardware")).strip().lower()
+    if source == "hardware":
+        measurement_paths = [None]
+        remaining_shots = None
+    elif source == "file":
+        measurement_paths = _measurement_files(
+            _resolve_repo_path(cfg.lqcloud.measurement_source)
+        )
+        configured_max_shots = int(getattr(cfg.lqcloud, "max_shots", 0))
+        remaining_shots = configured_max_shots if configured_max_shots > 0 else None
+    else:
+        raise ValueError("lqcloud.source must be 'hardware' or 'file'")
+
+    pipeline = None
+    matcher = None
+    unionfind_decoder = None
+    file_results = []
+    for measurement_path in measurement_paths:
+        if remaining_shots is not None and remaining_shots <= 0:
+            break
+        samples = load_lqcloud_hardware_samples(
+            cfg,
+            measurement_path=measurement_path,
+            max_shots=remaining_shots,
+        )
+        if pipeline is None:
+            cfg.test.meas_basis_test = samples.basis
+            cfg.test.n_rounds = int(cfg.n_rounds)
+            maps = _build_stab_maps(int(cfg.distance), str(cfg.data.code_rotation))
+            pipeline = PreDecoderMemoryEvalModule(model, cfg, maps, device).to(device)
+            pipeline.eval()
+            dem = samples.circuit.detector_error_model(
+                decompose_errors=True,
+                approximate_disjoint_errors=True,
+            )
+            matcher = build_decoder(dem, PYMATCHING)
+            unionfind_decoder = build_decoder(dem, UNIONFIND)
+        elif samples.basis != cfg.test.meas_basis_test:
+            raise ValueError("All LQCloud measurement files must use the same circuit basis")
+
+        file_result = _decode_lqcloud_samples(
+            samples,
+            pipeline,
+            matcher,
+            unionfind_decoder,
+            device=device,
+            batch_size=batch_size,
+            n_rounds=int(cfg.n_rounds),
+            latency_num_samples=latency_num_samples,
+            latency_warmup_iterations=latency_warmup_iterations,
+            timer=_time_single_shot_latency_stim,
+        )
+        file_result["measurement_path"] = (
+            "hardware" if measurement_path is None else str(measurement_path)
+        )
+        file_results.append(file_result)
+        if remaining_shots is not None:
+            remaining_shots -= int(file_result["shots"])
+        del samples
+
+    result = _aggregate_lqcloud_file_results(
+        file_results,
+        distance=int(cfg.distance),
+        n_rounds=int(cfg.n_rounds),
+    )
+    cfg.test.num_samples = int(result["shots"])
+
     if dist.rank == 0:
         print(
             f"\n[LQCloud Hardware] d={result['distance']}, rounds={result['n_rounds']}, "
-            f"basis={result['basis']}, shots={shots}"
+            f"basis={result['basis']}, shots={result['shots']}, files={result['files']}"
         )
         print(f"  {'Decoder':<30}{'Logical errors':>16}{'LER':>12}")
         print(
-            f"  {'Raw (no decoder)':<30}{raw_errors:>16}"
+            f"  {'Raw (no decoder)':<30}{result['raw_logical_errors']:>16}"
             f"{result['raw_logical_error_rate']:>12.6f}"
         )
         print(
-            f"  {'PyMatching':<30}{baseline_errors:>16}"
+            f"  {'PyMatching':<30}{result['pymatching_logical_errors']:>16}"
             f"{result['pymatching_logical_error_rate']:>12.6f}"
         )
         print(
-            f"  {'Ising pre-decoder + PyMatching':<30}{corrected_errors:>16}"
+            f"  {'Ising pre-decoder + PyMatching':<30}"
+            f"{result['ising_plus_pymatching_logical_errors']:>16}"
             f"{result['ising_plus_pymatching_logical_error_rate']:>12.6f}"
         )
         print(
-            f"  {'Union-Find':<30}{unionfind_baseline_errors:>16}"
+            f"  {'Union-Find':<30}{result['unionfind_logical_errors']:>16}"
             f"{result['unionfind_logical_error_rate']:>12.6f}"
         )
         print(
-            f"  {'Ising pre-decoder + Union-Find':<30}{unionfind_corrected_errors:>16}"
+            f"  {'Ising pre-decoder + Union-Find':<30}"
+            f"{result['ising_plus_unionfind_logical_errors']:>16}"
             f"{result['ising_plus_unionfind_logical_error_rate']:>12.6f}"
         )
         print(
@@ -577,14 +741,14 @@ def run_inference_modified(model, device, dist, cfg):
             f"{result['residual_detector_density']:.6f}"
         )
         print(
-            f"  PyMatching latency ({latency_samples} single-shot samples):\n"
-            f"    Baseline:         {baseline_us_per_round:.6f} us/round\n"
-            f"    After predecoder: {predecoder_us_per_round:.6f} us/round"
+            f"  PyMatching latency ({result['latency_samples']} single-shot samples):\n"
+            f"    Baseline:         {result['pymatch latency (baseline µs/round)']:.6f} us/round\n"
+            f"    After predecoder: {result['pymatch latency (after predecoder µs/round)']:.6f} us/round"
         )
         print(
-            f"  Union-Find latency ({latency_samples} single-shot samples):\n"
-            f"    Baseline:         {unionfind_baseline_us_per_round:.6f} us/round\n"
-            f"    After predecoder: {unionfind_predecoder_us_per_round:.6f} us/round"
+            f"  Union-Find latency ({result['latency_samples']} single-shot samples):\n"
+            f"    Baseline:         {result['unionfind latency (baseline µs/round)']:.6f} us/round\n"
+            f"    After predecoder: {result['unionfind latency (after predecoder µs/round)']:.6f} us/round"
         )
         print("[LQCloud Summary] " + json.dumps(result, sort_keys=True))
     return result

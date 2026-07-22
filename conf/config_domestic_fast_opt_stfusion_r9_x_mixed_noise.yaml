@@ -181,7 +181,7 @@ data:
 # === LQCloud hardware input ===
 lqcloud:
   # hardware: submit the cloud circuit and decode result.get_memory() directly.
-  # log: explicit offline replay mode for tests/debugging only.
+  # file: load JSON measurements from a file or directory; directory files run one at a time.
   source: file
   backend_name: QZ01-surface_code
   # Total hardware executions requested from LQCloud.
@@ -191,7 +191,7 @@ lqcloud:
   # Set to 0 to disable latency timing.
   latency_num_samples: 10000
   latency_warmup_iterations: 50
-  measurement_file: lqcloud_measurements/measurement_5.json
+  measurement_source: lqcloud_measurements/measurement_5.json
   circuit_type: memory_z
   initial_state: null
   reset: false

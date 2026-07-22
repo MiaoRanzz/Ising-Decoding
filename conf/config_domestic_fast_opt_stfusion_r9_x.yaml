@@ -70,7 +70,7 @@ data:
 
 # === LQCloud hardware input ===
 lqcloud:
-  # file: load the list previously saved from result.get_memory().
+  # file: load JSON measurements from a file or directory; directory files run one at a time.
   # hardware: submit the cloud circuit and decode the returned data directly.
   source: file
   backend_name: QZ01-surface_code
@@ -81,7 +81,7 @@ lqcloud:
   # Set to 0 to disable latency timing.
   latency_num_samples: 10000
   latency_warmup_iterations: 50
-  measurement_file: lqcloud_measurements/measurement_5.json # only work when setting source: file
+  measurement_source: lqcloud_measurements/measurement_5.json # only works when source: file
   circuit_type: memory_z
   initial_state: null
   reset: false
