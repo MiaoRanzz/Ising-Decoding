@@ -12,14 +12,19 @@ by the existing evaluation pipeline.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Callable, Optional
 
 import numpy as np
 
 
 PYMATCHING = "pymatching"
-UNIONFIND = "unionfind"
-SUPPORTED_DECODERS = (PYMATCHING, UNIONFIND)
+LDPC_UNIONFIND = "ldpc_unionfind"
+SUPPORTED_DECODERS = (PYMATCHING, LDPC_UNIONFIND)
+BACKEND_LABELS = {
+    PYMATCHING: "PyMatching",
+    LDPC_UNIONFIND: "LDPC Union-Find",
+}
 
 
 def normalize_decoder_name(name: Any) -> str:
@@ -29,8 +34,9 @@ def normalize_decoder_name(name: Any) -> str:
         "pymatching": PYMATCHING,
         "matching": PYMATCHING,
         "mwpm": PYMATCHING,
-        "unionfind": UNIONFIND,
-        "uf": UNIONFIND,
+        "unionfind": LDPC_UNIONFIND,
+        "ldpcunionfind": LDPC_UNIONFIND,
+        "uf": LDPC_UNIONFIND,
     }
     if value not in aliases:
         raise ValueError(
@@ -70,7 +76,7 @@ class UnionFindDecoderAdapter:
             except ImportError as exc:
                 raise RuntimeError(
                     "Union-Find decoding requires beliefmatching. Install the public "
-                    "inference requirements before selecting validation_decoder=unionfind."
+                    "inference requirements before selecting validation_decoder=ldpc_unionfind."
                 ) from exc
             converter = detector_error_model_to_check_matrices
 
@@ -80,7 +86,7 @@ class UnionFindDecoderAdapter:
             except ImportError as exc:
                 raise RuntimeError(
                     "Union-Find decoding requires the ldpc package. Install the public "
-                    "inference requirements before selecting validation_decoder=unionfind."
+                    "inference requirements before selecting validation_decoder=ldpc_unionfind."
                 ) from exc
             decoder_cls = UnionFindDecoder
 
@@ -90,7 +96,7 @@ class UnionFindDecoderAdapter:
             except ImportError as exc:
                 raise RuntimeError(
                     "Union-Find decoding requires scipy. Install the public inference "
-                    "requirements before selecting validation_decoder=unionfind."
+                    "requirements before selecting validation_decoder=ldpc_unionfind."
                 ) from exc
             sparse_matrix_factory = csc_matrix
 
@@ -127,7 +133,7 @@ class UnionFindDecoderAdapter:
 def build_decoder(det_model: Any, name: Any):
     """Construct one supported decoder from the same detector error model."""
     backend = normalize_decoder_name(name)
-    if backend == UNIONFIND:
+    if backend == LDPC_UNIONFIND:
         return UnionFindDecoderAdapter.from_detector_error_model(det_model)
 
     try:
@@ -142,3 +148,27 @@ def build_decoder(det_model: Any, name: Any):
 def validation_decoder_name(cfg: Any) -> str:
     """Read the training-time validation backend (PyMatching by default)."""
     return normalize_decoder_name(getattr(cfg, "validation_decoder", PYMATCHING))
+
+
+def _backend_flag(backend_cfg: Any, name: str, default: bool) -> bool:
+    """Read one ``backend.<name>`` flag while accepting dict and OmegaConf configs."""
+    if backend_cfg is None:
+        value = default
+    elif isinstance(backend_cfg, Mapping):
+        value = backend_cfg.get(name, default)
+    else:
+        value = getattr(backend_cfg, name, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"backend.{name} must be true or false, got {value!r}")
+    return value
+
+
+def enabled_inference_backends(cfg: Any) -> tuple[str, ...]:
+    """Return the global decoder backends enabled for inference workflows."""
+    backend_cfg = getattr(cfg, "backend", None)
+    names = tuple(
+        name for name in SUPPORTED_DECODERS if _backend_flag(backend_cfg, name, default=True)
+    )
+    if not names:
+        raise ValueError("At least one inference backend must be enabled.")
+    return names

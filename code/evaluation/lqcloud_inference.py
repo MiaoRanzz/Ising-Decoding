@@ -401,7 +401,7 @@ def _count_observable_mismatches(predictions, observables) -> int:
     return int(np.any(predictions != observables, axis=1).sum())
 
 
-def _time_lqcloud_pymatching_latency(
+def _time_lqcloud_decoder_latency(
     matcher,
     baseline_syndromes,
     residual_syndromes,
@@ -430,8 +430,7 @@ def _time_lqcloud_pymatching_latency(
 def _decode_lqcloud_samples(
     samples: HardwareSamples,
     pipeline,
-    matcher,
-    unionfind_decoder,
+    decoders,
     *,
     device,
     batch_size: int,
@@ -445,17 +444,13 @@ def _decode_lqcloud_samples(
     import torch
 
     shots = int(samples.observables.shape[0])
-    baseline_predictions = matcher.decode_batch(samples.lq_dets)
-    baseline_errors = _count_observable_mismatches(baseline_predictions, samples.observables)
-    unionfind_baseline_predictions = unionfind_decoder.decode_batch(samples.lq_dets)
-    unionfind_baseline_errors = _count_observable_mismatches(
-        unionfind_baseline_predictions,
-        samples.observables,
-    )
+    baseline_errors = {
+        name: _count_observable_mismatches(decoder.decode_batch(samples.lq_dets), samples.observables)
+        for name, decoder in decoders.items()
+    }
     raw_errors = int(np.any(samples.observables != 0, axis=1).sum())
 
-    corrected_errors = 0
-    unionfind_corrected_errors = 0
+    corrected_errors = {name: 0 for name in decoders}
     residual_detector_ones = 0
     requested_latency_samples = shots if latency_num_samples is None else int(latency_num_samples)
     latency_limit = min(max(requested_latency_samples, 0), shots)
@@ -475,22 +470,13 @@ def _decode_lqcloud_samples(
 
             residual_lq = np.empty_like(residual_model)
             residual_lq[:, samples.model_to_lq] = residual_model
-            residual_prediction = np.asarray(
-                matcher.decode_batch(residual_lq),
-                dtype=np.uint8,
-            ).reshape(-1, 1)
-            unionfind_residual_prediction = np.asarray(
-                unionfind_decoder.decode_batch(residual_lq),
-                dtype=np.uint8,
-            ).reshape(-1, 1)
-            final_prediction = pre_logical.reshape(-1, 1) ^ residual_prediction
-            unionfind_final_prediction = pre_logical.reshape(-1, 1) ^ unionfind_residual_prediction
             observables = samples.observables[start:stop]
-            corrected_errors += _count_observable_mismatches(final_prediction, observables)
-            unionfind_corrected_errors += _count_observable_mismatches(
-                unionfind_final_prediction,
-                observables,
-            )
+            for name, decoder in decoders.items():
+                residual_prediction = np.asarray(
+                    decoder.decode_batch(residual_lq), dtype=np.uint8
+                ).reshape(-1, 1)
+                final_prediction = pre_logical.reshape(-1, 1) ^ residual_prediction
+                corrected_errors[name] += _count_observable_mismatches(final_prediction, observables)
             residual_detector_ones += int(residual_lq.sum())
 
             remaining_latency_rows = latency_limit - latency_rows
@@ -503,9 +489,9 @@ def _decode_lqcloud_samples(
         residual_lq_arr = np.concatenate(residual_latency_rows, axis=0)
     else:
         residual_lq_arr = np.empty((0, samples.lq_dets.shape[1]), dtype=np.uint8)
-    baseline_us_per_round, predecoder_us_per_round, latency_samples = (
-        _time_lqcloud_pymatching_latency(
-            matcher,
+    latency = {
+        name: _time_lqcloud_decoder_latency(
+            decoder,
             samples.lq_dets,
             residual_lq_arr,
             n_rounds=n_rounds,
@@ -513,39 +499,32 @@ def _decode_lqcloud_samples(
             warmup_iterations=latency_warmup_iterations,
             timer=timer,
         )
-    )
-    unionfind_baseline_us_per_round, unionfind_predecoder_us_per_round, _ = (
-        _time_lqcloud_pymatching_latency(
-            unionfind_decoder,
-            samples.lq_dets,
-            residual_lq_arr,
-            n_rounds=n_rounds,
-            num_samples=requested_latency_samples,
-            warmup_iterations=latency_warmup_iterations,
-            timer=timer,
-        )
-    )
-    return {
+        for name, decoder in decoders.items()
+    }
+    latency_samples = next(iter(latency.values()))[2]
+    result = {
         "shots": shots,
         "basis": samples.basis,
         "raw_logical_errors": raw_errors,
         "raw_logical_error_rate": raw_errors / shots,
-        "pymatching_logical_errors": baseline_errors,
-        "pymatching_logical_error_rate": baseline_errors / shots,
-        "ising_plus_pymatching_logical_errors": corrected_errors,
-        "ising_plus_pymatching_logical_error_rate": corrected_errors / shots,
-        "unionfind_logical_errors": unionfind_baseline_errors,
-        "unionfind_logical_error_rate": unionfind_baseline_errors / shots,
-        "ising_plus_unionfind_logical_errors": unionfind_corrected_errors,
-        "ising_plus_unionfind_logical_error_rate": unionfind_corrected_errors / shots,
         "input_detector_density": float(samples.lq_dets.mean()),
         "residual_detector_density": residual_detector_ones / samples.lq_dets.size,
         "latency_samples": latency_samples,
-        "pymatch latency (baseline µs/round)": baseline_us_per_round,
-        "pymatch latency (after predecoder µs/round)": predecoder_us_per_round,
-        "unionfind latency (baseline µs/round)": unionfind_baseline_us_per_round,
-        "unionfind latency (after predecoder µs/round)": unionfind_predecoder_us_per_round,
+        "backend_names": list(decoders),
     }
+    for name in decoders:
+        baseline_us, predecoder_us, _ = latency[name]
+        result.update(
+            {
+                f"{name}_logical_errors": baseline_errors[name],
+                f"{name}_logical_error_rate": baseline_errors[name] / shots,
+                f"ising_plus_{name}_logical_errors": corrected_errors[name],
+                f"ising_plus_{name}_logical_error_rate": corrected_errors[name] / shots,
+                f"{name} latency (baseline µs/round)": baseline_us,
+                f"{name} latency (after predecoder µs/round)": predecoder_us,
+            }
+        )
+    return result
 
 
 def _aggregate_lqcloud_file_results(file_results: List[dict], *, distance: int, n_rounds: int) -> dict:
@@ -565,6 +544,9 @@ def _aggregate_lqcloud_file_results(file_results: List[dict], *, distance: int, 
         ) / shots
 
     latency_samples = sum(int(file_result["latency_samples"]) for file_result in file_results)
+    backend_names = tuple(file_results[0]["backend_names"])
+    if any(tuple(file_result["backend_names"]) != backend_names for file_result in file_results):
+        raise ValueError("All LQCloud measurement files must use the same decoder backends")
 
     def weighted_by_latency_samples(name: str) -> float:
         if latency_samples == 0:
@@ -576,11 +558,7 @@ def _aggregate_lqcloud_file_results(file_results: List[dict], *, distance: int, 
         ) / latency_samples
 
     raw_errors = total("raw_logical_errors")
-    pymatching_errors = total("pymatching_logical_errors")
-    ising_pymatching_errors = total("ising_plus_pymatching_logical_errors")
-    unionfind_errors = total("unionfind_logical_errors")
-    ising_unionfind_errors = total("ising_plus_unionfind_logical_errors")
-    return {
+    result = {
         "shots": shots,
         "files": len(file_results),
         "basis": file_results[0]["basis"],
@@ -588,38 +566,41 @@ def _aggregate_lqcloud_file_results(file_results: List[dict], *, distance: int, 
         "n_rounds": n_rounds,
         "raw_logical_errors": raw_errors,
         "raw_logical_error_rate": raw_errors / shots,
-        "pymatching_logical_errors": pymatching_errors,
-        "pymatching_logical_error_rate": pymatching_errors / shots,
-        "ising_plus_pymatching_logical_errors": ising_pymatching_errors,
-        "ising_plus_pymatching_logical_error_rate": ising_pymatching_errors / shots,
-        "unionfind_logical_errors": unionfind_errors,
-        "unionfind_logical_error_rate": unionfind_errors / shots,
-        "ising_plus_unionfind_logical_errors": ising_unionfind_errors,
-        "ising_plus_unionfind_logical_error_rate": ising_unionfind_errors / shots,
         "input_detector_density": weighted_by_shots("input_detector_density"),
         "residual_detector_density": weighted_by_shots("residual_detector_density"),
         "latency_samples": latency_samples,
-        "pymatch latency (baseline µs/round)": weighted_by_latency_samples(
-            "pymatch latency (baseline µs/round)"
-        ),
-        "pymatch latency (after predecoder µs/round)": weighted_by_latency_samples(
-            "pymatch latency (after predecoder µs/round)"
-        ),
-        "unionfind latency (baseline µs/round)": weighted_by_latency_samples(
-            "unionfind latency (baseline µs/round)"
-        ),
-        "unionfind latency (after predecoder µs/round)": weighted_by_latency_samples(
-            "unionfind latency (after predecoder µs/round)"
-        ),
+        "backend_names": list(backend_names),
         "file_results": file_results,
     }
+    for name in backend_names:
+        baseline_errors = total(f"{name}_logical_errors")
+        corrected_errors = total(f"ising_plus_{name}_logical_errors")
+        result.update(
+            {
+                f"{name}_logical_errors": baseline_errors,
+                f"{name}_logical_error_rate": baseline_errors / shots,
+                f"ising_plus_{name}_logical_errors": corrected_errors,
+                f"ising_plus_{name}_logical_error_rate": corrected_errors / shots,
+                f"{name} latency (baseline µs/round)": weighted_by_latency_samples(
+                    f"{name} latency (baseline µs/round)"
+                ),
+                f"{name} latency (after predecoder µs/round)": weighted_by_latency_samples(
+                    f"{name} latency (after predecoder µs/round)"
+                ),
+            }
+        )
+    return result
 
 
 def run_inference_modified(model, device, dist, cfg):
-    """Decode LQCloud samples with both global decoders, with/without Ising."""
+    """Decode LQCloud samples with every backend enabled in ``cfg.backend``."""
     import torch
 
-    from evaluation.decoder_backends import PYMATCHING, UNIONFIND, build_decoder
+    from evaluation.decoder_backends import (
+        BACKEND_LABELS,
+        build_decoder,
+        enabled_inference_backends,
+    )
     from evaluation.logical_error_rate import (
         PreDecoderMemoryEvalModule,
         _build_stab_maps,
@@ -655,8 +636,8 @@ def run_inference_modified(model, device, dist, cfg):
         raise ValueError("lqcloud.source must be 'hardware' or 'file'")
 
     pipeline = None
-    matcher = None
-    unionfind_decoder = None
+    backend_names = enabled_inference_backends(cfg)
+    decoders = None
     file_results = []
     for measurement_path in measurement_paths:
         if remaining_shots is not None and remaining_shots <= 0:
@@ -676,16 +657,14 @@ def run_inference_modified(model, device, dist, cfg):
                 decompose_errors=True,
                 approximate_disjoint_errors=True,
             )
-            matcher = build_decoder(dem, PYMATCHING)
-            unionfind_decoder = build_decoder(dem, UNIONFIND)
+            decoders = {name: build_decoder(dem, name) for name in backend_names}
         elif samples.basis != cfg.test.meas_basis_test:
             raise ValueError("All LQCloud measurement files must use the same circuit basis")
 
         file_result = _decode_lqcloud_samples(
             samples,
             pipeline,
-            matcher,
-            unionfind_decoder,
+            decoders,
             device=device,
             batch_size=batch_size,
             n_rounds=int(cfg.n_rounds),
@@ -718,38 +697,29 @@ def run_inference_modified(model, device, dist, cfg):
             f"  {'Raw (no decoder)':<30}{result['raw_logical_errors']:>16}"
             f"{result['raw_logical_error_rate']:>12.6f}"
         )
-        print(
-            f"  {'PyMatching':<30}{result['pymatching_logical_errors']:>16}"
-            f"{result['pymatching_logical_error_rate']:>12.6f}"
-        )
-        print(
-            f"  {'Ising pre-decoder + PyMatching':<30}"
-            f"{result['ising_plus_pymatching_logical_errors']:>16}"
-            f"{result['ising_plus_pymatching_logical_error_rate']:>12.6f}"
-        )
-        print(
-            f"  {'Union-Find':<30}{result['unionfind_logical_errors']:>16}"
-            f"{result['unionfind_logical_error_rate']:>12.6f}"
-        )
-        print(
-            f"  {'Ising pre-decoder + Union-Find':<30}"
-            f"{result['ising_plus_unionfind_logical_errors']:>16}"
-            f"{result['ising_plus_unionfind_logical_error_rate']:>12.6f}"
-        )
+        for name in result["backend_names"]:
+            label = BACKEND_LABELS.get(name, name)
+            print(
+                f"  {label:<30}{result[f'{name}_logical_errors']:>16}"
+                f"{result[f'{name}_logical_error_rate']:>12.6f}"
+            )
+            print(
+                f"  {f'Ising pre-decoder + {label}':<30}"
+                f"{result[f'ising_plus_{name}_logical_errors']:>16}"
+                f"{result[f'ising_plus_{name}_logical_error_rate']:>12.6f}"
+            )
         print(
             f"  Detector density: {result['input_detector_density']:.6f} -> "
             f"{result['residual_detector_density']:.6f}"
         )
-        print(
-            f"  PyMatching latency ({result['latency_samples']} single-shot samples):\n"
-            f"    Baseline:         {result['pymatch latency (baseline µs/round)']:.6f} us/round\n"
-            f"    After predecoder: {result['pymatch latency (after predecoder µs/round)']:.6f} us/round"
-        )
-        print(
-            f"  Union-Find latency ({result['latency_samples']} single-shot samples):\n"
-            f"    Baseline:         {result['unionfind latency (baseline µs/round)']:.6f} us/round\n"
-            f"    After predecoder: {result['unionfind latency (after predecoder µs/round)']:.6f} us/round"
-        )
+        for name in result["backend_names"]:
+            label = BACKEND_LABELS.get(name, name)
+            print(
+                f"  {label} latency ({result['latency_samples']} single-shot samples):\n"
+                f"    Baseline:         {result[f'{name} latency (baseline µs/round)']:.6f} us/round\n"
+                f"    After predecoder: "
+                f"{result[f'{name} latency (after predecoder µs/round)']:.6f} us/round"
+            )
         print("[LQCloud Summary] " + json.dumps(result, sort_keys=True))
     return result
 

@@ -11,9 +11,10 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from evaluation.decoder_backends import (  # noqa: E402
+    LDPC_UNIONFIND,
     PYMATCHING,
-    UNIONFIND,
     UnionFindDecoderAdapter,
+    enabled_inference_backends,
     normalize_decoder_name,
     validation_decoder_name,
 )
@@ -65,11 +66,27 @@ class TestUnionFindDecoderAdapter(unittest.TestCase):
 
     def test_decoder_names_and_training_default(self):
         self.assertEqual(normalize_decoder_name("MWPM"), PYMATCHING)
-        self.assertEqual(normalize_decoder_name("union-find"), UNIONFIND)
+        self.assertEqual(normalize_decoder_name("union-find"), LDPC_UNIONFIND)
         self.assertEqual(validation_decoder_name(SimpleNamespace()), PYMATCHING)
         self.assertEqual(
-            validation_decoder_name(SimpleNamespace(validation_decoder="uf")), UNIONFIND
+            validation_decoder_name(SimpleNamespace(validation_decoder="uf")), LDPC_UNIONFIND
         )
+        self.assertEqual(
+            enabled_inference_backends(
+                SimpleNamespace(backend=SimpleNamespace(pymatching=True, ldpc_unionfind=False))
+            ),
+            (PYMATCHING,),
+        )
+        self.assertEqual(
+            enabled_inference_backends(
+                SimpleNamespace(backend=SimpleNamespace(pymatching=False, ldpc_unionfind=True))
+            ),
+            (LDPC_UNIONFIND,),
+        )
+        with self.assertRaises(ValueError):
+            enabled_inference_backends(
+                SimpleNamespace(backend=SimpleNamespace(pymatching=False, ldpc_unionfind=False))
+            )
         with self.assertRaises(ValueError):
             normalize_decoder_name("unknown")
 

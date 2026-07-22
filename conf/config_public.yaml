@@ -39,9 +39,14 @@ workflow:
   task: train  # train, inference
   # simplify logs of inference to have only pymatching b4 and after predecoding. TODO: batch_size=1
 
-# Global decoder used to compute LER during training validation. Inference always
-# evaluates both PyMatching and Union-Find for the surface-code workflow.
-validation_decoder: pymatching  # pymatching or unionfind
+# Global decoder used to compute LER during training validation.
+validation_decoder: pymatching  # pymatching or ldpc_unionfind
+
+# Global decoder backends evaluated by inference/integrate_to_nvidia. Disable a
+# slow backend without affecting training validation.
+backend:
+  pymatching: true
+  ldpc_unionfind: true
 
 # === Data ===
 data:

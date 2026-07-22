@@ -227,6 +227,10 @@ def _base_hidden_defaults_dict() -> Dict[str, Any]:
             },
         "validation_ler": True,
         "validation_decoder": "pymatching",
+        "backend": {
+            "pymatching": True,
+            "ldpc_unionfind": True,
+        },
         "early_stopping": {
             "enabled": True,
             "patience": 100
@@ -379,14 +383,31 @@ def validate_public_config(cfg: DictConfig) -> PublicModelSpec:
     code = _normalize_code(getattr(cfg, "code", "surface"))
     model_spec = get_model_spec(cfg.model_id)
     validation_decoder = str(getattr(cfg, "validation_decoder", "pymatching")).strip().lower()
-    if validation_decoder not in ("pymatching", "unionfind"):
+    if validation_decoder == "unionfind":
+        validation_decoder = "ldpc_unionfind"
+    if validation_decoder not in ("pymatching", "ldpc_unionfind"):
         raise ValueError(
-            "Invalid validation_decoder. Choose 'pymatching' or 'unionfind'."
+            "Invalid validation_decoder. Choose 'pymatching' or 'ldpc_unionfind'."
         )
     if code == "color" and validation_decoder != "pymatching":
         raise ValueError(
-            "validation_decoder='unionfind' is currently supported only for the surface code."
+            "validation_decoder='ldpc_unionfind' is currently supported only for the surface code."
         )
+    if "backend" in cfg:
+        allowed_backends = {"pymatching", "ldpc_unionfind"}
+        unexpected_backends = set(cfg.backend.keys()) - allowed_backends
+        if unexpected_backends:
+            raise ValueError(
+                f"Unsupported backend fields: {sorted(unexpected_backends)}. "
+                f"Allowed fields are: {sorted(allowed_backends)}"
+            )
+        for backend_name in cfg.backend.keys():
+            if not isinstance(cfg.backend[backend_name], bool):
+                raise ValueError(f"backend.{backend_name} must be true or false.")
+        pymatching_enabled = bool(getattr(cfg.backend, "pymatching", True))
+        ldpc_unionfind_enabled = bool(getattr(cfg.backend, "ldpc_unionfind", True))
+        if not pymatching_enabled and not ldpc_unionfind_enabled:
+            raise ValueError("At least one of backend.pymatching or backend.ldpc_unionfind must be true.")
     if code == "color" and int(model_spec.receptive_field) > 13:
         raise ValueError(
             "code='color' currently supports public model_ids with receptive field <= 13 "

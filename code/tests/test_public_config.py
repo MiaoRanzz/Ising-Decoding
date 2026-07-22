@@ -35,17 +35,17 @@ class TestPublicConfig(unittest.TestCase):
         merged = apply_public_defaults_and_model(minimal, spec)
         self.assertEqual(str(merged.validation_decoder), "pymatching")
 
-        unionfind = OmegaConf.create(
+        ldpc_unionfind = OmegaConf.create(
             {
                 "model_id": 1,
                 "distance": 9,
                 "n_rounds": 9,
-                "validation_decoder": "unionfind",
+                "validation_decoder": "ldpc_unionfind",
             }
         )
-        spec = validate_public_config(unionfind)
-        merged = apply_public_defaults_and_model(unionfind, spec)
-        self.assertEqual(str(merged.validation_decoder), "unionfind")
+        spec = validate_public_config(ldpc_unionfind)
+        merged = apply_public_defaults_and_model(ldpc_unionfind, spec)
+        self.assertEqual(str(merged.validation_decoder), "ldpc_unionfind")
 
         invalid = OmegaConf.create(
             {
@@ -58,17 +58,48 @@ class TestPublicConfig(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_public_config(invalid)
 
-        color_unionfind = OmegaConf.create(
+        disabled = OmegaConf.create(
+            {
+                "model_id": 1,
+                "distance": 9,
+                "n_rounds": 9,
+                "backend": {"pymatching": False, "ldpc_unionfind": False},
+            }
+        )
+        with self.assertRaises(ValueError):
+            validate_public_config(disabled)
+
+        color_ldpc_unionfind = OmegaConf.create(
             {
                 "code": "color",
                 "model_id": 1,
                 "distance": 9,
                 "n_rounds": 9,
-                "validation_decoder": "unionfind",
+                "validation_decoder": "ldpc_unionfind",
             }
         )
         with self.assertRaises(ValueError):
-            validate_public_config(color_unionfind)
+            validate_public_config(color_ldpc_unionfind)
+
+    def test_backend_flags_are_public_and_must_leave_one_enabled(self):
+        cfg = OmegaConf.create(
+            {
+                "model_id": 1,
+                "distance": 9,
+                "n_rounds": 9,
+                "backend": {"pymatching": True, "ldpc_unionfind": False},
+            }
+        )
+        spec = validate_public_config(cfg)
+        merged = apply_public_defaults_and_model(cfg, spec)
+        self.assertTrue(bool(merged.backend.pymatching))
+        self.assertFalse(bool(merged.backend.ldpc_unionfind))
+
+        invalid = OmegaConf.create(
+            {"model_id": 1, "distance": 9, "n_rounds": 9, "backend": {"unknown": True}}
+        )
+        with self.assertRaises(ValueError):
+            validate_public_config(invalid)
 
     def test_registry_receptive_field_formula(self):
         self.assertEqual(compute_receptive_field([3, 3, 3, 3]), 9)

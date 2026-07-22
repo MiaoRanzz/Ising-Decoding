@@ -58,9 +58,11 @@ from pathlib import Path
 from typing import Optional
 
 from evaluation.decoder_backends import (
+    BACKEND_LABELS,
+    LDPC_UNIONFIND,
     PYMATCHING,
-    UNIONFIND,
     build_decoder,
+    enabled_inference_backends,
     validation_decoder_name,
 )
 
@@ -853,21 +855,33 @@ def count_logical_errors_with_errorbar(model, device, dist, cfg):
                     "pymatch latency (after predecoder µs/round)": float(pm_latency[1]),
                 }
             )
-        if UNIONFIND in run.baseline_errors:
-            uf_base = int(run.baseline_errors[UNIONFIND])
-            uf_after = int(run.predecoder_errors[UNIONFIND])
+        metrics["decoder_metrics"] = {}
+        for backend, baseline in run.baseline_errors.items():
+            after = int(run.predecoder_errors[backend])
+            latency = run.latency_us_per_round.get(backend, (float("nan"), float("nan")))
+            metrics["decoder_metrics"][backend] = {
+                "baseline_logical_errors": int(baseline),
+                "predecoder_logical_errors": after,
+                "baseline_ler": float(baseline / shots),
+                "predecoder_ler": float(after / shots),
+                "baseline_latency_us_per_round": float(latency[0]),
+                "predecoder_latency_us_per_round": float(latency[1]),
+            }
+        if LDPC_UNIONFIND in run.baseline_errors:
+            uf_base = int(run.baseline_errors[LDPC_UNIONFIND])
+            uf_after = int(run.predecoder_errors[LDPC_UNIONFIND])
             uf_latency = run.latency_us_per_round.get(
-                UNIONFIND, (float("nan"), float("nan"))
+                LDPC_UNIONFIND, (float("nan"), float("nan"))
             )
             metrics.update(
                 {
-                    "unionfind flips": uf_base,
-                    "unionfind logical errors": uf_after,
-                    "logical error ratio (unionfind mean)": float(uf_base / shots),
-                    "logical error ratio (unionfind standard error)": _standard_error(uf_base, shots),
-                    "logical error ratio (unionfind predecoder mean)": float(uf_after / shots),
-                    "unionfind latency (baseline µs/round)": float(uf_latency[0]),
-                    "unionfind latency (after predecoder µs/round)": float(uf_latency[1]),
+                    "ldpc_unionfind flips": uf_base,
+                    "ldpc_unionfind logical errors": uf_after,
+                    "logical error ratio (ldpc_unionfind mean)": float(uf_base / shots),
+                    "logical error ratio (ldpc_unionfind standard error)": _standard_error(uf_base, shots),
+                    "logical error ratio (ldpc_unionfind predecoder mean)": float(uf_after / shots),
+                    "ldpc_unionfind latency (baseline µs/round)": float(uf_latency[0]),
+                    "ldpc_unionfind latency (after predecoder µs/round)": float(uf_latency[1]),
                 }
             )
         return metrics
@@ -920,9 +934,15 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> Dec
                   ) or bool(getattr(cfg.test, "verbose", False))
     decode_mode = _get_decode_mode(cfg)
     workflow_task = str(getattr(getattr(cfg, "workflow", None), "task", "")).lower()
-    primary_backend = validation_decoder_name(cfg) if workflow_task == "train" else PYMATCHING
-    compare_all_backends = workflow_task == "inference" and decode_mode != "pymatching_only"
-    backend_names = [PYMATCHING, UNIONFIND] if compare_all_backends else [primary_backend]
+    if workflow_task == "train":
+        primary_backend = validation_decoder_name(cfg)
+        backend_names = [primary_backend]
+    elif workflow_task == "inference" and decode_mode != "pymatching_only":
+        backend_names = list(enabled_inference_backends(cfg))
+        primary_backend = PYMATCHING if PYMATCHING in backend_names else backend_names[0]
+    else:
+        primary_backend = PYMATCHING
+        backend_names = [primary_backend]
     decode_output_dir = _get_decode_output_dir(cfg)
     basis = str(getattr(cfg.test, "meas_basis_test", "X")).upper()
     if basis not in ("X", "Z"):
@@ -1407,7 +1427,7 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> Dec
 
     t_start = time.perf_counter()
     t_model_time = 0.0
-    t_pm_time = 0.0
+    t_primary_decoder_time = 0.0
     t_dataloader_s = 0.0
     t_to_device_s = 0.0
     t_postmodel_s = 0.0  # sampling + syndrome + residuals + residual build
@@ -1481,7 +1501,7 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> Dec
             batch_pred_time = time.perf_counter() - t_dem_decode
             dem_decode_s += batch_pred_time
             if name == primary_backend:
-                t_pm_time += batch_pred_time
+                t_primary_decoder_time += batch_pred_time
                 if timing_rank0 and predecoder_batch_times is not None:
                     predecoder_batch_times.append(batch_pred_time)
 
@@ -1508,9 +1528,9 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> Dec
     num_batches = batch_idx + 1 if "batch_idx" in locals() else 0
     t_end = time.perf_counter()
     t_dataloader_s = (t_end - t_start) - (
-        t_to_device_s + t_model_time + t_postmodel_s + t_cpu_copy_s + t_pm_time + t_post_decode_s
+        t_to_device_s + t_model_time + t_postmodel_s + t_cpu_copy_s + t_primary_decoder_time + t_post_decode_s
     )
-    t_pm_baseline_s = baseline_decode_s[primary_backend]
+    t_primary_baseline_s = baseline_decode_s[primary_backend]
 
     if timing_rank0:
         print(f"\n[Phase Timing] Breakdown across {num_batches} batches:")
@@ -1518,18 +1538,19 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> Dec
         print(f"  Model forward:         {t_model_time:.3f}s")
         print(f"  Residual construction: {t_postmodel_s:.3f}s")
         print(f"  GPU→CPU transfer:      {t_cpu_copy_s:.3f}s")
-        print(f"  PyMatching baseline:   {t_pm_baseline_s:.3f}s")
-        print(f"  PyMatching predecoder: {t_pm_time:.3f}s")
+        primary_label = BACKEND_LABELS.get(primary_backend, primary_backend)
+        print(f"  {primary_label} baseline:   {t_primary_baseline_s:.3f}s")
+        print(f"  {primary_label} predecoder: {t_primary_decoder_time:.3f}s")
         print(f"  Post-decode logic:     {t_post_decode_s:.3f}s")
 
-        # Detailed PyMatching timing
-        print(f"\n[PyMatching Timing] Decoder Input Info:")
+        # Detailed timing for the primary backend.
+        print(f"\n[{primary_label} Timing] Decoder Input Info:")
         print(f"  Detector array shape: {detector_shape} (batch_size, num_detectors)")
         print(f"  Total samples decoded: {total_samples}")
         print(f"  Number of batches: {num_batches} (across {dist.world_size} GPU(s))")
 
         avg_residual_density = residual_syndrome_density_sum / num_batches if num_batches > 0 else 0
-        print(f"\n[PyMatching Timing] Syndrome Density:")
+        print(f"\n[{primary_label} Timing] Syndrome Density:")
         print(
             f"  Baseline (no pre-decoder): {baseline_syndrome_density:.6f} ({baseline_syndrome_density*100:.4f}% non-zero)"
         )
@@ -1544,24 +1565,24 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> Dec
         n_rounds = cfg.n_rounds
         total_rounds = total_samples * n_rounds
         print(
-            f"\n[PyMatching Timing] Decode Time (ONLY matcher.decode_batch, excludes GPU→CPU transfer):"
+            f"\n[{primary_label} Timing] Decode Time (ONLY decoder.decode_batch, excludes GPU→CPU transfer):"
         )
         print(f"  n_rounds per sample: {n_rounds}")
         print(f"  Total rounds decoded: {total_rounds:,}")
-        baseline_time_per_round = t_pm_baseline_s / total_rounds * 1e6 if total_rounds > 0 else 0
-        predecoder_time_per_round = t_pm_time / total_rounds * 1e6 if total_rounds > 0 else 0
+        baseline_time_per_round = t_primary_baseline_s / total_rounds * 1e6 if total_rounds > 0 else 0
+        predecoder_time_per_round = t_primary_decoder_time / total_rounds * 1e6 if total_rounds > 0 else 0
         floor_us = floor_time_per_round * 1e6 if floor_time_per_round else 0
         print(f"  Floor (zero density):      {floor_us:.3f} µs/round (fixed overhead)")
         print(
-            f"  Baseline (no pre-decoder): {t_pm_baseline_s*1000:.2f} ms total, {baseline_time_per_round:.3f} µs/round"
+            f"  Baseline (no pre-decoder): {t_primary_baseline_s*1000:.2f} ms total, {baseline_time_per_round:.3f} µs/round"
         )
         print(
-            f"  After pre-decoder:         {t_pm_time*1000:.2f} ms total, {predecoder_time_per_round:.3f} µs/round"
+            f"  After pre-decoder:         {t_primary_decoder_time*1000:.2f} ms total, {predecoder_time_per_round:.3f} µs/round"
         )
 
         baseline_above_floor = baseline_time_per_round - floor_us
         predecoder_above_floor = predecoder_time_per_round - floor_us
-        print(f"\n[PyMatching Timing] Breakdown (time above floor = density-dependent MWPM work):")
+        print(f"\n[{primary_label} Timing] Breakdown (time above floor = decoder work):")
         print(f"  Baseline above floor:      {baseline_above_floor:.3f} µs/round")
         print(f"  Pre-decoder above floor:   {predecoder_above_floor:.3f} µs/round")
         if baseline_above_floor > 0:
@@ -1569,10 +1590,10 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> Dec
                 'inf'
             )
             print(f"  MWPM-only speedup:         {mwpm_speedup:.2f}x (density-dependent portion)")
-        speedup = t_pm_baseline_s / t_pm_time if t_pm_time > 0 else 0
+        speedup = t_primary_baseline_s / t_primary_decoder_time if t_primary_decoder_time > 0 else 0
         time_saved_pct = (
-            t_pm_baseline_s - t_pm_time
-        ) / t_pm_baseline_s * 100 if t_pm_baseline_s > 0 else 0
+            t_primary_baseline_s - t_primary_decoder_time
+        ) / t_primary_baseline_s * 100 if t_primary_baseline_s > 0 else 0
         print(f"\n  Total speedup:             {speedup:.4f}x ({time_saved_pct:.2f}% faster)")
 
         if predecoder_batch_times is not None and len(predecoder_batch_times) > 0:
@@ -1582,7 +1603,7 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> Dec
             predecoder_per_round_min = predecoder_times_arr.min() / rounds_per_batch * 1e6
             predecoder_per_round_max = predecoder_times_arr.max() / rounds_per_batch * 1e6
             predecoder_per_round_std = predecoder_times_arr.std() / rounds_per_batch * 1e6
-            print(f"\n[PyMatching Timing] Per-Batch Variability (µs/round):")
+            print(f"\n[{primary_label} Timing] Per-Batch Variability (µs/round):")
             print(
                 f"  Pre-decoder:  min={predecoder_per_round_min:.3f}, max={predecoder_per_round_max:.3f}, "
                 f"std={predecoder_per_round_std:.3f}, range={predecoder_per_round_max - predecoder_per_round_min:.3f}"

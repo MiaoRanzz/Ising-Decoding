@@ -14,9 +14,13 @@ n_rounds: 9
 workflow:
   task: integrate_to_nvidia
 
-# Used only if this config is switched to workflow.task=train. LQCloud inference
-# always reports both PyMatching and Union-Find.
+# Used only if this config is switched to workflow.task=train.
 validation_decoder: pymatching
+
+# Global decoder backends evaluated by integrate_to_nvidia.
+backend:
+  pymatching: true
+  ldpc_unionfind: true
 
 # === Data (public surface only) ===
 data:

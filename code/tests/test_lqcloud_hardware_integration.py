@@ -18,7 +18,7 @@ if str(CODE_ROOT) not in sys.path:
 from evaluation.lqcloud_inference import (
     _aggregate_lqcloud_file_results,
     _measurement_files,
-    _time_lqcloud_pymatching_latency,
+    _time_lqcloud_decoder_latency,
     build_model_detector_permutation,
     collect_hardware_measurement_memory,
     load_measurement_file,
@@ -42,7 +42,7 @@ class TestLQCloudMeasurementFile(unittest.TestCase):
             calls.update(kwargs)
             return 12.5, 4.25
 
-        baseline_us, predecoder_us, sample_count = _time_lqcloud_pymatching_latency(
+        baseline_us, predecoder_us, sample_count = _time_lqcloud_decoder_latency(
             matcher="matcher",
             baseline_syndromes=list(range(5)),
             residual_syndromes=list(range(4)),
@@ -60,7 +60,7 @@ class TestLQCloudMeasurementFile(unittest.TestCase):
         self.assertEqual(calls["warmup_iterations"], 7)
 
     def test_latency_can_be_disabled(self):
-        baseline_us, predecoder_us, sample_count = _time_lqcloud_pymatching_latency(
+        baseline_us, predecoder_us, sample_count = _time_lqcloud_decoder_latency(
             matcher=None,
             baseline_syndromes=[0],
             residual_syndromes=[0],
@@ -162,15 +162,16 @@ class TestLQCloudMeasurementFile(unittest.TestCase):
                 "raw_logical_errors": errors,
                 "pymatching_logical_errors": errors,
                 "ising_plus_pymatching_logical_errors": errors,
-                "unionfind_logical_errors": errors,
-                "ising_plus_unionfind_logical_errors": errors,
+                "ldpc_unionfind_logical_errors": errors,
+                "ising_plus_ldpc_unionfind_logical_errors": errors,
                 "input_detector_density": density,
                 "residual_detector_density": density / 2,
                 "latency_samples": latency_samples,
-                "pymatch latency (baseline µs/round)": latency,
-                "pymatch latency (after predecoder µs/round)": latency / 2,
-                "unionfind latency (baseline µs/round)": latency * 2,
-                "unionfind latency (after predecoder µs/round)": latency,
+                "pymatching latency (baseline µs/round)": latency,
+                "pymatching latency (after predecoder µs/round)": latency / 2,
+                "ldpc_unionfind latency (baseline µs/round)": latency * 2,
+                "ldpc_unionfind latency (after predecoder µs/round)": latency,
+                "backend_names": ["pymatching", "ldpc_unionfind"],
             }
 
         result = _aggregate_lqcloud_file_results(
@@ -182,7 +183,7 @@ class TestLQCloudMeasurementFile(unittest.TestCase):
         self.assertEqual((result["files"], result["shots"]), (2, 10))
         self.assertAlmostEqual(result["raw_logical_error_rate"], 0.3)
         self.assertAlmostEqual(result["input_detector_density"], 0.18)
-        self.assertAlmostEqual(result["pymatch latency (baseline µs/round)"], 50.0 / 3.0)
+        self.assertAlmostEqual(result["pymatching latency (baseline µs/round)"], 50.0 / 3.0)
 
     def test_repository_measurement_file_contains_d3_round9_shots(self):
         path = REPO_ROOT / "lqcloud_measurements/measurement_5.json"
