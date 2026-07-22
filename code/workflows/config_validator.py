@@ -172,6 +172,10 @@ def _base_hidden_defaults_dict() -> Dict[str, Any]:
                 "precomputed_frames_dir": _default_precomputed_frames_dir(),
                 "enable_correlated_pymatching": False,
                 "code_rotation": "XV",
+                # Optional circuit/input orientation used only by the LQCloud
+                # inference adapter.  When omitted, inference uses the
+                # training orientation above.
+                "code_rotation_inf": None,
                 "noise_model": None,
                 "skip_noise_upscaling": False,
             },
@@ -504,6 +508,7 @@ def validate_public_config(cfg: DictConfig) -> PublicModelSpec:
         # "HE acceleration (advanced): parallel spacelike" for the contract.
         allowed_data_keys = {
             "code_rotation",
+            "code_rotation_inf",
             "noise_model",
             "skip_noise_upscaling",
             "use_compile",
@@ -530,6 +535,8 @@ def validate_public_config(cfg: DictConfig) -> PublicModelSpec:
         # Validate rotation value (accept O1..O4; also allow internal XV/XH/ZV/ZH for compatibility).
         if "code_rotation" in cfg.data:
             _normalize_code_rotation(cfg.data.code_rotation)
+        if "code_rotation_inf" in cfg.data and cfg.data.code_rotation_inf is not None:
+            _normalize_code_rotation(cfg.data.code_rotation_inf)
 
     # Restrict optimizer sub-keys: only lr is public.
     if "optimizer" in cfg and isinstance(cfg.optimizer, DictConfig):
@@ -679,6 +686,9 @@ def apply_public_defaults_and_model(cfg: DictConfig, model_spec: PublicModelSpec
     # Public code_rotation aliases: normalize O1..O4 -> internal XV/XH/ZV/ZH.
     if "data" in merged and "code_rotation" in merged.data:
         merged.data.code_rotation = _normalize_code_rotation(merged.data.code_rotation)
+    if "data" in merged and "code_rotation_inf" in merged.data:
+        if merged.data.code_rotation_inf is not None:
+            merged.data.code_rotation_inf = _normalize_code_rotation(merged.data.code_rotation_inf)
 
     # Test/evaluation config is hidden and always uses the user-requested window.
     if "test" not in merged:

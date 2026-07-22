@@ -29,10 +29,13 @@ train:
 
 # === Data (public surface only) ===
 data:
-  # Surface code orientation (public naming): O1, O2, O3, O4
-  # The lqcloud d=3 layout has horizontal X boundaries and vertical Z
-  # boundaries, which is NVIDIA's XH orientation (public alias O2).
-  code_rotation: O2
+  # Training/model orientation.  Existing checkpoints used for this workflow
+  # were trained in O1.
+  code_rotation: O1
+  # Orientation of the incoming LQCloud detector data.  O2 is the current
+  # QZ01 layout; the LQCloud path adapts O2 input into the O1 model domain.
+  # Omit this field, or set it to O1, to bypass the adapter.
+  code_rotation_inf: O2
   # Optional HE acceleration flag, surfaced here for discoverability (other HE
   # knobs live in the internal defaults). Enables the 2-partition parallel
   # spacelike homological-equivalence path; see the "HE acceleration (advanced):

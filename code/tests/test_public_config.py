@@ -616,6 +616,20 @@ class TestPublicConfig(unittest.TestCase):
                     f"data.code_rotation {public} should normalize to {internal}",
                 )
 
+    def test_code_rotation_inf_is_accepted_and_normalized(self):
+        cfg = OmegaConf.create(
+            {
+                "model_id": 1,
+                "distance": 9,
+                "n_rounds": 9,
+                "data": {"code_rotation": "O1", "code_rotation_inf": "O2"},
+            }
+        )
+        spec = validate_public_config(cfg)
+        merged = apply_public_defaults_and_model(cfg, spec)
+        self.assertEqual(str(merged.data.code_rotation), "XV")
+        self.assertEqual(str(merged.data.code_rotation_inf), "XH")
+
     def test_code_rotation_internal_aliases_accepted(self):
         """Internal names XV, XH, ZV, ZH are also accepted (e.g. for compatibility)."""
         for rotation in ["XV", "XH", "ZV", "ZH"]:

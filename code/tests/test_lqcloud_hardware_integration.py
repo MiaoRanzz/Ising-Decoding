@@ -20,6 +20,7 @@ from evaluation.lqcloud_inference import (
     _measurement_files,
     _time_lqcloud_decoder_latency,
     build_model_detector_permutation,
+    build_o2_to_o1_detector_permutation,
     collect_hardware_measurement_memory,
     load_measurement_file,
     load_lqcloud_hardware_samples,
@@ -232,6 +233,20 @@ class TestLQCloudDetectorPermutation(unittest.TestCase):
             [0, 0, 0, 0, 0, 1, 0, 0, 1],
         ]
 
+    class _XVSurfaceCode:
+        hx = [
+            [1, 1, 0, 1, 1, 0, 0, 0, 0],
+            [0, 0, 1, 0, 0, 1, 0, 0, 0],
+            [0, 0, 0, 1, 0, 0, 1, 0, 0],
+            [0, 0, 0, 0, 1, 1, 0, 1, 1],
+        ]
+        hz = [
+            [1, 1, 0, 0, 0, 0, 0, 0, 0],
+            [0, 1, 1, 0, 1, 1, 0, 0, 0],
+            [0, 0, 0, 1, 1, 0, 1, 1, 0],
+            [0, 0, 0, 0, 0, 0, 0, 1, 1],
+        ]
+
     def test_d3_xh_permutation_is_complete_and_reorders_each_bulk_round(self):
         permutation = build_model_detector_permutation(
             distance=3,
@@ -244,6 +259,34 @@ class TestLQCloudDetectorPermutation(unittest.TestCase):
         self.assertEqual(
             permutation,
             [3, 1, 0, 2, 8, 4, 7, 10, 11, 6, 5, 9, 15, 13, 12, 14],
+        )
+        self.assertEqual(sorted(permutation), list(range(16)))
+
+    def test_o2_to_o1_permutation_swaps_bulk_stabilizer_types(self):
+        permutation = build_o2_to_o1_detector_permutation(
+            distance=3,
+            n_rounds=2,
+            source_basis="Z",
+            source_surface_code=self._XHSurfaceCode,
+            target_surface_code=self._XVSurfaceCode,
+        )
+        self.assertEqual(
+            permutation,
+            [2, 0, 3, 1, 10, 8, 11, 9, 4, 5, 6, 7, 14, 12, 15, 13],
+        )
+        self.assertEqual(sorted(permutation), list(range(16)))
+
+    def test_o2_to_o1_permutation_switches_memory_x_to_memory_z(self):
+        permutation = build_o2_to_o1_detector_permutation(
+            distance=3,
+            n_rounds=2,
+            source_basis="X",
+            source_surface_code=self._XHSurfaceCode,
+            target_surface_code=self._XVSurfaceCode,
+        )
+        self.assertEqual(
+            permutation,
+            [0, 1, 2, 3, 10, 8, 11, 9, 4, 5, 6, 7, 12, 13, 14, 15],
         )
         self.assertEqual(sorted(permutation), list(range(16)))
 

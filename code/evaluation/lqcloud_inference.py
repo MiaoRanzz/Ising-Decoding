@@ -149,6 +149,87 @@ def _row_supports(matrix: Any) -> List[frozenset[int]]:
     ]
 
 
+def _reflect_left_right(support: frozenset[int], distance: int) -> frozenset[int]:
+    """Reflect a row-major data-qubit support across the vertical centreline."""
+    D = int(distance)
+    return frozenset((qubit // D) * D + (D - 1 - qubit % D) for qubit in support)
+
+
+def _target_to_source_rows(
+    source_rows: Sequence[frozenset[int]],
+    target_rows: Sequence[frozenset[int]],
+    *,
+    distance: int,
+    name: str,
+) -> List[int]:
+    """Return source row indices after the O1/O2 reflection symmetry."""
+    reflected_source = [_reflect_left_right(row, distance) for row in source_rows]
+    result: List[int] = []
+    for target_index, target_row in enumerate(target_rows):
+        matches = [index for index, row in enumerate(reflected_source) if row == target_row]
+        if len(matches) != 1:
+            raise ValueError(
+                f"O2-to-O1 adapter could not map {name} stabilizer row {target_index}; "
+                f"found {len(matches)} matching reflected supports"
+            )
+        result.append(matches[0])
+    return result
+
+
+def build_o2_to_o1_detector_permutation(
+    *,
+    distance: int,
+    n_rounds: int,
+    source_basis: str,
+    source_surface_code: Any,
+    target_surface_code: Any,
+) -> List[int]:
+    """Map canonical O2 detectors into the equivalent canonical O1 ordering.
+
+    The O1/O2 equivalence is a left-right data-grid reflection together with
+    an X/Z stabilizer exchange.  Consequently a memory-X input becomes a
+    memory-Z model input and vice versa.  The returned permutation satisfies
+    ``o1_dets = o2_dets[:, permutation]``.
+    """
+    D = int(distance)
+    T = int(n_rounds)
+    basis = str(source_basis).upper()
+    if basis not in {"X", "Z"}:
+        raise ValueError(f"Unsupported source basis for O2-to-O1 adapter: {source_basis!r}")
+
+    source_x = _row_supports(source_surface_code.hx)
+    source_z = _row_supports(source_surface_code.hz)
+    target_x = _row_supports(target_surface_code.hx)
+    target_z = _row_supports(target_surface_code.hz)
+    half = len(source_x)
+    if len(source_z) != half or len(target_x) != half or len(target_z) != half:
+        raise ValueError("Unexpected stabilizer count for O2-to-O1 adapter")
+
+    # O2 X -> O1 Z and O2 Z -> O1 X under the symmetry.
+    target_x_to_source_z = _target_to_source_rows(
+        source_z, target_x, distance=D, name="X"
+    )
+    target_z_to_source_x = _target_to_source_rows(
+        source_x, target_z, distance=D, name="Z"
+    )
+    target_boundary_to_source = (
+        target_z_to_source_x if basis == "X" else target_x_to_source_z
+    )
+
+    permutation = list(target_boundary_to_source)
+    for round_index in range(T - 1):
+        source_start = half + round_index * 2 * half
+        permutation.extend(source_start + half + index for index in target_x_to_source_z)
+        permutation.extend(source_start + index for index in target_z_to_source_x)
+    final_start = half + (T - 1) * 2 * half
+    permutation.extend(final_start + index for index in target_boundary_to_source)
+
+    expected = 2 * T * half
+    if len(permutation) != expected or sorted(permutation) != list(range(expected)):
+        raise ValueError("O2-to-O1 detector permutation is not a complete one-to-one mapping")
+    return permutation
+
+
 def _ordered_lq_qubits(
     nvidia_supports: Sequence[frozenset[int]],
     lq_qubits: Iterable[int],
@@ -255,7 +336,9 @@ class HardwareSamples:
     model_dets: Any
     observables: Any
     model_to_lq: List[int]
+    model_to_source: List[int]
     basis: str
+    model_basis: str
 
 
 def load_lqcloud_hardware_samples(
@@ -363,26 +446,54 @@ def load_lqcloud_hardware_samples(
             f"Expected one logical observable per shot, got shape {observables.shape}"
         )
 
-    rotation = str(cfg.data.code_rotation).upper()
-    surface_code = SurfaceCode(
+    training_rotation = str(cfg.data.code_rotation).upper()
+    input_rotation = str(
+        getattr(cfg.data, "code_rotation_inf", None) or training_rotation
+    ).upper()
+    input_surface_code = SurfaceCode(
         D,
-        first_bulk_syndrome_type=rotation[0],
-        rotated_type=rotation[1],
+        first_bulk_syndrome_type=input_rotation[0],
+        rotated_type=input_rotation[1],
     )
     model_to_lq = build_model_detector_permutation(
         distance=D,
         n_rounds=T,
         basis=basis,
-        code_rotation=rotation,
+        code_rotation=input_rotation,
         lq_circuits=lq_circuits,
-        surface_code=surface_code,
+        surface_code=input_surface_code,
     )
     if lq_dets.shape[1] != len(model_to_lq):
         raise ValueError(
             f"LQCloud circuit produced {lq_dets.shape[1]} detectors; "
             f"the NVIDIA model expects {len(model_to_lq)}"
         )
-    model_dets = lq_dets[:, model_to_lq]
+    source_model_dets = lq_dets[:, model_to_lq]
+    model_to_source = list(range(len(model_to_lq)))
+    model_basis = basis
+    if training_rotation == input_rotation:
+        model_dets = source_model_dets
+    elif training_rotation == "XV" and input_rotation == "XH":
+        target_surface_code = SurfaceCode(
+            D,
+            first_bulk_syndrome_type=training_rotation[0],
+            rotated_type=training_rotation[1],
+        )
+        model_to_source = build_o2_to_o1_detector_permutation(
+            distance=D,
+            n_rounds=T,
+            source_basis=basis,
+            source_surface_code=input_surface_code,
+            target_surface_code=target_surface_code,
+        )
+        model_dets = source_model_dets[:, model_to_source]
+        model_basis = "Z" if basis == "X" else "X"
+    else:
+        raise ValueError(
+            "LQCloud symmetry adapter currently supports only identical rotations "
+            "or training O1/XV with input O2/XH; got "
+            f"training={training_rotation}, input={input_rotation}"
+        )
     return HardwareSamples(
         circuit=circuit,
         measurements=measurements,
@@ -390,7 +501,9 @@ def load_lqcloud_hardware_samples(
         model_dets=model_dets,
         observables=observables,
         model_to_lq=model_to_lq,
+        model_to_source=model_to_source,
         basis=basis,
+        model_basis=model_basis,
     )
 
 
@@ -468,8 +581,10 @@ def _decode_lqcloud_samples(
             pre_logical = output[:, 0].to("cpu").numpy().astype(np.uint8, copy=False)
             residual_model = output[:, 1:].to("cpu").numpy().astype(np.uint8, copy=False)
 
+            residual_source = np.empty_like(residual_model)
+            residual_source[:, samples.model_to_source] = residual_model
             residual_lq = np.empty_like(residual_model)
-            residual_lq[:, samples.model_to_lq] = residual_model
+            residual_lq[:, samples.model_to_lq] = residual_source
             observables = samples.observables[start:stop]
             for name, decoder in decoders.items():
                 residual_prediction = np.asarray(
@@ -648,7 +763,7 @@ def run_inference_modified(model, device, dist, cfg):
             max_shots=remaining_shots,
         )
         if pipeline is None:
-            cfg.test.meas_basis_test = samples.basis
+            cfg.test.meas_basis_test = samples.model_basis
             cfg.test.n_rounds = int(cfg.n_rounds)
             maps = _build_stab_maps(int(cfg.distance), str(cfg.data.code_rotation))
             pipeline = PreDecoderMemoryEvalModule(model, cfg, maps, device).to(device)
@@ -726,6 +841,7 @@ def run_inference_modified(model, device, dist, cfg):
 
 __all__ = [
     "HardwareSamples",
+    "build_o2_to_o1_detector_permutation",
     "build_model_detector_permutation",
     "collect_hardware_measurement_memory",
     "load_measurement_file",
