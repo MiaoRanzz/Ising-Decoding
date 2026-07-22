@@ -514,6 +514,17 @@ def _count_observable_mismatches(predictions, observables) -> int:
     return int(np.any(predictions != observables, axis=1).sum())
 
 
+def _improvement_factor(baseline: float, after_predecoder: float) -> float:
+    """Return the baseline-to-after ratio, with stable zero/NaN handling."""
+    baseline = float(baseline)
+    after_predecoder = float(after_predecoder)
+    if baseline != baseline or after_predecoder != after_predecoder:
+        return float("nan")
+    if after_predecoder == 0.0:
+        return 1.0 if baseline == 0.0 else float("inf")
+    return baseline / after_predecoder
+
+
 def _time_lqcloud_decoder_latency(
     matcher,
     baseline_syndromes,
@@ -627,16 +638,23 @@ def _decode_lqcloud_samples(
         "latency_samples": latency_samples,
         "backend_names": list(decoders),
     }
+    result["detector density reduction (x)"] = _improvement_factor(
+        result["input_detector_density"], result["residual_detector_density"]
+    )
     for name in decoders:
         baseline_us, predecoder_us, _ = latency[name]
+        baseline_ler = baseline_errors[name] / shots
+        corrected_ler = corrected_errors[name] / shots
         result.update(
             {
                 f"{name}_logical_errors": baseline_errors[name],
-                f"{name}_logical_error_rate": baseline_errors[name] / shots,
+                f"{name}_logical_error_rate": baseline_ler,
                 f"ising_plus_{name}_logical_errors": corrected_errors[name],
-                f"ising_plus_{name}_logical_error_rate": corrected_errors[name] / shots,
+                f"ising_plus_{name}_logical_error_rate": corrected_ler,
                 f"{name} latency (baseline µs/round)": baseline_us,
                 f"{name} latency (after predecoder µs/round)": predecoder_us,
+                f"{name} LER improvement (x)": _improvement_factor(baseline_ler, corrected_ler),
+                f"{name} latency improvement (x)": _improvement_factor(baseline_us, predecoder_us),
             }
         )
     return result
@@ -687,20 +705,29 @@ def _aggregate_lqcloud_file_results(file_results: List[dict], *, distance: int, 
         "backend_names": list(backend_names),
         "file_results": file_results,
     }
+    result["detector density reduction (x)"] = _improvement_factor(
+        result["input_detector_density"], result["residual_detector_density"]
+    )
     for name in backend_names:
         baseline_errors = total(f"{name}_logical_errors")
         corrected_errors = total(f"ising_plus_{name}_logical_errors")
+        baseline_ler = baseline_errors / shots
+        corrected_ler = corrected_errors / shots
+        baseline_latency = weighted_by_latency_samples(f"{name} latency (baseline µs/round)")
+        predecoder_latency = weighted_by_latency_samples(
+            f"{name} latency (after predecoder µs/round)"
+        )
         result.update(
             {
                 f"{name}_logical_errors": baseline_errors,
-                f"{name}_logical_error_rate": baseline_errors / shots,
+                f"{name}_logical_error_rate": baseline_ler,
                 f"ising_plus_{name}_logical_errors": corrected_errors,
-                f"ising_plus_{name}_logical_error_rate": corrected_errors / shots,
-                f"{name} latency (baseline µs/round)": weighted_by_latency_samples(
-                    f"{name} latency (baseline µs/round)"
-                ),
-                f"{name} latency (after predecoder µs/round)": weighted_by_latency_samples(
-                    f"{name} latency (after predecoder µs/round)"
+                f"ising_plus_{name}_logical_error_rate": corrected_ler,
+                f"{name} latency (baseline µs/round)": baseline_latency,
+                f"{name} latency (after predecoder µs/round)": predecoder_latency,
+                f"{name} LER improvement (x)": _improvement_factor(baseline_ler, corrected_ler),
+                f"{name} latency improvement (x)": _improvement_factor(
+                    baseline_latency, predecoder_latency
                 ),
             }
         )
@@ -823,9 +850,11 @@ def run_inference_modified(model, device, dist, cfg):
                 f"{result[f'ising_plus_{name}_logical_errors']:>16}"
                 f"{result[f'ising_plus_{name}_logical_error_rate']:>12.6f}"
             )
+            print(f"    LER improvement: {result[f'{name} LER improvement (x)']:.4f}x")
         print(
             f"  Detector density: {result['input_detector_density']:.6f} -> "
-            f"{result['residual_detector_density']:.6f}"
+            f"{result['residual_detector_density']:.6f} "
+            f"({result['detector density reduction (x)']:.4f}x reduction)"
         )
         for name in result["backend_names"]:
             label = BACKEND_LABELS.get(name, name)
@@ -833,7 +862,8 @@ def run_inference_modified(model, device, dist, cfg):
                 f"  {label} latency ({result['latency_samples']} single-shot samples):\n"
                 f"    Baseline:         {result[f'{name} latency (baseline µs/round)']:.6f} us/round\n"
                 f"    After predecoder: "
-                f"{result[f'{name} latency (after predecoder µs/round)']:.6f} us/round"
+                f"{result[f'{name} latency (after predecoder µs/round)']:.6f} us/round\n"
+                f"    Latency improvement: {result[f'{name} latency improvement (x)']:.4f}x"
             )
         print("[LQCloud Summary] " + json.dumps(result, sort_keys=True))
     return result

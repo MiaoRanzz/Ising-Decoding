@@ -185,6 +185,10 @@ class TestLQCloudMeasurementFile(unittest.TestCase):
         self.assertAlmostEqual(result["raw_logical_error_rate"], 0.3)
         self.assertAlmostEqual(result["input_detector_density"], 0.18)
         self.assertAlmostEqual(result["pymatching latency (baseline µs/round)"], 50.0 / 3.0)
+        self.assertAlmostEqual(result["detector density reduction (x)"], 2.0)
+        self.assertAlmostEqual(result["pymatching LER improvement (x)"], 1.0)
+        self.assertAlmostEqual(result["pymatching latency improvement (x)"], 2.0)
+        self.assertAlmostEqual(result["ldpc_unionfind latency improvement (x)"], 2.0)
 
     def test_repository_measurement_file_contains_d3_round9_shots(self):
         path = REPO_ROOT / "lqcloud_measurements/measurement_5.json"
