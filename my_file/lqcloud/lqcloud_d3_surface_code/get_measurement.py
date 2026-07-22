@@ -5,7 +5,7 @@ import json
 
 
 # Number of stabilizer measurement rounds
-cycle = 9
+cycle = 60
 ini_state = [0] * (const.DISTANCE ** 2)
 
 # Build the distance-3 surface code cloud circuit
@@ -17,11 +17,11 @@ backend = provider.get_backend("QZ01-surface_code")
 # backend = provider.get_backend("AGate-100")
 
 # Submit the job and wait for the result
-job = backend.run(qc, shots=50000)
+job = backend.run(qc, shots=25000)
 result = job.result()
 
 data = result.get_memory()
-file_path = "lqcloud_measurements/measurement_L_tmp.json"
+file_path = "lqcloud_measurements/25000x10d3c60/meas_10.json"
 
 with open(file_path, "w", encoding="utf-8") as f:
     json.dump(data, f, ensure_ascii=False, indent=2)

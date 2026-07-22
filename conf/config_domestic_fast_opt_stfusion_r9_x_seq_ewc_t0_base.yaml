@@ -10,6 +10,14 @@ n_rounds: 9
 workflow:
   task: train
 
+# Used only if this config is switched to workflow.task=train.
+validation_decoder: pymatching
+
+# Global decoder backends evaluated by integrate_to_nvidia.
+backend:
+  pymatching: true
+  ldpc_unionfind: true
+
 data:
   code_rotation: O2
   noise_model:
@@ -52,7 +60,7 @@ lqcloud:
   # Set to 0 to disable latency timing.
   latency_num_samples: 10000
   latency_warmup_iterations: 50
-  measurement_source: lqcloud_measurements/measurement_5.json
+  measurement_source: lqcloud_measurements/measurement_1.json
   circuit_type: memory_z
   initial_state: null
   reset: false

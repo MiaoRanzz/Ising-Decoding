@@ -24,12 +24,20 @@ model_id: 111
 
 # === Values for evaluation. Training window is hardcoded to model receptive field. ===
 distance: 3
-n_rounds: 9
+n_rounds: 60
 
 # === Workflow ===
 workflow:
   task: train  # train, inference
   # simplify logs of inference to have only pymatching b4 and after predecoding. TODO: batch_size=1
+
+# Used only if this config is switched to workflow.task=train.
+validation_decoder: pymatching
+
+# Global decoder backends evaluated by integrate_to_nvidia.
+backend:
+  pymatching: true
+  ldpc_unionfind: false
 
 # === Data (public surface only) ===
 data:
@@ -81,7 +89,7 @@ lqcloud:
   # Set to 0 to disable latency timing.
   latency_num_samples: 10000
   latency_warmup_iterations: 50
-  measurement_source: lqcloud_measurements/measurement_5.json # only works when source: file
+  measurement_source: lqcloud_measurements/25000x10d3c60 # only works when source: file
   circuit_type: memory_z
   initial_state: null
   reset: false

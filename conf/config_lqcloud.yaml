@@ -8,7 +8,7 @@ model_id: 1  # Choose 1, 2, 3, 4, or 5
 # alone is not enough to run another code distance.
 distance: 3
 # Configurable, but must be at least 2 for detector construction.
-n_rounds: 9
+n_rounds: 60
 
 # === Workflow ===
 workflow:
@@ -20,7 +20,11 @@ validation_decoder: pymatching
 # Global decoder backends evaluated by integrate_to_nvidia.
 backend:
   pymatching: true
-  ldpc_unionfind: true
+  ldpc_unionfind: false
+
+# === Training ===
+train:
+  epochs: 20
 
 # === Data (public surface only) ===
 data:
@@ -82,7 +86,7 @@ lqcloud:
   # Set to 0 to disable latency timing.
   latency_num_samples: 10000
   latency_warmup_iterations: 50
-  measurement_source: lqcloud_measurements/measurement_5.json # only works when source: file
+  measurement_source: lqcloud_measurements/25000x10d3c60 # only works when source: file
   circuit_type: memory_z
   initial_state: null
   reset: false
