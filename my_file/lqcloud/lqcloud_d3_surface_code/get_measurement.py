@@ -17,11 +17,11 @@ backend = provider.get_backend("QZ01-surface_code")
 # backend = provider.get_backend("AGate-100")
 
 # Submit the job and wait for the result
-job = backend.run(qc, shots=10000)
+job = backend.run(qc, shots=50000)
 result = job.result()
 
 data = result.get_memory()
-file_path = "lqcloud_measurements/measurement_5.json"
+file_path = "lqcloud_measurements/measurement_L_tmp.json"
 
 with open(file_path, "w", encoding="utf-8") as f:
     json.dump(data, f, ensure_ascii=False, indent=2)

@@ -4,40 +4,73 @@
 # ST-Fusion-R9-X sequential no-EWC stage T0_base.
 
 model_id: 111
+code: surface
 distance: 3
 n_rounds: 9
 
 workflow:
   task: train
 
+validation_decoder: pymatching
+
+# === Training ===
+train:
+  epochs: 20
+
 data:
   code_rotation: O2
+  # noise_model:
+  #   p_prep_X: 0.0010000
+  #   p_prep_Z: 0.0010000
+  #   p_meas_X: 0.0100000
+  #   p_meas_Z: 0.0100000
+  #   p_idle_cnot_X: 0.0003330
+  #   p_idle_cnot_Y: 0.0003330
+  #   p_idle_cnot_Z: 0.0003330
+  #   p_idle_spam_X: 0.0006670
+  #   p_idle_spam_Y: 0.0006670
+  #   p_idle_spam_Z: 0.0006670
+  #   p_cnot_IX: 0.0006670
+  #   p_cnot_IY: 0.0006670
+  #   p_cnot_IZ: 0.0006670
+  #   p_cnot_XI: 0.0006670
+  #   p_cnot_XX: 0.0006670
+  #   p_cnot_XY: 0.0006670
+  #   p_cnot_XZ: 0.0006670
+  #   p_cnot_YI: 0.0006670
+  #   p_cnot_YX: 0.0006670
+  #   p_cnot_YY: 0.0006670
+  #   p_cnot_YZ: 0.0006670
+  #   p_cnot_ZI: 0.0006670
+  #   p_cnot_ZX: 0.0006670
+  #   p_cnot_ZY: 0.0006670
+  #   p_cnot_ZZ: 0.0006670
   noise_model:
-    p_prep_X: 0.0010000
-    p_prep_Z: 0.0010000
-    p_meas_X: 0.0100000
-    p_meas_Z: 0.0100000
-    p_idle_cnot_X: 0.0003330
-    p_idle_cnot_Y: 0.0003330
-    p_idle_cnot_Z: 0.0003330
-    p_idle_spam_X: 0.0006670
-    p_idle_spam_Y: 0.0006670
-    p_idle_spam_Z: 0.0006670
-    p_cnot_IX: 0.0006670
-    p_cnot_IY: 0.0006670
-    p_cnot_IZ: 0.0006670
-    p_cnot_XI: 0.0006670
-    p_cnot_XX: 0.0006670
-    p_cnot_XY: 0.0006670
-    p_cnot_XZ: 0.0006670
-    p_cnot_YI: 0.0006670
-    p_cnot_YX: 0.0006670
-    p_cnot_YY: 0.0006670
-    p_cnot_YZ: 0.0006670
-    p_cnot_ZI: 0.0006670
-    p_cnot_ZX: 0.0006670
-    p_cnot_ZY: 0.0006670
-    p_cnot_ZZ: 0.0006670
+    p_prep_X: 0.000733333
+    p_prep_Z: 0.000733333
+    p_meas_X: 0.015000000
+    p_meas_Z: 0.015000000
+    p_idle_cnot_X: 0.000366667  # No explicit channel exists in the Stim circuit.
+    p_idle_cnot_Y: 0.000366667  # No explicit channel exists in the Stim circuit.
+    p_idle_cnot_Z: 0.000366667  # No explicit channel exists in the Stim circuit.
+    p_idle_spam_X: 0.006333333
+    p_idle_spam_Y: 0.006333333
+    p_idle_spam_Z: 0.006333333
+    p_cnot_IX: 0.000426667
+    p_cnot_IY: 0.000426667
+    p_cnot_IZ: 0.000426667
+    p_cnot_XI: 0.000426667
+    p_cnot_XX: 0.000426667
+    p_cnot_XY: 0.000426667
+    p_cnot_XZ: 0.000426667
+    p_cnot_YI: 0.000426667
+    p_cnot_YX: 0.000426667
+    p_cnot_YY: 0.000426667
+    p_cnot_YZ: 0.000426667
+    p_cnot_ZI: 0.000426667
+    p_cnot_ZX: 0.000426667
+    p_cnot_ZY: 0.000426667
+    p_cnot_ZZ: 0.000426667
 
 # === LQCloud hardware input ===
 lqcloud:
