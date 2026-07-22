@@ -47,6 +47,18 @@ class TestPublicConfig(unittest.TestCase):
         merged = apply_public_defaults_and_model(ldpc_unionfind, spec)
         self.assertEqual(str(merged.validation_decoder), "ldpc_unionfind")
 
+        nbi_hyq_unionfind = OmegaConf.create(
+            {
+                "model_id": 1,
+                "distance": 9,
+                "n_rounds": 9,
+                "validation_decoder": "nbi_hyq_unionfind",
+            }
+        )
+        spec = validate_public_config(nbi_hyq_unionfind)
+        merged = apply_public_defaults_and_model(nbi_hyq_unionfind, spec)
+        self.assertEqual(str(merged.validation_decoder), "nbi_hyq_unionfind")
+
         invalid = OmegaConf.create(
             {
                 "model_id": 1,
@@ -94,6 +106,21 @@ class TestPublicConfig(unittest.TestCase):
         merged = apply_public_defaults_and_model(cfg, spec)
         self.assertTrue(bool(merged.backend.pymatching))
         self.assertFalse(bool(merged.backend.ldpc_unionfind))
+        self.assertFalse(bool(merged.backend.nbi_hyq_unionfind))
+
+        nbi_only = OmegaConf.create(
+            {
+                "model_id": 1,
+                "distance": 9,
+                "n_rounds": 9,
+                "backend": {
+                    "pymatching": False,
+                    "ldpc_unionfind": False,
+                    "nbi_hyq_unionfind": True,
+                },
+            }
+        )
+        validate_public_config(nbi_only)
 
         invalid = OmegaConf.create(
             {"model_id": 1, "distance": 9, "n_rounds": 9, "backend": {"unknown": True}}

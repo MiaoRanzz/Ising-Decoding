@@ -103,10 +103,11 @@ batch_schedule:
   end_epoch: 3   # After epoch 3 completes, reach final batch size (linear schedule, multiples of 8)
 
 validation_ler: True
-validation_decoder: pymatching # pymatching or ldpc_unionfind (training LER validation only)
+validation_decoder: pymatching # pymatching, ldpc_unionfind, or nbi_hyq_unionfind (training LER validation only)
 backend:
   pymatching: true
   ldpc_unionfind: true
+  nbi_hyq_unionfind: false
 early_stopping:
   enabled: true
   patience: 100

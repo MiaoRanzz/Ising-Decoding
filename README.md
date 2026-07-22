@@ -163,6 +163,21 @@ bash code/scripts/check_python_compat.sh
 Tip: To force CUDA-enabled PyTorch, set `TORCH_CUDA=cuXXX` (recommended `cu13x`) or
 `TORCH_WHL_INDEX=https://download.pytorch.org/whl/cuXXX` before running installs.
 
+Optional `nbi_hyq_unionfind` backend (Linux only):
+
+```bash
+git clone https://github.com/nbi-hyq/uf_decoder.git third_party/uf_decoder
+pip install meson ninja
+cd third_party/uf_decoder
+meson setup build --buildtype=release
+cd build && ninja
+```
+
+Then set `backend.nbi_hyq_unionfind: true` in the selected config. The adapter
+auto-discovers `third_party/uf_decoder`; for another location, export
+`NBI_HYQ_UF_DECODER_ROOT=/absolute/path/to/uf_decoder`. This optional backend is
+disabled by default and uses the upstream general-LDPC batch decoder.
+
 Quick start:
 
 ```bash

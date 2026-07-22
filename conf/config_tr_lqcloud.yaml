@@ -14,10 +14,11 @@ workflow:
 
 # LER backend used during training validation. Inference backends are controlled
 # independently below.
-validation_decoder: pymatching  # pymatching or ldpc_unionfind
+validation_decoder: pymatching  # pymatching, ldpc_unionfind, or nbi_hyq_unionfind
 backend:
   pymatching: true
   ldpc_unionfind: true
+  nbi_hyq_unionfind: false
 
 # === Training ===
 train:

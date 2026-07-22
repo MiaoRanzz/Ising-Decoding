@@ -230,6 +230,7 @@ def _base_hidden_defaults_dict() -> Dict[str, Any]:
         "backend": {
             "pymatching": True,
             "ldpc_unionfind": True,
+            "nbi_hyq_unionfind": False,
         },
         "early_stopping": {
             "enabled": True,
@@ -385,16 +386,22 @@ def validate_public_config(cfg: DictConfig) -> PublicModelSpec:
     validation_decoder = str(getattr(cfg, "validation_decoder", "pymatching")).strip().lower()
     if validation_decoder == "unionfind":
         validation_decoder = "ldpc_unionfind"
-    if validation_decoder not in ("pymatching", "ldpc_unionfind"):
+    if validation_decoder not in (
+        "pymatching",
+        "ldpc_unionfind",
+        "nbi_hyq_unionfind",
+    ):
         raise ValueError(
-            "Invalid validation_decoder. Choose 'pymatching' or 'ldpc_unionfind'."
+            "Invalid validation_decoder. Choose 'pymatching', 'ldpc_unionfind', "
+            "or 'nbi_hyq_unionfind'."
         )
     if code == "color" and validation_decoder != "pymatching":
         raise ValueError(
-            "validation_decoder='ldpc_unionfind' is currently supported only for the surface code."
+            f"validation_decoder={validation_decoder!r} is currently supported only "
+            "for the surface code."
         )
     if "backend" in cfg:
-        allowed_backends = {"pymatching", "ldpc_unionfind"}
+        allowed_backends = {"pymatching", "ldpc_unionfind", "nbi_hyq_unionfind"}
         unexpected_backends = set(cfg.backend.keys()) - allowed_backends
         if unexpected_backends:
             raise ValueError(
@@ -406,8 +413,13 @@ def validate_public_config(cfg: DictConfig) -> PublicModelSpec:
                 raise ValueError(f"backend.{backend_name} must be true or false.")
         pymatching_enabled = bool(getattr(cfg.backend, "pymatching", True))
         ldpc_unionfind_enabled = bool(getattr(cfg.backend, "ldpc_unionfind", True))
-        if not pymatching_enabled and not ldpc_unionfind_enabled:
-            raise ValueError("At least one of backend.pymatching or backend.ldpc_unionfind must be true.")
+        nbi_hyq_unionfind_enabled = bool(
+            getattr(cfg.backend, "nbi_hyq_unionfind", False)
+        )
+        if not any(
+            (pymatching_enabled, ldpc_unionfind_enabled, nbi_hyq_unionfind_enabled)
+        ):
+            raise ValueError("At least one inference backend must be true.")
     if code == "color" and int(model_spec.receptive_field) > 13:
         raise ValueError(
             "code='color' currently supports public model_ids with receptive field <= 13 "
