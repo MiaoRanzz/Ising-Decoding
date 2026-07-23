@@ -858,12 +858,13 @@ def _load_model(cfg, dist):
         if dist.rank == 0:
             print(f"Loading checkpoint {use_checkpoint} from: {checkpoint_dir}")
 
-        # Prefer any PreDecoderModelMemory_* file ending with .0.{use_checkpoint}.pt
+        # Support every PreDecoder architecture (e.g. Memory, STFusion) while
+        # retaining the exact numbered-checkpoint suffix.
         target_suffix = f".0.{use_checkpoint}.pt"
         checkpoint_filename = None
         try:
             for f in os.listdir(checkpoint_dir):
-                if f.startswith("PreDecoderModelMemory_") and f.endswith(target_suffix):
+                if f.startswith("PreDecoder") and f.endswith(target_suffix):
                     checkpoint_filename = f
                     break
         except OSError:
