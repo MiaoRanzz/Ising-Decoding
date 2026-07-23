@@ -458,6 +458,25 @@ def validate_public_config(cfg: DictConfig) -> PublicModelSpec:
     if "test" in cfg:
         raise ValueError("Config field 'test' is not supported in the public release.")
 
+    # Keep checkpoint selection narrow and inference-specific.  The internal
+    # ``test.use_model_checkpoint`` knob remains hidden, while public
+    # inference configs may opt into one numbered checkpoint.
+    if "inf" in cfg:
+        if not isinstance(cfg.inf, DictConfig):
+            raise ValueError("Config field 'inf' must be a mapping.")
+        allowed_inf_keys = {"checkpoint"}
+        unexpected_inf_keys = set(cfg.inf.keys()) - allowed_inf_keys
+        if unexpected_inf_keys:
+            raise ValueError(
+                f"Unsupported inf fields: {sorted(unexpected_inf_keys)}. "
+                f"Allowed fields are: {sorted(allowed_inf_keys)}"
+            )
+        if "checkpoint" not in cfg.inf:
+            raise ValueError("Config field 'inf.checkpoint' is required when 'inf' is present.")
+        checkpoint = cfg.inf.checkpoint
+        if isinstance(checkpoint, bool) or not isinstance(checkpoint, int) or checkpoint < 0:
+            raise ValueError("inf.checkpoint must be a non-negative integer (0 selects the best model).")
+
     # Fail-fast on known hidden fields if the user tries to inject them.
     _assert_not_present(
         cfg,

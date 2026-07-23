@@ -4,8 +4,9 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
-from workflows.run import find_best_model
+from workflows.run import _resolve_inference_checkpoint, find_best_model
 
 
 class TestModelSelection(unittest.TestCase):
@@ -33,6 +34,25 @@ class TestModelSelection(unittest.TestCase):
             release.touch()
 
             self.assertEqual(find_best_model(tmpdir, rank=1), str(release))
+
+    def test_public_inference_checkpoint_uses_zero_for_best_model(self):
+        self.assertEqual(
+            _resolve_inference_checkpoint(SimpleNamespace(inf=SimpleNamespace(checkpoint=0))),
+            -1,
+        )
+        self.assertEqual(
+            _resolve_inference_checkpoint(SimpleNamespace(inf=SimpleNamespace(checkpoint=12))),
+            12,
+        )
+        self.assertIsNone(_resolve_inference_checkpoint(SimpleNamespace()))
+
+    def test_public_inference_checkpoint_rejects_invalid_values(self):
+        for invalid in (-1, True, "12"):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):
+                    _resolve_inference_checkpoint(
+                        SimpleNamespace(inf=SimpleNamespace(checkpoint=invalid))
+                    )
 
 
 if __name__ == "__main__":

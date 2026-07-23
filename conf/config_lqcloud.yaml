@@ -3,6 +3,12 @@
 # === Model selection (required) ===
 model_id: 1  # Choose 1, 2, 3, 4, or 5
 
+# === Inference model checkpoint ===
+# 0: select the best available model (the existing default).
+# Positive integer: load the checkpoint whose filename ends in `.0.<number>.pt`.
+inf:
+  checkpoint: 0
+
 # === Values for evaluation. Training window is hardcoded to model receptive field. ===
 # The current LQCloud layout/circuit supports only d=3; changing this value
 # alone is not enough to run another code distance.

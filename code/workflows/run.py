@@ -139,6 +139,22 @@ def _record_resolved_model_path(cfg, model_path):
         )
 
 
+def _resolve_inference_checkpoint(cfg):
+    """Map the public ``inf.checkpoint`` setting to the legacy loader value.
+
+    ``None`` means the public setting was omitted, so callers retain the
+    existing ``test.use_model_checkpoint`` behavior.  Zero intentionally maps
+    to -1 because the legacy loader uses -1 to select the best model.
+    """
+    inf_cfg = getattr(cfg, "inf", None)
+    checkpoint = getattr(inf_cfg, "checkpoint", None) if inf_cfg is not None else None
+    if checkpoint is None:
+        return None
+    if isinstance(checkpoint, bool) or not isinstance(checkpoint, int) or checkpoint < 0:
+        raise ValueError("inf.checkpoint must be a non-negative integer (0 selects the best model).")
+    return -1 if checkpoint == 0 else checkpoint
+
+
 def _apply_public_inference_env_overrides(cfg) -> None:
     try:
         test_cfg = getattr(cfg, "test", None)
@@ -813,7 +829,9 @@ def _load_model(cfg, dist):
     # Priority: 1) model_checkpoint_dir (for inference configs)
     #           2) cfg.output/models (for training configs)
     model_checkpoint_dir = getattr(cfg, 'model_checkpoint_dir', None)
-    use_checkpoint = getattr(cfg.test, 'use_model_checkpoint', -1)
+    use_checkpoint = _resolve_inference_checkpoint(cfg)
+    if use_checkpoint is None:
+        use_checkpoint = getattr(cfg.test, 'use_model_checkpoint', -1)
 
     if use_checkpoint == -1:
         model_dir = _resolve_dir(
