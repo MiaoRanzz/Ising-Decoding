@@ -43,7 +43,8 @@ backend:
 # === Data (public surface only) ===
 data:
   # Surface code orientation (public naming): O1, O2, O3, O4
-  code_rotation: O2
+  code_rotation: O1
+  code_rotation_inf: O2
   # Circuit-level noise model (25-parameter). This is the default public noise specification.
   # The defaults are chosen for p=0.003.
   noise_model:

@@ -24,7 +24,8 @@ train:
   epochs: 20
 
 data:
-  code_rotation: O2
+  code_rotation: O1
+  code_rotation_inf: O2
   # noise_model:
   #   p_prep_X: 0.0010000
   #   p_prep_Z: 0.0010000

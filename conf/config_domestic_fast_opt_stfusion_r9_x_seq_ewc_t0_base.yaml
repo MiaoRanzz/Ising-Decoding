@@ -5,7 +5,7 @@
 
 model_id: 111
 distance: 3
-n_rounds: 9
+n_rounds: 60
 
 workflow:
   task: train
@@ -16,11 +16,12 @@ validation_decoder: pymatching
 # Global decoder backends evaluated by integrate_to_nvidia.
 backend:
   pymatching: true
-  ldpc_unionfind: true
-  nbi_hyq_unionfind: true
+  ldpc_unionfind: false
+  nbi_hyq_unionfind: false
 
 data:
-  code_rotation: O2
+  code_rotation: O1
+  code_rotation_inf: O2
   noise_model:
     p_prep_X: 0.0010000
     p_prep_Z: 0.0010000
@@ -61,7 +62,7 @@ lqcloud:
   # Set to 0 to disable latency timing.
   latency_num_samples: 10000
   latency_warmup_iterations: 50
-  measurement_source: lqcloud_measurements/measurement_1.json
+  measurement_source: lqcloud_measurements/25000x10d3c60
   circuit_type: memory_z
   initial_state: null
   reset: false
