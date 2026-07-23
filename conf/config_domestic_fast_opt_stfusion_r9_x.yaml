@@ -22,6 +22,9 @@
 # === Model selection (required) ===
 model_id: 111
 
+inf:
+  checkpoint: 100
+
 # === Values for evaluation. Training window is hardcoded to model receptive field. ===
 distance: 3
 n_rounds: 60

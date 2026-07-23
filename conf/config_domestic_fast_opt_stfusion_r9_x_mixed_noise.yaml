@@ -6,6 +6,10 @@
 # Validation and inference keep using data.noise_model below.
 
 model_id: 111
+
+inf:
+  checkpoint: 100
+
 distance: 3
 n_rounds: 60
 

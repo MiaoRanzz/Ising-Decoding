@@ -7,14 +7,14 @@ model_id: 1  # Choose 1, 2, 3, 4, or 5
 # 0: select the best available model (the existing default).
 # Positive integer: load the checkpoint whose filename ends in `.0.<number>.pt`.
 inf:
-  checkpoint: 0
+  checkpoint: 100
 
 # === Values for evaluation. Training window is hardcoded to model receptive field. ===
 # The current LQCloud layout/circuit supports only d=3; changing this value
 # alone is not enough to run another code distance.
 distance: 3
 # Configurable, but must be at least 2 for detector construction.
-n_rounds: 9
+n_rounds: 60
 
 # === Workflow ===
 workflow:
@@ -37,11 +37,11 @@ train:
 data:
   # Training/model orientation.  Existing checkpoints used for this workflow
   # were trained in O1.
-  code_rotation: O3
+  code_rotation: O1
   # Orientation of the incoming LQCloud detector data.  O2 is the current
   # QZ01 layout; the LQCloud path adapts O2 input into the O1 model domain.
   # Omit this field, or set it to O1, to bypass the adapter.
-  # code_rotation_inf: O2
+  code_rotation_inf: O2
   # Optional HE acceleration flag, surfaced here for discoverability (other HE
   # knobs live in the internal defaults). Enables the 2-partition parallel
   # spacelike homological-equivalence path; see the "HE acceleration (advanced):
@@ -96,7 +96,7 @@ lqcloud:
   # Set to 0 to disable latency timing.
   latency_num_samples: 10000
   latency_warmup_iterations: 50
-  measurement_source: lqcloud_measurements/50000x5d3c9 # only works when source: file
+  measurement_source: lqcloud_measurements/25000x10d3c60 # only works when source: file
   circuit_type: memory_z
   initial_state: null
   reset: false

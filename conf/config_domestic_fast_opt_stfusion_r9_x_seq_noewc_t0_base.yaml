@@ -4,9 +4,13 @@
 # ST-Fusion-R9-X sequential no-EWC stage T0_base.
 
 model_id: 111
+
+inf:
+  checkpoint: 70
+
 code: surface
 distance: 3
-n_rounds: 60
+n_rounds: 30
 
 workflow:
   task: train
@@ -92,7 +96,7 @@ lqcloud:
   # Set to 0 to disable latency timing.
   latency_num_samples: 10000
   latency_warmup_iterations: 50
-  measurement_source: lqcloud_measurements/25000x10d3c60
+  measurement_source: lqcloud_measurements/50000x5d3c30
   circuit_type: memory_z
   initial_state: null
   reset: false
