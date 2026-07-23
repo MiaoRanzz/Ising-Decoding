@@ -89,8 +89,9 @@ sbatch_logs/
 TODO*.md
 Command.md
 
-# lqcloud measurements
+# lqcloud measurements and simulations
 lqcloud_measurements/
+lqcloud_simulations/
 
 # Third-party code
 third_party/uf_decoder/

@@ -6,9 +6,9 @@
 model_id: 111
 
 inf:
-  checkpoint: 50
+  checkpoint: 100
 
-distance: 3
+distance: 5
 n_rounds: 9
 
 workflow:
@@ -66,7 +66,7 @@ lqcloud:
   # Set to 0 to disable latency timing.
   latency_num_samples: 10000
   latency_warmup_iterations: 50
-  measurement_source: lqcloud_measurements/50000x5d3c9
+  measurement_source: lqcloud_simulations/50000x5d5c9
   circuit_type: memory_z
   initial_state: null
   reset: false

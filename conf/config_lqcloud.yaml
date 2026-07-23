@@ -12,9 +12,9 @@ inf:
 # === Values for evaluation. Training window is hardcoded to model receptive field. ===
 # The current LQCloud layout/circuit supports only d=3; changing this value
 # alone is not enough to run another code distance.
-distance: 3
+distance: 5
 # Configurable, but must be at least 2 for detector construction.
-n_rounds: 60
+n_rounds: 9
 
 # === Workflow ===
 workflow:
@@ -96,7 +96,7 @@ lqcloud:
   # Set to 0 to disable latency timing.
   latency_num_samples: 10000
   latency_warmup_iterations: 50
-  measurement_source: lqcloud_measurements/25000x10d3c60 # only works when source: file
+  measurement_source: lqcloud_simulations/50000x5d5c9 # only works when source: file
   circuit_type: memory_z
   initial_state: null
   reset: false
