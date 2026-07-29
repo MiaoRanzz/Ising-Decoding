@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import random
 import sys
 import time
@@ -55,6 +56,140 @@ class ModelSpec:
     checkpoint: Path
 
 
+@dataclass(frozen=True)
+class ComparisonSpec:
+    candidate: str
+    baseline: str
+
+
+@dataclass(frozen=True)
+class FactorialContrastSpec:
+    name: str
+    cell_11: str
+    cell_10: str
+    cell_01: str
+    cell_00: str
+
+
+@dataclass
+class SyndromeDensityAccumulator:
+    """Stream shot-level syndrome-density moments without storing every sample."""
+
+    shots: int = 0
+    syndrome_ones: int = 0
+    syndrome_elements: int = 0
+    shot_density_sum: float = 0.0
+    shot_density_sum_squares: float = 0.0
+
+    def update(self, syndromes: np.ndarray) -> None:
+        values = np.asarray(syndromes, dtype=np.uint8)
+        if values.ndim == 1:
+            values = values.reshape(1, -1)
+        if values.ndim != 2 or values.shape[1] == 0:
+            raise ValueError(
+                "syndromes must be a non-empty-width 2D array, "
+                f"got shape={values.shape}"
+            )
+        ones_per_shot = np.count_nonzero(values, axis=1).astype(np.float64)
+        densities = ones_per_shot / float(values.shape[1])
+        self.shots += int(values.shape[0])
+        self.syndrome_ones += int(ones_per_shot.sum())
+        self.syndrome_elements += int(values.size)
+        self.shot_density_sum += float(densities.sum())
+        self.shot_density_sum_squares += float(np.square(densities).sum())
+
+    def statistics(self, prefix: str) -> dict[str, float | int]:
+        if not prefix:
+            raise ValueError("density prefix must not be empty")
+        center = (
+            float(self.syndrome_ones / self.syndrome_elements)
+            if self.syndrome_elements
+            else float("nan")
+        )
+        if self.shots > 1:
+            numerator = self.shot_density_sum_squares - (
+                self.shot_density_sum * self.shot_density_sum / self.shots
+            )
+            variance = max(0.0, numerator / (self.shots - 1))
+            standard_error = float(np.sqrt(variance / self.shots))
+        else:
+            standard_error = 0.0 if self.shots == 1 else float("nan")
+        margin = 1.96 * standard_error
+        return {
+            f"{prefix}_density_shots": self.shots,
+            f"{prefix}_syndrome_ones": self.syndrome_ones,
+            f"{prefix}_syndrome_elements": self.syndrome_elements,
+            f"{prefix}_density_shot_sum": self.shot_density_sum,
+            f"{prefix}_density_shot_sum_squares": self.shot_density_sum_squares,
+            f"{prefix}_syndrome_density": center,
+            f"{prefix}_density_standard_error": standard_error,
+            f"{prefix}_density_ci95_low": max(0.0, center - margin),
+            f"{prefix}_density_ci95_high": min(1.0, center + margin),
+        }
+
+
+def combine_density_statistics(
+    rows: list[dict[str, Any]],
+    prefix: str,
+) -> dict[str, float | int]:
+    """Combine density sufficient statistics using detector-element weighting."""
+
+    accumulator = SyndromeDensityAccumulator()
+    for row in rows:
+        accumulator.shots += int(row.get(f"{prefix}_density_shots", 0))
+        accumulator.syndrome_ones += int(row.get(f"{prefix}_syndrome_ones", 0))
+        accumulator.syndrome_elements += int(
+            row.get(f"{prefix}_syndrome_elements", 0)
+        )
+        accumulator.shot_density_sum += float(
+            row.get(f"{prefix}_density_shot_sum", 0.0)
+        )
+        accumulator.shot_density_sum_squares += float(
+            row.get(f"{prefix}_density_shot_sum_squares", 0.0)
+        )
+    return accumulator.statistics(prefix)
+
+
+def density_reduction_statistics(
+    input_density: float,
+    residual_density: float,
+) -> dict[str, float]:
+    input_value = float(input_density)
+    residual_value = float(residual_density)
+    delta = residual_value - input_value
+    if input_value > 0 and math.isfinite(input_value):
+        reduction_fraction = (input_value - residual_value) / input_value
+    else:
+        reduction_fraction = float("nan")
+    if residual_value > 0 and math.isfinite(residual_value):
+        reduction_factor = input_value / residual_value
+    elif input_value > 0 and residual_value == 0:
+        reduction_factor = float("inf")
+    else:
+        reduction_factor = float("nan")
+    return {
+        "density_delta": delta,
+        "density_reduction_fraction": reduction_fraction,
+        "density_reduction_factor": reduction_factor,
+    }
+
+
+def model_density_statistics(
+    input_accumulator: SyndromeDensityAccumulator,
+    residual_accumulator: SyndromeDensityAccumulator,
+) -> dict[str, float | int]:
+    input_stats = input_accumulator.statistics("input")
+    residual_stats = residual_accumulator.statistics("residual")
+    return {
+        **input_stats,
+        **residual_stats,
+        **density_reduction_statistics(
+            float(input_stats["input_syndrome_density"]),
+            float(residual_stats["residual_syndrome_density"]),
+        ),
+    }
+
+
 def parse_model_spec(value: str) -> ModelSpec:
     parts = value.split(":", 2)
     if len(parts) != 3:
@@ -74,11 +209,122 @@ def parse_model_spec(value: str) -> ModelSpec:
     return ModelSpec(name=name, model_id=model_id, checkpoint=checkpoint)
 
 
-def parse_args() -> argparse.Namespace:
+def parse_comparison_spec(value: str) -> ComparisonSpec:
+    parts = value.split(":", 1)
+    if len(parts) != 2 or not all(part.strip() for part in parts):
+        raise argparse.ArgumentTypeError(
+            "--paired-comparison must be formatted as candidate:baseline"
+        )
+    candidate, baseline = (part.strip() for part in parts)
+    if candidate == baseline:
+        raise argparse.ArgumentTypeError("candidate and baseline must be different methods")
+    return ComparisonSpec(candidate=candidate, baseline=baseline)
+
+
+def parse_factorial_contrast_spec(value: str) -> FactorialContrastSpec:
+    parts = [part.strip() for part in value.split(":")]
+    if len(parts) != 5 or not all(parts):
+        raise argparse.ArgumentTypeError(
+            "--factorial-contrast must be formatted as "
+            "name:cell_11:cell_10:cell_01:cell_00"
+        )
+    name, cell_11, cell_10, cell_01, cell_00 = parts
+    if len({cell_11, cell_10, cell_01, cell_00}) != 4:
+        raise argparse.ArgumentTypeError("factorial contrast cells must be four distinct methods")
+    return FactorialContrastSpec(name, cell_11, cell_10, cell_01, cell_00)
+
+
+def factorial_contrast_statistics(
+    cell_11_errors: np.ndarray,
+    cell_10_errors: np.ndarray,
+    cell_01_errors: np.ndarray,
+    cell_00_errors: np.ndarray,
+) -> dict[str, float | int]:
+    masks = [
+        np.asarray(errors, dtype=np.bool_).reshape(-1)
+        for errors in (cell_11_errors, cell_10_errors, cell_01_errors, cell_00_errors)
+    ]
+    shapes = {mask.shape for mask in masks}
+    if len(shapes) != 1:
+        raise ValueError(f"factorial contrast masks must have one shape: {sorted(shapes)}")
+    samples = int(masks[0].size)
+    if samples == 0:
+        raise ValueError("factorial contrast masks must not be empty")
+    contrast = (
+        masks[0].astype(np.int8)
+        - masks[1].astype(np.int8)
+        - masks[2].astype(np.int8)
+        + masks[3].astype(np.int8)
+    )
+    interaction = float(contrast.mean())
+    standard_error = (
+        float(contrast.std(ddof=1) / np.sqrt(samples)) if samples > 1 else 0.0
+    )
+    margin = 1.96 * standard_error
+    result: dict[str, float | int] = {
+        "samples": samples,
+        "interaction_ler": interaction,
+        "standard_error": standard_error,
+        "ci95_low": max(-2.0, interaction - margin),
+        "ci95_high": min(2.0, interaction + margin),
+    }
+    result.update(
+        {
+            f"contrast_count_{value:+d}": int(np.count_nonzero(contrast == value))
+            for value in range(-2, 3)
+        }
+    )
+    return result
+
+
+def paired_error_statistics(
+    candidate_errors: np.ndarray,
+    baseline_errors: np.ndarray,
+) -> dict[str, float | int]:
+    candidate = np.asarray(candidate_errors, dtype=np.bool_).reshape(-1)
+    baseline = np.asarray(baseline_errors, dtype=np.bool_).reshape(-1)
+    if candidate.shape != baseline.shape:
+        raise ValueError(
+            f"paired error masks must have the same shape: {candidate.shape} != {baseline.shape}"
+        )
+    samples = int(candidate.size)
+    if samples == 0:
+        raise ValueError("paired error masks must not be empty")
+
+    candidate_only = int(np.count_nonzero(candidate & ~baseline))
+    baseline_only = int(np.count_nonzero(~candidate & baseline))
+    both = int(np.count_nonzero(candidate & baseline))
+    neither = samples - candidate_only - baseline_only - both
+    differences = candidate.astype(np.int8) - baseline.astype(np.int8)
+    delta = float(differences.mean())
+    standard_error = (
+        float(differences.std(ddof=1) / np.sqrt(samples)) if samples > 1 else 0.0
+    )
+    margin = 1.96 * standard_error
+    return {
+        "samples": samples,
+        "candidate_only_errors": candidate_only,
+        "baseline_only_errors": baseline_only,
+        "both_errors": both,
+        "neither_errors": neither,
+        "delta_ler": delta,
+        "standard_error": standard_error,
+        "ci95_low": max(-1.0, delta - margin),
+        "ci95_high": min(1.0, delta + margin),
+    }
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Compare PyMatching and replaceable predecoder models on identical samples."
     )
-    parser.add_argument("--config-name", default="config_domestic")
+    config_group = parser.add_mutually_exclusive_group()
+    config_group.add_argument(
+        "--config-name", default="examples/qadapt/config_qadapt_t0_base"
+    )
+    config_group.add_argument(
+        "--config-file", type=Path, help="Explicit YAML path, including generated OOD configs."
+    )
     parser.add_argument("--distance", type=int, default=9)
     parser.add_argument("--n-rounds", type=int, default=9)
     parser.add_argument("--num-samples", type=int, default=262144)
@@ -101,11 +347,33 @@ def parse_args() -> argparse.Namespace:
         help="Repeatable model spec: name:model_id:/path/to/checkpoint.pt",
     )
     parser.add_argument(
+        "--paired-comparison",
+        action="append",
+        type=parse_comparison_spec,
+        default=[],
+        help="Repeatable paired comparison: candidate:baseline.",
+    )
+    parser.add_argument(
+        "--factorial-contrast",
+        action="append",
+        type=parse_factorial_contrast_spec,
+        default=[],
+        help="Repeatable contrast: name:cell_11:cell_10:cell_01:cell_00.",
+    )
+    parser.add_argument(
         "--output",
         default="outputs/paired_inference_compare/fast_vs_fastopt.json",
         help="JSON output path. A CSV summary is written next to it.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--residual-output-dir",
+        default=None,
+        help=(
+            "Optional directory for full residual detector tensors. One uint8 "
+            "PyTorch tensor is written per basis and model."
+        ),
+    )
+    return parser.parse_args(argv)
 
 
 def set_all_seeds(seed: int) -> None:
@@ -117,7 +385,12 @@ def set_all_seeds(seed: int) -> None:
 
 
 def build_cfg(args: argparse.Namespace, model: ModelSpec, basis: str) -> Any:
-    cfg_path = config_path(args.config_name)
+    explicit_path = getattr(args, "config_file", None)
+    cfg_path = (
+        Path(explicit_path).expanduser()
+        if explicit_path is not None
+        else config_path(args.config_name)
+    )
     cfg = OmegaConf.load(cfg_path)
     cfg.model_id = model.model_id
     cfg.distance = args.distance
@@ -181,19 +454,23 @@ def evaluate_pymatching(
     num_obs: int,
     latency_samples: int,
     n_rounds: int,
-) -> dict[str, float | int]:
+) -> tuple[dict[str, float | int], np.ndarray]:
     dets = np.ascontiguousarray(dets_and_obs[:, :-num_obs], dtype=np.uint8)
     obs = np.ascontiguousarray(dets_and_obs[:, -num_obs:], dtype=np.uint8)
     pred = matcher.decode_batch(dets).reshape(obs.shape)
-    errors = int((pred != obs).sum())
+    error_mask = np.asarray(pred != obs, dtype=np.bool_).reshape(obs.shape[0], -1).any(axis=1)
+    errors = int(error_mask.sum())
     total = int(obs.shape[0])
     latency_rows = dets[: min(latency_samples, len(dets))]
+    input_density = SyndromeDensityAccumulator()
+    input_density.update(dets)
     return {
         "logical_errors": errors,
         "samples": total,
         "ler": float(errors / total) if total else float("nan"),
         "latency_us_per_round": time_single_shot(matcher, latency_rows, n_rounds),
-    }
+        **input_density.statistics("input"),
+    }, error_mask
 
 
 def evaluate_model(
@@ -205,7 +482,8 @@ def evaluate_model(
     device: torch.device,
     latency_samples: int,
     n_rounds: int,
-) -> dict[str, float | int]:
+    residual_tensor_path: Path | None = None,
+) -> tuple[dict[str, Any], np.ndarray]:
     maps = _build_stab_maps(int(cfg.distance), getattr(cfg, "rotation", "XV"))
     module = PreDecoderMemoryEvalModule(model, cfg, maps, device).to(device)
     module.eval()
@@ -220,7 +498,11 @@ def evaluate_model(
     logical_errors = 0
     total = 0
     residual_chunks: list[np.ndarray] = []
+    saved_residual_chunks: list[np.ndarray] = []
+    error_chunks: list[np.ndarray] = []
     residual_count = 0
+    input_density = SyndromeDensityAccumulator()
+    residual_density = SyndromeDensityAccumulator()
 
     with torch.no_grad():
         for batch in loader:
@@ -232,11 +514,19 @@ def evaluate_model(
             output = module(dets_only)
             pre_l = output[:, 0].to(torch.int64).cpu()
             residual = output[:, 1:].to(torch.uint8).cpu().numpy()
+            input_density.update(dets_only.to(torch.uint8).cpu().numpy())
+            residual_density.update(residual)
+            if residual_tensor_path is not None:
+                saved_residual_chunks.append(
+                    np.ascontiguousarray(residual, dtype=np.uint8)
+                )
             pred_obs = torch.from_numpy(matcher.decode_batch(residual)).reshape(gt_obs.shape)
             final_l = (pre_l.reshape(gt_obs.shape) + pred_obs).remainder(2)
 
-            logical_errors += int((final_l != gt_obs).sum().item())
+            error_mask = (final_l != gt_obs).reshape(gt_obs.shape[0], -1).any(dim=1)
+            logical_errors += int(error_mask.sum().item())
             total += int(gt_obs.shape[0])
+            error_chunks.append(error_mask.numpy())
 
             if residual_count < latency_samples:
                 take = min(latency_samples - residual_count, residual.shape[0])
@@ -246,12 +536,119 @@ def evaluate_model(
     residual_rows = (
         np.concatenate(residual_chunks, axis=0) if residual_chunks else np.empty((0, 0), dtype=np.uint8)
     )
-    return {
+    all_errors = np.concatenate(error_chunks) if error_chunks else np.empty(0, dtype=np.bool_)
+    result: dict[str, Any] = {
         "logical_errors": logical_errors,
         "samples": total,
         "ler": float(logical_errors / total) if total else float("nan"),
         "latency_us_per_round": time_single_shot(matcher, residual_rows, n_rounds),
+        **model_density_statistics(input_density, residual_density),
     }
+    if residual_tensor_path is not None:
+        residual_tensor_path.parent.mkdir(parents=True, exist_ok=True)
+        saved_residual = (
+            np.concatenate(saved_residual_chunks, axis=0)
+            if saved_residual_chunks
+            else np.empty((0, 0), dtype=np.uint8)
+        )
+        torch.save(torch.from_numpy(saved_residual), residual_tensor_path)
+        result.update(
+            residual_tensor_path=str(residual_tensor_path),
+            residual_tensor_rows=int(saved_residual.shape[0]),
+            residual_tensor_detectors=int(saved_residual.shape[1]),
+            residual_tensor_dtype="torch.uint8",
+        )
+    return result, all_errors
+
+
+def build_paired_comparison_rows(
+    error_masks_by_basis: dict[str, dict[str, np.ndarray]],
+    comparisons: list[ComparisonSpec],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    basis_order = [basis for basis in ("X", "Z") if basis in error_masks_by_basis]
+    for comparison in comparisons:
+        candidate_chunks = []
+        baseline_chunks = []
+        for basis in basis_order:
+            masks = error_masks_by_basis[basis]
+            missing = {
+                method
+                for method in (comparison.candidate, comparison.baseline)
+                if method not in masks
+            }
+            if missing:
+                raise KeyError(f"paired comparison methods missing for {basis}: {sorted(missing)}")
+            candidate = masks[comparison.candidate]
+            baseline = masks[comparison.baseline]
+            rows.append(
+                {
+                    "basis": basis,
+                    "candidate": comparison.candidate,
+                    "baseline": comparison.baseline,
+                    **paired_error_statistics(candidate, baseline),
+                }
+            )
+            candidate_chunks.append(candidate)
+            baseline_chunks.append(baseline)
+        if len(basis_order) > 1:
+            rows.append(
+                {
+                    "basis": "both",
+                    "candidate": comparison.candidate,
+                    "baseline": comparison.baseline,
+                    **paired_error_statistics(
+                        np.concatenate(candidate_chunks),
+                        np.concatenate(baseline_chunks),
+                    ),
+                }
+            )
+    return rows
+
+
+def build_factorial_contrast_rows(
+    error_masks_by_basis: dict[str, dict[str, np.ndarray]],
+    contrasts: list[FactorialContrastSpec],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    basis_order = [basis for basis in ("X", "Z") if basis in error_masks_by_basis]
+    for contrast in contrasts:
+        chunks = {field: [] for field in ("cell_11", "cell_10", "cell_01", "cell_00")}
+        for basis in basis_order:
+            masks = error_masks_by_basis[basis]
+            methods = {
+                field: getattr(contrast, field)
+                for field in ("cell_11", "cell_10", "cell_01", "cell_00")
+            }
+            missing = set(methods.values()) - set(masks)
+            if missing:
+                raise KeyError(f"factorial contrast methods missing for {basis}: {sorted(missing)}")
+            stats = factorial_contrast_statistics(*(masks[methods[field]] for field in chunks))
+            rows.append(
+                {
+                    "basis": basis,
+                    "name": contrast.name,
+                    **methods,
+                    **stats,
+                }
+            )
+            for field, method in methods.items():
+                chunks[field].append(masks[method])
+        if len(basis_order) > 1:
+            rows.append(
+                {
+                    "basis": "both",
+                    "name": contrast.name,
+                    "cell_11": contrast.cell_11,
+                    "cell_10": contrast.cell_10,
+                    "cell_01": contrast.cell_01,
+                    "cell_00": contrast.cell_00,
+                    **factorial_contrast_statistics(
+                        *(np.concatenate(chunks[field]) for field in chunks)
+                    ),
+                }
+            )
+    return rows
 
 
 def mean_metric(rows: list[dict[str, Any]], name: str) -> float:
@@ -265,10 +662,29 @@ def main() -> None:
     if not output_path.is_absolute():
         output_path = REPO_ROOT / output_path
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    residual_output_dir = (
+        Path(args.residual_output_dir) if args.residual_output_dir else None
+    )
+    if residual_output_dir is not None and not residual_output_dir.is_absolute():
+        residual_output_dir = REPO_ROOT / residual_output_dir
 
     for spec in args.model:
         if not spec.checkpoint.exists():
             raise FileNotFoundError(f"Checkpoint not found for {spec.name}: {spec.checkpoint}")
+    available_methods = {"pymatching", *(spec.name for spec in args.model)}
+    for comparison in args.paired_comparison:
+        missing = {comparison.candidate, comparison.baseline} - available_methods
+        if missing:
+            raise ValueError(f"Unknown paired comparison methods: {sorted(missing)}")
+    for contrast in args.factorial_contrast:
+        missing = {
+            contrast.cell_11,
+            contrast.cell_10,
+            contrast.cell_01,
+            contrast.cell_00,
+        } - available_methods
+        if missing:
+            raise ValueError(f"Unknown factorial contrast methods: {sorted(missing)}")
 
     device = torch.device(args.device or ("cuda:0" if torch.cuda.is_available() else "cpu"))
     dist = SimpleNamespace(rank=0, world_size=1, device=device)
@@ -283,6 +699,7 @@ def main() -> None:
         models[spec.name] = model
 
     rows: list[dict[str, Any]] = []
+    error_masks_by_basis: dict[str, dict[str, np.ndarray]] = {}
     for basis_index, basis in enumerate(bases):
         dataset_cfg = build_cfg(args, args.model[0], basis=basis)
         dataset_seed = int(args.seed) + basis_index
@@ -291,13 +708,14 @@ def main() -> None:
         matcher, num_obs = build_matcher(dataset)
         dets_and_obs = np.asarray(dataset.dets_and_obs, dtype=np.uint8)
 
-        baseline = evaluate_pymatching(
+        baseline, baseline_errors = evaluate_pymatching(
             matcher,
             dets_and_obs,
             num_obs,
             int(args.latency_num_samples),
             int(args.n_rounds),
         )
+        error_masks_by_basis[basis] = {"pymatching": baseline_errors}
         baseline_row = {
             "basis": basis,
             "method": "pymatching",
@@ -314,7 +732,12 @@ def main() -> None:
 
         for spec in args.model:
             cfg = build_cfg(args, spec, basis=basis)
-            result = evaluate_model(
+            residual_tensor_path = (
+                residual_output_dir / f"{basis}_{spec.name}_residual_detectors.pt"
+                if residual_output_dir is not None
+                else None
+            )
+            result, model_errors = evaluate_model(
                 models[spec.name],
                 cfg,
                 dataset,
@@ -323,7 +746,9 @@ def main() -> None:
                 device,
                 int(args.latency_num_samples),
                 int(args.n_rounds),
+                residual_tensor_path,
             )
+            error_masks_by_basis[basis][spec.name] = model_errors
             speedup = float(baseline["latency_us_per_round"]) / float(result["latency_us_per_round"])
             row = {
                 "basis": basis,
@@ -339,18 +764,35 @@ def main() -> None:
                 f"latency={result['latency_us_per_round']:.3f} us/round, speedup={speedup:.3f}x"
             )
 
+    paired_comparisons = build_paired_comparison_rows(
+        error_masks_by_basis,
+        args.paired_comparison,
+    )
+    factorial_contrasts = build_factorial_contrast_rows(
+        error_masks_by_basis,
+        args.factorial_contrast,
+    )
     methods = sorted({row["method"] for row in rows})
     summary = []
     for method in methods:
         method_rows = [row for row in rows if row["method"] == method]
-        summary.append(
-            {
-                "method": method,
-                "ler_avg": mean_metric(method_rows, "ler"),
-                "latency_us_per_round_avg": mean_metric(method_rows, "latency_us_per_round"),
-                "speedup_vs_pymatching_avg": mean_metric(method_rows, "speedup_vs_pymatching"),
-            }
-        )
+        summary_row: dict[str, Any] = {
+            "method": method,
+            "ler_avg": mean_metric(method_rows, "ler"),
+            "latency_us_per_round_avg": mean_metric(method_rows, "latency_us_per_round"),
+            "speedup_vs_pymatching_avg": mean_metric(method_rows, "speedup_vs_pymatching"),
+            **combine_density_statistics(method_rows, "input"),
+        }
+        if any(row.get("residual_syndrome_elements") for row in method_rows):
+            residual_stats = combine_density_statistics(method_rows, "residual")
+            summary_row.update(residual_stats)
+            summary_row.update(
+                density_reduction_statistics(
+                    float(summary_row["input_syndrome_density"]),
+                    float(residual_stats["residual_syndrome_density"]),
+                )
+            )
+        summary.append(summary_row)
 
     payload = {
         "config_name": args.config_name,
@@ -362,6 +804,8 @@ def main() -> None:
         "device": str(device),
         "rows": rows,
         "summary": summary,
+        "paired_comparisons": paired_comparisons,
+        "factorial_contrasts": factorial_contrasts,
     }
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -375,6 +819,31 @@ def main() -> None:
         "ler",
         "latency_us_per_round",
         "speedup_vs_pymatching",
+        "input_density_shots",
+        "input_syndrome_ones",
+        "input_syndrome_elements",
+        "input_density_shot_sum",
+        "input_density_shot_sum_squares",
+        "input_syndrome_density",
+        "input_density_standard_error",
+        "input_density_ci95_low",
+        "input_density_ci95_high",
+        "residual_density_shots",
+        "residual_syndrome_ones",
+        "residual_syndrome_elements",
+        "residual_density_shot_sum",
+        "residual_density_shot_sum_squares",
+        "residual_syndrome_density",
+        "residual_density_standard_error",
+        "residual_density_ci95_low",
+        "residual_density_ci95_high",
+        "density_delta",
+        "density_reduction_fraction",
+        "density_reduction_factor",
+        "residual_tensor_path",
+        "residual_tensor_rows",
+        "residual_tensor_detectors",
+        "residual_tensor_dtype",
         "checkpoint",
     ]
     with csv_path.open("w", newline="", encoding="utf-8") as f:

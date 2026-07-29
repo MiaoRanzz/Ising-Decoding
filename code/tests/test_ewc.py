@@ -48,6 +48,23 @@ class _CompiledLikeWrapper(nn.Module):
         return self._orig_mod(x)
 
 
+class _TrainEpochGenerator:
+
+    def generate_batch(self, step, batch_size, **_kwargs):
+        x = torch.tensor(
+            [[1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [0.5, -0.5]],
+            dtype=torch.float32,
+        )[:batch_size]
+        y = torch.ones(batch_size, 1, dtype=torch.float32)
+        return x, y
+
+
+class _Writer:
+
+    def add_scalar(self, *_args, **_kwargs):
+        return None
+
+
 class TestEWC(unittest.TestCase):
 
     def test_train_epoch_exposes_ewc_options(self):
@@ -145,6 +162,37 @@ class TestEWC(unittest.TestCase):
         )
 
         self.assertEqual(float(total_loss), 34.0)
+
+    def test_train_epoch_passes_current_batch_size_to_ewc_loss(self):
+        from training.train import train_epoch
+
+        model = nn.Linear(2, 1)
+        mean = capture_parameter_snapshot(model)
+        fisher = {name: torch.ones_like(value) for name, value in mean.items()}
+        state = EWCState(task_name="T0_base", mean=mean, fisher=fisher)
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _step: 1.0)
+        scaler = torch.amp.GradScaler("cuda", enabled=False)
+
+        loss, global_step = train_epoch(
+            _TrainEpochGenerator(),
+            steps_per_epoch=1,
+            batch_size=4,
+            cumulative_steps_before_epoch=0,
+            epoch_number=0,
+            model=model,
+            optimizer=optimizer,
+            scaler=scaler,
+            scheduler=scheduler,
+            tb_writer=_Writer(),
+            device=torch.device("cpu"),
+            enable_fp16=False,
+            ewc_states=[state],
+            ewc_lambda=3.0,
+        )
+
+        self.assertTrue(torch.isfinite(torch.tensor(loss)))
+        self.assertEqual(global_step, 1)
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ from workflows.run import find_best_model
 class TestModelSelection(unittest.TestCase):
     def test_custom_model_weights_win_over_training_checkpoint(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            model = Path(tmpdir) / "PreDecoderSTFusion_v2.0.1.pt"
+            model = Path(tmpdir) / "HTnet.0.1.pt"
             checkpoint = Path(tmpdir) / "checkpoint.0.1.pt"
             model.touch()
             checkpoint.touch()

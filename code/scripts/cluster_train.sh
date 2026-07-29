@@ -20,7 +20,7 @@
 #
 # Key env vars (all have defaults):
 #   EXPERIMENT_NAME   - subdirectory under outputs/ (default: qec-decoder-depolarizing-r9-fp8)
-#   CONFIG_NAME       - Hydra config in conf/ without .yaml (default: config_qec_decoder_r9_fp8)
+#   CONFIG_NAME       - Hydra config in conf/ without .yaml (default: presets/surface/config_qec_decoder_r9_fp8)
 #   WORKFLOW          - train | inference (default: train)
 #   FRESH_START       - 1 to skip checkpoint resume (default: 0)
 #   PREDECODER_PYTHON - explicit path to python binary (auto-detected if unset)
@@ -38,7 +38,7 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 say "cluster_train.sh: REPO_ROOT=$REPO_ROOT"
 
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-qec-decoder-depolarizing-r9-fp8}"
-CONFIG_NAME="${CONFIG_NAME:-config_qec_decoder_r9_fp8}"
+CONFIG_NAME="${CONFIG_NAME:-presets/surface/config_qec_decoder_r9_fp8}"
 WORKFLOW="${WORKFLOW:-train}"
 EPOCHS="${PREDECODER_TRAIN_EPOCHS:-100}"
 

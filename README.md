@@ -632,6 +632,29 @@ run is shown below. Treat timing/speedup as a smoke signal, not a benchmark:
 [offline_smoketest.sh] Avg LER 0.002678 (no pre-decoder) -> 0.002285 (after); PyMatching speedup 1.815x
 ```
 
+### QAdapt continual-learning examples
+
+The repository ships a portable QAdapt sequential+EWC training entry point,
+plus T0-T4 simulation, fixed-grid OOD, and Google QEC inference:
+
+QAdapt uses the `HTnet` architecture (`model_id: 111`). Newly trained model
+checkpoints are named `HTnet.0.<epoch>.pt`.
+
+```bash
+bash code/examples/train_seq_ewc.sh
+
+python code/examples/infer_t0_t4.py --gpus 0 --resume
+python code/examples/infer_ood.py --gpus 0,1 --parallelism 2 --resume
+python code/examples/download_google_benchmark.py --extract
+python code/examples/infer_google_benchmark.py --gpus 0 --resume
+```
+
+Use `DRY_RUN=1` for shell launchers or `--dry-run` for Python launchers to
+inspect commands without starting training or inference. See
+[`code/examples/README.md`](code/examples/README.md) for checkpoint and runtime
+overrides. Outputs, generated OOD configs, and downloaded benchmark data stay
+outside version control.
+
 ### Google Quantum AI QEC benchmark
 
 The project can index and download the Google Quantum AI benchmark dataset for
@@ -649,16 +672,16 @@ The full record contains four archives totaling about 104.8 GiB, so avoid
 
 ```bash
 # List available Google QEC benchmark archives.
-PYTHONPATH=code python code/scripts/download_google_qec_benchmark.py --list
+python code/examples/download_google_benchmark.py --list
 
 # Write the official manifest without downloading data.
-PYTHONPATH=code python code/scripts/download_google_qec_benchmark.py --manifest-only
+python code/examples/download_google_benchmark.py --manifest-only
 
 # Download the default 105Q surface-code benchmark archive.
-PYTHONPATH=code python code/scripts/download_google_qec_benchmark.py
+python code/examples/download_google_benchmark.py
 
 # Download and extract the default archive.
-PYTHONPATH=code python code/scripts/download_google_qec_benchmark.py --extract
+python code/examples/download_google_benchmark.py --extract
 ```
 
 Files are written under `benchmarks/google_qec/` by default. The downloader
@@ -1006,9 +1029,9 @@ internal Hydra schema, so they bypass the public validator.
 
 | Config file | Purpose |
 |-------------|---------|
-| `conf/config_color_model_1_s_LR3e-4.yaml` | Train a model-1-shaped color-code pre-decoder at `d=9, r=9` (superdense schedule). |
-| `conf/config_color_threshold_model_1_d13.yaml` | Threshold sweep against a trained color-code checkpoint at `d=13` (set `model_checkpoint_dir` to a training run's `models/` directory). |
-| `conf/config_inference_color_model_5.yaml` | Run inference with a trained model-5-shaped color-code checkpoint via the public runner (`workflow.task=inference`; set `model_checkpoint_file` to your `.pt`). Model 5 has receptive field `R=13`; the test window defaults to `distance=9, n_rounds=9, p=1e-3`. Override `test.num_samples` / `test.p_error` / `test.meas_basis_test` for sweeps. |
+| `conf/presets/color/config_color_model_1_s_LR3e-4.yaml` | Train a model-1-shaped color-code pre-decoder at `d=9, r=9` (superdense schedule). |
+| `conf/presets/color/config_color_threshold_model_1_d13.yaml` | Threshold sweep against a trained color-code checkpoint at `d=13` (set `model_checkpoint_dir` to a training run's `models/` directory). |
+| `conf/presets/color/config_inference_color_model_5.yaml` | Run inference with a trained model-5-shaped color-code checkpoint via the public runner (`workflow.task=inference`; set `model_checkpoint_file` to your `.pt`). Model 5 has receptive field `R=13`; the test window defaults to `distance=9, n_rounds=9, p=1e-3`. Override `test.num_samples` / `test.p_error` / `test.meas_basis_test` for sweeps. |
 
 #### Precompute the augmented DEM bundle
 
@@ -1034,14 +1057,14 @@ sampling probabilities are refreshed at load time.
 The public runner (`code/workflows/run.py`, driven by
 `code/scripts/local_run.sh`) dispatches color-code configs to the same
 `inference` / `threshold` / `sdr` / `chromobius_timing` workflow tasks that
-surface code uses. `conf/config_inference_color_model_5.yaml` is a standalone
+surface code uses. `conf/presets/color/config_inference_color_model_5.yaml` is a standalone
 inference config pinned to a model-5-shaped architecture
 (`PreDecoderModelMemory_v1`, 6-layer conv `[256, 256, 256, 256, 256, 4]`,
 kernel 3) — train such a checkpoint with the configs below, then point the
 launcher at it:
 
 ```bash
-CONFIG_NAME=config_inference_color_model_5 \
+CONFIG_NAME=presets/color/config_inference_color_model_5 \
     WORKFLOW=inference \
     EXTRA_PARAMS="model_checkpoint_file=/path/to/your/checkpoint.pt" \
     bash code/scripts/local_run.sh
@@ -1050,7 +1073,7 @@ CONFIG_NAME=config_inference_color_model_5 \
 To sweep noise or measurement bases add overrides to `EXTRA_PARAMS`:
 
 ```bash
-CONFIG_NAME=config_inference_color_model_5 \
+CONFIG_NAME=presets/color/config_inference_color_model_5 \
     WORKFLOW=inference \
     EXTRA_PARAMS="model_checkpoint_file=/path/to/your/checkpoint.pt test.num_samples=1024 test.p_error=0.001 test.meas_basis_test=both" \
     bash code/scripts/local_run.sh
@@ -1067,7 +1090,7 @@ Color-code **training** runs through the same launcher as inference — pick
 a color training config and set `WORKFLOW=train`:
 
 ```bash
-CONFIG_NAME=config_color_model_1_s_LR3e-4 \
+CONFIG_NAME=presets/color/config_color_model_1_s_LR3e-4 \
     WORKFLOW=train \
     EXTRA_PARAMS="data.precomputed_frames_dir=$(pwd)/frames_data" \
     bash code/scripts/local_run.sh

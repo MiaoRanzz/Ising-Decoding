@@ -507,6 +507,7 @@ def train_epoch(
                     loss,
                     ewc_penalty,
                     ewc_lambda=float(ewc_lambda),
+                    batch_size=current_batch_size,
                 )
 
             scaler.scale(loss).backward()
@@ -1290,6 +1291,21 @@ def main(cfg: DictConfig) -> None:
 
     # Create model
     base_model = ModelFactory.create_model(cfg).to(dist.device)
+
+    init_model_checkpoint_file = getattr(cfg, "init_model_checkpoint_file", None)
+    if init_model_checkpoint_file:
+        if bool(cfg.load_checkpoint):
+            raise ValueError(
+                "init_model_checkpoint_file cannot be combined with load_checkpoint=True"
+            )
+        from training.utils import load_model_weights_only
+        init_path = to_absolute_path(str(init_model_checkpoint_file))
+        load_model_weights_only(base_model, init_path, device=dist.device)
+        if dist.rank == 0:
+            print(
+                "[Train] Loaded weights-only initialization from "
+                f"{init_path}; optimizer/scheduler/scaler and epoch counter start fresh."
+            )
 
     # Mixed precision is handled by autocast in the train/val steps; keep
     # parameters, BatchNorm state, and optimizer state in fp32. Only switch the

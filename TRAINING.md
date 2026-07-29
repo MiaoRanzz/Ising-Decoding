@@ -4,6 +4,21 @@ This document covers running pre-decoder training on remote GPU nodes
 using Docker containers, with optional SLURM integration.
 For local single-machine usage, see `README.md`.
 
+## QAdapt example launchers
+
+For a local GPU host, use the maintained QAdapt launchers instead of composing
+Hydra overrides manually:
+
+```bash
+bash code/examples/train_seq_ewc.sh
+```
+
+Model ID 111 is registered as `HTnet`; checkpoints are saved as `HTnet.0.<epoch>.pt`.
+
+The launcher uses the five configs under `conf/examples/qadapt/`; EWC is enabled
+by the launcher rather than duplicated YAML. Set `DRY_RUN=1` to inspect all stages.
+See `code/examples/README.md` for environment variables and inference commands.
+
 ## Prerequisites
 
 - Docker with NVIDIA GPU support (`nvidia-docker` / `--gpus`)
@@ -115,16 +130,16 @@ bash code/scripts/cluster_train.sh
 
 | Config file | Code | Model | R | Noise |
 |-------------|------|-------|---|-------|
-| `conf/config_qec_decoder_r9_fp8.yaml` | Surface | Model 1 | 9 | Depolarizing p=0.006 |
-| `conf/config_qec_decoder_r13_fp8.yaml` | Surface | Model 4 | 13 | Depolarizing p=0.006 |
+| `conf/presets/surface/config_qec_decoder_r9_fp8.yaml` | Surface | Model 1 | 9 | Depolarizing p=0.006 |
+| `conf/presets/surface/config_qec_decoder_r13_fp8.yaml` | Surface | Model 4 | 13 | Depolarizing p=0.006 |
 | `conf/config_public.yaml` | Surface | Any | Varies | User-defined |
-| `conf/config_color_model_1_s_LR3e-4.yaml` | Color | Model 1-shaped | 9 | Superdense color-code circuit (`p_min/p_max ≈ 0.003`) |
-| `conf/config_color_threshold_model_1_d13.yaml` | Color | n/a (eval) | 13 | Threshold sweep against a trained color checkpoint |
-| `conf/config_inference_color_model_5.yaml` | Color | n/a (inference) | 9 | Inference with a trained Model-5-shaped color checkpoint via `workflow.task=inference` (set `model_checkpoint_file`) |
+| `conf/presets/color/config_color_model_1_s_LR3e-4.yaml` | Color | Model 1-shaped | 9 | Superdense color-code circuit (`p_min/p_max ≈ 0.003`) |
+| `conf/presets/color/config_color_threshold_model_1_d13.yaml` | Color | n/a (eval) | 13 | Threshold sweep against a trained color checkpoint |
+| `conf/presets/color/config_inference_color_model_5.yaml` | Color | n/a (inference) | 9 | Inference with a trained Model-5-shaped color checkpoint via `workflow.task=inference` (set `model_checkpoint_file`) |
 
 Select a config by setting `CONFIG_NAME` (without the `.yaml` extension):
 ```bash
-export CONFIG_NAME=config_qec_decoder_r13_fp8
+export CONFIG_NAME=presets/surface/config_qec_decoder_r13_fp8
 ```
 
 ### Color-code training
@@ -149,7 +164,7 @@ PYTHONPATH=code python code/qec/precompute_dem.py \
 Then launch training:
 
 ```bash
-CONFIG_NAME=config_color_model_1_s_LR3e-4 \
+CONFIG_NAME=presets/color/config_color_model_1_s_LR3e-4 \
     WORKFLOW=train \
     EXTRA_PARAMS="data.precomputed_frames_dir=$(pwd)/frames_data" \
     bash code/scripts/local_run.sh
@@ -166,7 +181,7 @@ See **Color code support** in `README.md` for current limitations
 |----------|---------|-------------|
 | `SHARED_OUTPUT_DIR` | *(required for cluster)* | Persistent directory for outputs, logs, checkpoints. |
 | `EXPERIMENT_NAME` | `qec-decoder-depolarizing-r9-fp8` | Subdirectory under `outputs/` for this run. Change this when changing configs. |
-| `CONFIG_NAME` | `config_qec_decoder_r9_fp8` | Hydra config name (file in `conf/` without `.yaml`). |
+| `CONFIG_NAME` | `presets/surface/config_qec_decoder_r9_fp8` | Hydra config name (file in `conf/` without `.yaml`). |
 | `WORKFLOW` | `train` | `train` or `inference`. |
 | `GPUS` | auto-detect | Number of GPUs. Must match SLURM `--gres=gpu:N`. |
 | `FRESH_START` | `0` | Set `1` to ignore existing checkpoints and start from scratch. |
@@ -211,7 +226,7 @@ sbatch code/scripts/sbatch_train.sh
 ```bash
 export SHARED_OUTPUT_DIR=$HOME/predecoder_outputs
 EXPERIMENT_NAME=qec-decoder-depolarizing-r13-fp8 \
-CONFIG_NAME=config_qec_decoder_r13_fp8 \
+CONFIG_NAME=presets/surface/config_qec_decoder_r13_fp8 \
   sbatch code/scripts/sbatch_train.sh
 ```
 
@@ -222,7 +237,7 @@ Override SLURM resources on the command line:
 ```bash
 export SHARED_OUTPUT_DIR=$HOME/predecoder_outputs
 EXPERIMENT_NAME=qec-decoder-depolarizing-r13-fp8-4gpu \
-CONFIG_NAME=config_qec_decoder_r13_fp8 \
+CONFIG_NAME=presets/surface/config_qec_decoder_r13_fp8 \
 GPUS=4 FRESH_START=1 \
   sbatch --partition=<your-4gpu-partition> \
          --nodes=1 --gres=gpu:4 --cpus-per-task=80 --mem=240G \
@@ -237,7 +252,7 @@ so the schedule matches the original trajectory:
 ```bash
 export SHARED_OUTPUT_DIR=$HOME/predecoder_outputs
 EXPERIMENT_NAME=qec-decoder-depolarizing-r13-fp8 \
-CONFIG_NAME=config_qec_decoder_r13_fp8 \
+CONFIG_NAME=presets/surface/config_qec_decoder_r13_fp8 \
 GPUS=4 \
 PREDECODER_TRAIN_SAMPLES=8388608 \
 PREDECODER_LR_MILESTONES="1.0,2.0,4.0" \
