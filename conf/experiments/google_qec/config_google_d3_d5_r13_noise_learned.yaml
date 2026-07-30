@@ -1,0 +1,37 @@
+model_id: 1
+code: surface
+distance: 5
+n_rounds: 13
+workflow:
+  task: train
+data:
+  code_rotation: O1
+  use_compile: false
+  use_parallel_spacelike: false
+  skip_noise_upscaling: true
+  noise_model:
+    p_cnot_IX: 0.0014215079172355924
+    p_cnot_IY: 1.0000000152038773e-05
+    p_cnot_IZ: 0.003937706585439737
+    p_cnot_XI: 1.0000000001280449e-05
+    p_cnot_XX: 1.0000000270289624e-05
+    p_cnot_XY: 1.0000000009524148e-05
+    p_cnot_XZ: 0.0010245238280258847
+    p_cnot_YI: 1.0000000068131685e-05
+    p_cnot_YX: 1.0000000253745329e-05
+    p_cnot_YY: 1.0000000013403818e-05
+    p_cnot_YZ: 1.0000000067885873e-05
+    p_cnot_ZI: 0.0010360163332834367
+    p_cnot_ZX: 0.0011973761514550464
+    p_cnot_ZY: 1.0000000165636143e-05
+    p_cnot_ZZ: 1.000000009444152e-05
+    p_idle_cnot_X: 1.0000000000002788e-05
+    p_idle_cnot_Y: 1.0000000000002413e-05
+    p_idle_cnot_Z: 0.001008176406090572
+    p_idle_spam_X: 0.0008234590742686609
+    p_idle_spam_Y: 1.0000000003668833e-05
+    p_idle_spam_Z: 0.0024318019111152114
+    p_meas_X: 0.0069041852090139955
+    p_meas_Z: 0.005838037603757365
+    p_prep_X: 1.0000000001421368e-05
+    p_prep_Z: 0.00025847469189298623

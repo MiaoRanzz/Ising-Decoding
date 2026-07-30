@@ -73,7 +73,7 @@ logs/
 /frames_data/
 /benchmarks
 
-# Only stable public presets and the QAdapt examples are source configs.
+# Stable public presets, examples, and curated experiment configs are source configs.
 /conf/*.yaml
 /conf/**/*.yaml
 !/conf/config_public.yaml
@@ -83,6 +83,8 @@ logs/
 !/conf/examples/qadapt/config_qadapt_t2_cnot_1p5.yaml
 !/conf/examples/qadapt/config_qadapt_t3_idle_1p5.yaml
 !/conf/examples/qadapt/config_qadapt_t4_z_bias_1p5.yaml
+!/conf/experiments/
+!/conf/experiments/**/*.yaml
 
 # Runtime-generated configs and research documentation/results.
 /outputs/generated_configs/
