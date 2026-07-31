@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Run QAdapt seq+EWC on the fixed training-axis OOD grid."""
+"""Run released pre-decoders on the fixed training-axis OOD grid."""
 
 from __future__ import annotations
 
@@ -25,6 +25,10 @@ from scripts.qadapt_example_utils import (  # noqa: E402
 )
 
 
+PAPER_DISTANCES = (7, 9)
+PAPER_MULTIPLIERS = (1.2, 1.5, 2.0, 2.5, 3.0)
+
+
 def parse_distances(value: str) -> list[int]:
     result = [int(item.strip()) for item in value.split(",") if item.strip()]
     if not result or result != sorted(set(result)):
@@ -34,10 +38,31 @@ def parse_distances(value: str) -> list[int]:
     return result
 
 
+def parse_multipliers(value: str) -> list[float]:
+    result = [float(item.strip()) for item in value.split(",") if item.strip()]
+    if not result or result != sorted(set(result)) or any(item <= 0 for item in result):
+        raise argparse.ArgumentTypeError(
+            "multipliers must be a non-empty, increasing comma-separated list "
+            "of positive numbers"
+        )
+    return result
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--distances", type=parse_distances, default=parse_distances("5,7,9"))
+    parser.add_argument(
+        "--distances",
+        type=parse_distances,
+        default=list(PAPER_DISTANCES),
+        help="Comma-separated distances; defaults to the paper's d=7,9 grid.",
+    )
     parser.add_argument("--n-rounds", type=int, default=9)
+    parser.add_argument(
+        "--multipliers",
+        type=parse_multipliers,
+        default=list(PAPER_MULTIPLIERS),
+        help="Comma-separated OOD multipliers; defaults to the paper's 1.2--3.0 grid.",
+    )
     parser.add_argument(
         "--generated-config-dir",
         type=Path,
@@ -50,7 +75,7 @@ def parse_args() -> argparse.Namespace:
     )
     add_common_inference_args(
         parser,
-        default_output_dir=Path("outputs/examples/qadapt/ood"),
+        default_output_dir=Path("outputs/examples/released_models/ood"),
     )
     return parser.parse_args()
 
@@ -61,6 +86,7 @@ def main() -> None:
         base_config="conf/examples/qadapt/config_qadapt_t0_base.yaml",
         output_dir=args.generated_config_dir,
         manifest=args.manifest,
+        grid_multipliers=args.multipliers,
     )
     jobs = []
     for distance in args.distances:

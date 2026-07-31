@@ -17,7 +17,6 @@ from typing import Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PAIRED_INFERENCE_SCRIPT = REPO_ROOT / "code" / "scripts" / "paired_inference_compare.py"
-MODEL_ID = 111
 TASK_CONFIGS = (
     ("t0_base", "examples/qadapt/config_qadapt_t0_base"),
     ("t1_meas_1p5", "examples/qadapt/config_qadapt_t1_meas_1p5"),
@@ -25,9 +24,13 @@ TASK_CONFIGS = (
     ("t3_idle_1p5", "examples/qadapt/config_qadapt_t3_idle_1p5"),
     ("t4_z_bias_1p5", "examples/qadapt/config_qadapt_t4_z_bias_1p5"),
 )
-DEFAULT_CHECKPOINT = REPO_ROOT / (
-    "outputs/qadapt_seq_ewc/models/HTnet.0.100.pt"
-)
+
+
+@dataclass(frozen=True)
+class ModelArgument:
+    name: str
+    model_id: int
+    checkpoint: Path
 
 
 @dataclass(frozen=True)
@@ -35,6 +38,27 @@ class InferenceJob:
     label: str
     command: tuple[str, ...]
     output_path: Path
+
+
+def parse_model_argument(value: str) -> ModelArgument:
+    parts = value.split(":", 2)
+    if len(parts) != 3:
+        raise argparse.ArgumentTypeError(
+            "--model must be formatted as name:model_id:/path/to/checkpoint"
+        )
+    name, model_id_raw, checkpoint_raw = (part.strip() for part in parts)
+    if not name or not checkpoint_raw:
+        raise argparse.ArgumentTypeError("model name and checkpoint must not be empty")
+    try:
+        model_id = int(model_id_raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"invalid model_id: {model_id_raw}"
+        ) from exc
+    checkpoint = Path(checkpoint_raw).expanduser()
+    if not checkpoint.is_absolute():
+        checkpoint = REPO_ROOT / checkpoint
+    return ModelArgument(name=name, model_id=model_id, checkpoint=checkpoint)
 
 
 def _default_gpus() -> str:
@@ -48,9 +72,14 @@ def add_common_inference_args(
     default_output_dir: Path,
 ) -> None:
     parser.add_argument(
-        "--checkpoint",
-        type=Path,
-        default=DEFAULT_CHECKPOINT,
+        "--model",
+        action="append",
+        type=parse_model_argument,
+        required=True,
+        help=(
+            "Repeat for each released model: name:model_id:/path/to/checkpoint. "
+            "Both .pt and .safetensors are supported."
+        ),
     )
     parser.add_argument("--num-samples", type=int, default=262144)
     parser.add_argument("--latency-num-samples", type=int, default=10000)
@@ -69,8 +98,12 @@ def add_common_inference_args(
     parser.add_argument("--dry-run", action="store_true")
 
 
-def checkpoint_specs(args: argparse.Namespace) -> tuple[tuple[str, Path], ...]:
-    return (("qadapt_seq_ewc", Path(args.checkpoint)),)
+def checkpoint_specs(args: argparse.Namespace) -> tuple[ModelArgument, ...]:
+    specs = tuple(args.model)
+    names = [spec.name for spec in specs]
+    if len(names) != len(set(names)):
+        raise ValueError(f"model names must be unique: {names}")
+    return specs
 
 
 def parse_gpus(value: str | Sequence[str]) -> list[str]:
@@ -125,8 +158,10 @@ def build_paired_command(
             str(output_path),
         )
     )
-    for name, checkpoint in checkpoint_specs(args):
-        command.extend(("--model", f"{name}:{MODEL_ID}:{checkpoint}"))
+    for spec in checkpoint_specs(args):
+        command.extend(
+            ("--model", f"{spec.name}:{spec.model_id}:{spec.checkpoint}")
+        )
     return tuple(command)
 
 
@@ -190,4 +225,4 @@ def run_jobs(
             f"  - {job.label}: exit={returncode}, log={log_path}"
             for job, returncode, log_path in failures
         )
-        raise RuntimeError(f"QAdapt inference jobs failed:\n{details}")
+        raise RuntimeError(f"Released-model inference jobs failed:\n{details}")

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Evaluate QAdapt seq+EWC on downloaded Google QEC data."""
+"""Evaluate released pre-decoders on downloaded Google Willow QEC data."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from scripts.qadapt_example_utils import (  # noqa: E402
 )
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--benchmark-root",
@@ -35,19 +35,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rounds", nargs="+", type=int, default=[13])
     add_common_inference_args(
         parser,
-        default_output_dir=Path("outputs/examples/qadapt/google_benchmark"),
+        default_output_dir=Path("outputs/examples/released_models/willow"),
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     output_path = args.output_dir / "results.json"
     if args.resume and output_path.is_file():
         print(f"[resume] output exists: {output_path}")
         return 0
     selected_gpus = parse_gpus(args.gpus)
     bases = ["X", "Z"] if args.basis == "both" else [args.basis]
+    specs = checkpoint_specs(args)
     command_preview = [
         str(args.python),
         "-m",
@@ -61,7 +62,7 @@ def main() -> int:
         "--bases",
         *bases,
         "--models",
-        "qadapt_seq_ewc",
+        *(spec.name for spec in specs),
         "--max-shots",
         str(args.num_samples),
         "--batch-size",
@@ -76,16 +77,23 @@ def main() -> int:
             f"[dry-run] gpu={selected_gpus[0]} seed={args.seed} "
             + shlex.join(command_preview)
         )
-        for name, checkpoint in checkpoint_specs(args):
-            print(f"[dry-run] checkpoint {name}={checkpoint}")
+        for spec in specs:
+            print(
+                f"[dry-run] model {spec.name}: "
+                f"model_id={spec.model_id} checkpoint={spec.checkpoint}"
+            )
         return 0
 
     os.environ["CUDA_VISIBLE_DEVICES"] = selected_gpus[0]
     from scripts.providers import google_qec_decoder_benchmark as benchmark
 
     benchmark.DEFAULT_MODELS = {
-        name: benchmark.BenchmarkModel(name, 111, checkpoint)
-        for name, checkpoint in checkpoint_specs(args)
+        spec.name: benchmark.BenchmarkModel(
+            spec.name,
+            spec.model_id,
+            spec.checkpoint,
+        )
+        for spec in specs
     }
     benchmark.DEFAULT_BENCHMARK_ROOT = args.benchmark_root
     benchmark_args = command_preview[3:]

@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Benchmark PyMatching and QAdapt seq+EWC on Google QEC hardware data."""
+"""Benchmark PyMatching and released pre-decoders on Google Willow QEC data."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ from workflows.config_validator import (  # noqa: E402
     apply_public_defaults_and_model,
     validate_public_config,
 )
-from workflows.run import _load_model  # noqa: E402
+from model.checkpoint_loader import load_model_checkpoint  # noqa: E402
 
 
 DEFAULT_BENCHMARK_ROOT = (
@@ -628,6 +628,8 @@ def _paired_statistics_from_counts(
 
 
 MODEL_PAIRWISE_PRIORITY = (
+    "qadapt",
+    "ising_fast_t0_e100",
     "qadapt_seq_ewc",
 )
 
@@ -1069,7 +1071,12 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             )
             if spec.name not in model_cache:
                 distributed = SimpleNamespace(rank=0, device=device)
-                loaded_model = _load_model(cfg, distributed).to(device).eval()
+                loaded_model = load_model_checkpoint(
+                    cfg,
+                    checkpoint=spec.checkpoint,
+                    model_id=spec.model_id,
+                    distributed=distributed,
+                ).to(device).eval()
                 model_cache[spec.name] = maybe_compile_model(
                     loaded_model,
                     enabled=bool(args.torch_compile),
@@ -1300,8 +1307,8 @@ def write_results(payload: Mapping[str, Any], output_path: Path) -> tuple[Path, 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Evaluate PyMatching and QAdapt sequential + EWC on Google QEC "
-            "hardware samples."
+            "Evaluate PyMatching and released pre-decoders on Google Willow "
+            "QEC hardware samples."
         )
     )
     parser.add_argument("--benchmark-root", type=Path, default=DEFAULT_BENCHMARK_ROOT)
