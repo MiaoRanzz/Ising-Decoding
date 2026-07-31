@@ -15,6 +15,7 @@ import yaml
 from noise_learning.google_qec import GoogleQECDataset, PARAMETER_NAMES
 from noise_learning.paper_input import google_experiment_to_paper_tensor
 from noise_learning.paper_model import NoiseLearningNetwork
+from noise_learning.paper_loss import PaperEdgeHyperedgeLoss, PaperFormulaCatalog
 from qec.noise_model import NoiseModel
 
 
@@ -60,6 +61,24 @@ def main() -> int:
     parser.add_argument("--training-config-output", type=Path)
     parser.add_argument("--target-distance", type=int)
     parser.add_argument("--target-rounds", type=int)
+    parser.add_argument(
+        "--formula-catalog",
+        type=Path,
+        help=(
+            "YAML/JSON catalog with 18 edge and 43 hyperedge XOR formulas. "
+            "When present, use the paper's Eqs. (63)-(65) instead of log-MSE."
+        ),
+    )
+    parser.add_argument(
+        "--unbiased-paper-loss",
+        action="store_true",
+        help="Apply the variance-stabilising factor in Eqs. (66)-(68).",
+    )
+    parser.add_argument(
+        "--base-error-rate",
+        type=float,
+        help="p_base required by --unbiased-paper-loss.",
+    )
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -71,6 +90,24 @@ def main() -> int:
         dtype=torch.float32,
         device=device,
     )
+    paper_loss = None
+    if args.formula_catalog is not None:
+        paper_loss = PaperEdgeHyperedgeLoss(
+            PaperFormulaCatalog.load(args.formula_catalog),
+            unbiased=args.unbiased_paper_loss,
+        ).to(device)
+    elif args.unbiased_paper_loss:
+        raise SystemExit("--unbiased-paper-loss requires --formula-catalog")
+    if args.unbiased_paper_loss and args.base_error_rate is None:
+        raise SystemExit("--unbiased-paper-loss requires --base-error-rate")
+
+    training_objective = "parameter_log_mse"
+    if paper_loss is not None:
+        training_objective = (
+            "paper_edge_hyperedge_unbiased"
+            if args.unbiased_paper_loss
+            else "paper_edge_hyperedge"
+        )
 
     dataset = GoogleQECDataset(args.source)
     train_sets: list[torch.Tensor] = []
@@ -102,12 +139,29 @@ def main() -> int:
         model.train()
         optimizer.zero_grad(set_to_none=True)
         predicted = model(batch)
-        loss = torch.mean((torch.log(predicted) - torch.log(target_values)) ** 2)
+        if paper_loss is None:
+            loss = torch.mean((torch.log(predicted) - torch.log(target_values)) ** 2)
+            edge_loss = hyperedge_loss = None
+        else:
+            breakdown = paper_loss.breakdown(
+                predicted,
+                target_values,
+                base_error_rate=args.base_error_rate,
+            )
+            loss = breakdown.total
+            edge_loss = float(breakdown.edge.detach())
+            hyperedge_loss = float(breakdown.hyperedge.detach())
         loss.backward()
         optimizer.step()
         final_loss = float(loss.detach())
         if step < 3 or (step + 1) % 25 == 0:
-            print(f"step={step + 1}/{args.steps} log_mse={final_loss:.8f}")
+            if paper_loss is None:
+                print(f"step={step + 1}/{args.steps} log_mse={final_loss:.8f}")
+            else:
+                print(
+                    f"step={step + 1}/{args.steps} loss={final_loss:.8e} "
+                    f"edge={edge_loss:.8e} hyperedge={hyperedge_loss:.8e}"
+                )
 
     logits_sum = torch.zeros(25, device=device)
     sample_count = 0
@@ -141,6 +195,11 @@ def main() -> int:
             "steps": args.steps,
             "final_training_log_mse": final_loss,
             "experiment_keys": args.experiment_key,
+            "final_training_loss": final_loss,
+            "training_objective": training_objective,
+            "formula_catalog": (
+                str(args.formula_catalog) if args.formula_catalog else None
+            ),
         },
         args.output,
     )
@@ -154,6 +213,11 @@ def main() -> int:
             "steps": args.steps,
             "final_training_log_mse": final_loss,
             "experiment_keys": args.experiment_key,
+            "final_training_loss": final_loss,
+            "training_objective": training_objective,
+            "formula_catalog": (
+                str(args.formula_catalog) if args.formula_catalog else None
+            ),
             "checkpoint": str(args.output),
         },
     }

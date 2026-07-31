@@ -4,6 +4,14 @@
 """Noise-parameter learning from hardware syndrome data."""
 
 from .paper_model import NoiseLearningNetwork
+from .paper_loss import (
+    PAPER_EDGE_TYPES,
+    PAPER_HYPEREDGE_TYPES,
+    PaperEdgeHyperedgeLoss,
+    PaperFormulaCatalog,
+    evaluate_xor_formulas,
+    xor_probabilities,
+)
 from .google_qec import (
     GoogleQECDataset,
     GoogleQECExperiment,
@@ -14,6 +22,12 @@ from .google_qec import (
 
 __all__ = [
     "NoiseLearningNetwork",
+    "PaperEdgeHyperedgeLoss",
+    "PaperFormulaCatalog",
+    "PAPER_EDGE_TYPES",
+    "PAPER_HYPEREDGE_TYPES",
+    "evaluate_xor_formulas",
+    "xor_probabilities",
     "GoogleQECDataset",
     "GoogleQECExperiment",
     "NoiseLearningResult",
