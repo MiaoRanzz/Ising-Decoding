@@ -25,7 +25,20 @@ comparison:
   # Set this to the checkpoint you want to test.
   checkpoint: outputs/test1/models/PreDecoderModelMemory_v1.0.100.pt
   output: my_file/end_to_end/L_logical/comparison_results/comparison_Zd9c9_1.json
-  # Null means inherit model_id from project_config.
-  model_id: null
+  # This checkpoint is PreDecoderModelMemory_v1, i.e. Ising-fast model 1.
+  model_id: 1
   batch_size: 1024
   device: null
+
+# Offline whole-shot safe-no-op validation.  The threshold is selected on a
+# deterministic validation split, then reported once on the held-out split.
+safe_no_op:
+  # Null derives this from comparison.output by replacing .json with .per_shot.npz.
+  per_shot_file: null
+  confidence_output: my_file/end_to_end/L_logical/comparison_results/comparison_Zd9c9_1.confidence.npz
+  output: my_file/end_to_end/L_logical/comparison_results/comparison_Zd9c9_1.safe_no_op.json
+  score: positive_margin_q10
+  num_confidence_bins: 10
+  num_thresholds: 101
+  validation_fraction: 0.5
+  split_seed: 20260802

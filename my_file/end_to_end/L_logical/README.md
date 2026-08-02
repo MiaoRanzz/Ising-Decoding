@@ -29,3 +29,17 @@ python my_file/end_to_end/compare_three_paths.py
 
 Use `--settings path/to/other.yaml` for a separate experiment, or pass any
 ordinary option (for example `--num-samples 4096`) as a one-off override.
+
+## Whole-shot safe no-op analysis
+
+After `compare_three_paths.py` has produced its `.per_shot.npz` file, edit the
+`safe_no_op` section in `end_to_end.yaml` and run:
+
+```powershell
+python my_file/end_to_end/L_logical/analyze_safe_no_op.py
+```
+
+It stores compact shot-level logit confidence summaries and selects a whole-shot
+no-op threshold on one random split before reporting its LER on the held-out
+split.  `positive_margin_q10` is the default score: the 10th percentile of
+`|logit|` among the corrections the model proposed for that shot.
