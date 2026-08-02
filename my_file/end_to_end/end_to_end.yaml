@@ -1,0 +1,31 @@
+# Default settings for the labeled end-to-end workflow.
+#
+# Paths are relative to the repository root.  Set `checkpoint` before running
+# the comparison command.  Command-line options remain available as temporary
+# overrides, e.g. `--num-samples 4096`.
+
+generation:
+  output_dir: my_file/end_to_end/data_generated
+  project_config: conf/config_public.yaml
+  # Null means inherit from project_config.
+  distance: null
+  n_rounds: null
+  code_rotation: null
+  basis: X
+  num_samples: 262144
+  batch_size: 1024
+  seed: 12345
+  device: null
+  simple_noise: false
+  p_error: 0.003
+
+comparison:
+  dataset_dir: outputs/end_to_end/r9_x
+  project_config: conf/config_domestic_ising_fast_mixed_noise_r9.yaml
+  # Set this to the checkpoint you want to test.
+  checkpoint: null
+  output: outputs/end_to_end/r9_x_comparison.json
+  # Null means inherit model_id from project_config.
+  model_id: null
+  batch_size: 1024
+  device: null
