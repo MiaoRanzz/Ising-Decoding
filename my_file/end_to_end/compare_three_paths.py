@@ -41,6 +41,10 @@ class BatchActionModel(torch.nn.Module):
 
     def __init__(self):
         super().__init__()
+        # PreDecoderMemoryEvalModule discovers its device through
+        # ``next(self.parameters())``.  A label lookup model has no learned
+        # weights, so retain this zero-sized anchor solely for that interface.
+        self._device_anchor = torch.nn.Parameter(torch.empty(0), requires_grad=False)
         self._actions: torch.Tensor | None = None
 
     def set_actions(self, actions: torch.Tensor) -> None:
@@ -200,12 +204,15 @@ def final_failures(
     with torch.no_grad():
         for start in range(0, total, batch_size):
             end = min(start + batch_size, total)
-            dets_batch = np.asarray(dets_and_obs[start:end, :-num_obs], dtype=np.uint8)
+            # Corpus arrays are read-only NPY memmaps.  Make the small batch
+            # writable before handing it to torch to avoid undefined writes.
+            dets_batch = np.array(dets_and_obs[start:end, :-num_obs], dtype=np.uint8, copy=True)
             obs_batch = np.asarray(dets_and_obs[start:end, -num_obs:], dtype=np.uint8)
             if action_source is not None:
                 if not isinstance(model, BatchActionModel):
                     raise TypeError("action_source requires BatchActionModel")
-                actions = torch.as_tensor(action_source[start:end], dtype=torch.uint8, device=device)
+                actions_np = np.array(action_source[start:end], dtype=np.uint8, copy=True)
+                actions = torch.as_tensor(actions_np, dtype=torch.uint8, device=device)
                 model.set_actions(actions)
             output = pipeline(torch.as_tensor(dets_batch, dtype=torch.uint8, device=device))
             pre_l = output[:, 0].to(torch.uint8).cpu().numpy().reshape(-1, 1)
@@ -236,7 +243,8 @@ def verify_input_alignment(
 ) -> None:
     """Fail fast if stored labels no longer align with production preprocessing."""
     take = min(32, int(dets_and_obs.shape[0]))
-    dets = torch.as_tensor(dets_and_obs[:take, :-num_obs], dtype=torch.uint8, device=device)
+    dets_np = np.array(dets_and_obs[:take, :-num_obs], dtype=np.uint8, copy=True)
+    dets = torch.as_tensor(dets_np, dtype=torch.uint8, device=device)
     rebuilt_x, _, _ = dets_to_predecoder_inputs(
         dets,
         distance=int(metadata["distance"]),
