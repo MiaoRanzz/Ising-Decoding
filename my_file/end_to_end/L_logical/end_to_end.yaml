@@ -5,13 +5,13 @@
 # overrides, e.g. `--num-samples 4096`.
 
 generation:
-  output_dir: my_file/end_to_end/data_generated/dataset_2
+  output_dir: my_file/end_to_end/L_logical/data_generated/dataset_Zd9c9_1
   project_config: conf/config_public.yaml
   # Null means inherit from project_config.
-  distance: null
-  n_rounds: null
-  code_rotation: null
-  basis: X
+  distance: 9
+  n_rounds: 9
+  code_rotation: O1
+  basis: Z
   num_samples: 262144
   batch_size: 1024
   seed: 12345
@@ -20,11 +20,11 @@ generation:
   p_error: 0.003
 
 comparison:
-  dataset_dir: my_file/end_to_end/data_generated/dataset_1
+  dataset_dir: my_file/end_to_end/L_logical/data_generated/dataset_Zd9c9_1
   project_config: conf/config_public.yaml
   # Set this to the checkpoint you want to test.
   checkpoint: outputs/test1/models/PreDecoderModelMemory_v1.0.100.pt
-  output: my_file/end_to_end/comparison_results/comparison_1.json
+  output: my_file/end_to_end/L_logical/comparison_results/comparison_Zd9c9_1.json
   # Null means inherit model_id from project_config.
   model_id: null
   batch_size: 1024
