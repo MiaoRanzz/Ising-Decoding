@@ -31,8 +31,8 @@ model_id: 1  # Surface: choose 1, 2, 3, 4, or 5. Color: choose 1, 2, 4, 5, or B 
 code: surface  # surface or color
 
 # === Values for evaluation. Training window is hardcoded to model receptive field. ===
-distance: 7
-n_rounds: 7
+distance: 3
+n_rounds: 9
 
 # === Workflow ===
 workflow:
