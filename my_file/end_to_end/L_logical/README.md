@@ -23,8 +23,8 @@ and rotation default to the referenced project YAML.  Once configured, run
 each script without repeating its parameters:
 
 ```powershell
-python my_file/end_to_end/generate_labeled_dataset.py
-python my_file/end_to_end/compare_three_paths.py
+python my_file/end_to_end/L_logical/generate_labeled_dataset.py
+python my_file/end_to_end/L_logical/compare_three_paths.py
 ```
 
 Use `--settings path/to/other.yaml` for a separate experiment, or pass any
@@ -43,3 +43,32 @@ It stores compact shot-level logit confidence summaries and selects a whole-shot
 no-op threshold on one random split before reporting its LER on the held-out
 split.  `positive_margin_q10` is the default score: the 10th percentile of
 `|logit|` among the corrections the model proposed for that shot.
+
+## Local safe no-op gate
+
+The local safe no-op experiment is a second-stage model.  It freezes the
+current Ising-fast proposal and learns whether to keep each proposed local
+packet before PyMatching.  The data packet couples the two data-correction
+channels at one spacetime site; the two syndrome channels each form one packet.
+It therefore cannot accidentally retain half of a Y-like data correction.
+
+All normal settings live in `end_to_end.yaml`; update the dataset/checkpoint
+paths there, then run these commands from the repository root:
+
+```bash
+python my_file/end_to_end/L_logical/generate_local_risk_dataset.py
+python my_file/end_to_end/L_logical/train_local_safe_no_op.py
+python my_file/end_to_end/L_logical/evaluate_local_safe_no_op.py
+```
+
+The first command is intentionally expensive: for each proposal packet it
+compares final `predecoder + PyMatching` failure with and without that packet.
+For an initial check, set `local_risk_generation.num_samples: 4096`; use a new
+empty `output_dir` for a full run.  It writes only proposal logits and packet
+effects and refers back to the existing source corpus for `train_x`, so it does
+not duplicate the large input tensor.
+
+`packet_effect.npy` holds `+1` helpful, `-1` harmful, `0` neutral and `-2`
+not proposed.  Training turns `+1` into the gate's "apply" target and masks
+`-2`.  The final command reports PyMatching, frozen proposal + PyMatching, and
+local-gate + PyMatching on the training script's held-out split.

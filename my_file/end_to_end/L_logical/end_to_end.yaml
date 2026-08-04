@@ -42,3 +42,52 @@ safe_no_op:
   num_thresholds: 101
   validation_fraction: 0.5
   split_seed: 20260802
+
+# New local (packet-level) safe-no-op workflow.  It freezes the proposal
+# checkpoint above: do not point this at a checkpoint different from the one
+# used by `comparison` unless you intentionally generate a new risk dataset.
+local_risk_generation:
+  source_dataset_dir: my_file/end_to_end/L_logical/data_generated/dataset_Zd9c9_1
+  project_config: conf/config_public.yaml
+  checkpoint: outputs/test1/models/PreDecoderModelMemory_v1.0.100.pt
+  model_id: 1
+  output_dir: my_file/end_to_end/L_logical/local_risk_data/dataset_Zd9c9_1_model_100
+  # Null means annotate every source shot.  Start with 4096 to smoke-test.
+  num_samples: null
+  proposal_batch_size: 256
+  # This controls repeated endpoint decoder calls, so lower it if GPU memory is tight.
+  counterfactual_batch_size: 1024
+  seed: 20260803
+  device: null
+
+local_gate_training:
+  risk_dataset_dir: my_file/end_to_end/L_logical/local_risk_data/dataset_Zd9c9_1_model_100
+  output_dir: my_file/end_to_end/L_logical/local_gate_models/dataset_Zd9c9_1_model_100
+  batch_size: 128
+  epochs: 20
+  learning_rate: 0.0003
+  weight_decay: 0.00001
+  validation_fraction: 0.2
+  split_seed: 20260803
+  # Helpful packets are rare.  This cap prevents a tiny positive set from
+  # making the weighted BCE numerically unstable.
+  max_positive_weight: 100.0
+  num_workers: 0
+  device: null
+  architecture:
+    input_channels: 12
+    hidden_channels: 64
+    num_hidden_layers: 3
+    kernel_size: 3
+    dropout: 0.05
+
+local_gate_evaluation:
+  risk_dataset_dir: my_file/end_to_end/L_logical/local_risk_data/dataset_Zd9c9_1_model_100
+  gate_checkpoint: my_file/end_to_end/L_logical/local_gate_models/dataset_Zd9c9_1_model_100/best.pt
+  output: my_file/end_to_end/L_logical/local_gate_models/dataset_Zd9c9_1_model_100/held_out_ler.json
+  batch_size: 256
+  # Must match local_gate_training, so this is the same held-out partition.
+  validation_fraction: 0.2
+  split_seed: 20260803
+  gate_threshold: 0.0
+  device: null
