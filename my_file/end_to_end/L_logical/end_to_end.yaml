@@ -5,13 +5,13 @@
 # overrides, e.g. `--num-samples 4096`.
 
 generation:
-  output_dir: my_file/end_to_end/L_logical/data_generated/dataset_Zd9c9_1
+  output_dir: my_file/end_to_end/L_logical/data_generated/dataset_Xd3c9_1
   project_config: conf/config_public.yaml
   # Null means inherit from project_config.
-  distance: 9
+  distance: 3
   n_rounds: 9
   code_rotation: O1
-  basis: Z
+  basis: X
   num_samples: 262144
   batch_size: 1024
   seed: 12345
@@ -20,24 +20,30 @@ generation:
   p_error: 0.003
 
 comparison:
-  dataset_dir: my_file/end_to_end/L_logical/data_generated/dataset_Zd9c9_1
+  dataset_dir: my_file/end_to_end/L_logical/data_generated/dataset_Xd3c9_1
   project_config: conf/config_public.yaml
   # Set this to the checkpoint you want to test.
   checkpoint: outputs/test1/models/PreDecoderModelMemory_v1.0.100.pt
-  output: my_file/end_to_end/L_logical/comparison_results/comparison_Zd9c9_1.json
+  output: my_file/end_to_end/L_logical/comparison_results/comparison_Xd3c9_1.json
   # This checkpoint is PreDecoderModelMemory_v1, i.e. Ising-fast model 1.
   model_id: 1
   batch_size: 1024
   device: null
 
-# Offline whole-shot safe-no-op validation.  The threshold is selected on a
+# Offline whole-shot safe-no-op validation. The threshold is selected on a
 # deterministic validation split, then reported once on the held-out split.
 safe_no_op:
   # Null derives this from comparison.output by replacing .json with .per_shot.npz.
   per_shot_file: null
-  confidence_output: my_file/end_to_end/L_logical/comparison_results/comparison_Zd9c9_1.confidence.npz
-  output: my_file/end_to_end/L_logical/comparison_results/comparison_Zd9c9_1.safe_no_op.json
-  score: positive_margin_q10
+  confidence_output: my_file/end_to_end/L_logical/comparison_results/comparison_Xd3c9_1.confidence.npz
+  output: my_file/end_to_end/L_logical/comparison_results/comparison_Xd3c9_1.safe_no_op.json
+  score: positive_margin_q10  
+  # positive_margin_q10: the 10th percentile of positive margins
+  # positive_margin_mean: the mean of positive margins
+  # positive_margin_min: the minimum of positive margins
+  # action_count: the number of actions taken
+  # data_action_count: the number of data actions taken
+  # syndrome_action_count: the number of syndrome actions taken
   num_confidence_bins: 10
   num_thresholds: 101
   validation_fraction: 0.5
