@@ -5,10 +5,10 @@
 # overrides, e.g. `--num-samples 4096`.
 
 generation:
-  output_dir: my_file/end_to_end/L_logical/data_generated/dataset_Xd3c9_1
+  output_dir: my_file/end_to_end/L_logical/data_generated/dataset_Xd9c9_1
   project_config: conf/config_public.yaml
   # Null means inherit from project_config.
-  distance: 3
+  distance: 9
   n_rounds: 9
   code_rotation: O1
   basis: X
@@ -20,11 +20,11 @@ generation:
   p_error: 0.003
 
 comparison:
-  dataset_dir: my_file/end_to_end/L_logical/data_generated/dataset_Xd3c9_1
+  dataset_dir: my_file/end_to_end/L_logical/data_generated/dataset_Xd9c9_1
   project_config: conf/config_public.yaml
   # Set this to the checkpoint you want to test.
   checkpoint: outputs/test1/models/PreDecoderModelMemory_v1.0.100.pt
-  output: my_file/end_to_end/L_logical/comparison_results/comparison_Xd3c9_1.json
+  output: my_file/end_to_end/L_logical/comparison_results/comparison_Xd9c9_1.json
   # This checkpoint is PreDecoderModelMemory_v1, i.e. Ising-fast model 1.
   model_id: 1
   batch_size: 1024
@@ -35,8 +35,8 @@ comparison:
 safe_no_op:
   # Null derives this from comparison.output by replacing .json with .per_shot.npz.
   per_shot_file: null
-  confidence_output: my_file/end_to_end/L_logical/comparison_results/comparison_Xd3c9_1.confidence.npz
-  output: my_file/end_to_end/L_logical/comparison_results/comparison_Xd3c9_1.safe_no_op.json
+  confidence_output: my_file/end_to_end/L_logical/comparison_results/comparison_Xd9c9_1.confidence.npz
+  output: my_file/end_to_end/L_logical/comparison_results/comparison_Xd9c9_1.safe_no_op.json
   score: positive_margin_q10  
   # positive_margin_q10: the 10th percentile of positive margins
   # positive_margin_mean: the mean of positive margins
@@ -47,34 +47,34 @@ safe_no_op:
   num_confidence_bins: 10
   num_thresholds: 101
   validation_fraction: 0.5
-  split_seed: 20260802
+  split_seed: 12345
 
 # New local (packet-level) safe-no-op workflow.  It freezes the proposal
 # checkpoint above: do not point this at a checkpoint different from the one
 # used by `comparison` unless you intentionally generate a new risk dataset.
 local_risk_generation:
-  source_dataset_dir: my_file/end_to_end/L_logical/data_generated/dataset_Zd9c9_1
+  source_dataset_dir: my_file/end_to_end/L_logical/data_generated/dataset_Xd9c9_1
   project_config: conf/config_public.yaml
   checkpoint: outputs/test1/models/PreDecoderModelMemory_v1.0.100.pt
   model_id: 1
-  output_dir: my_file/end_to_end/L_logical/local_risk_data/dataset_Zd9c9_1_model_100
+  output_dir: my_file/end_to_end/L_logical/local_risk_data/dataset_Xd9c9_1_model_100
   # Null means annotate every source shot.  Start with 4096 to smoke-test.
   num_samples: null
   proposal_batch_size: 256
   # This controls repeated endpoint decoder calls, so lower it if GPU memory is tight.
   counterfactual_batch_size: 1024
-  seed: 20260803
+  seed: 12345
   device: null
 
 local_gate_training:
-  risk_dataset_dir: my_file/end_to_end/L_logical/local_risk_data/dataset_Zd9c9_1_model_100
-  output_dir: my_file/end_to_end/L_logical/local_gate_models/dataset_Zd9c9_1_model_100
+  risk_dataset_dir: my_file/end_to_end/L_logical/local_risk_data/dataset_Xd9c9_1_model_100
+  output_dir: my_file/end_to_end/L_logical/local_gate_models/dataset_Xd9c9_1_model_100
   batch_size: 128
   epochs: 20
   learning_rate: 0.0003
   weight_decay: 0.00001
   validation_fraction: 0.2
-  split_seed: 20260803
+  split_seed: 12345
   # Helpful packets are rare.  This cap prevents a tiny positive set from
   # making the weighted BCE numerically unstable.
   max_positive_weight: 100.0
@@ -88,12 +88,12 @@ local_gate_training:
     dropout: 0.05
 
 local_gate_evaluation:
-  risk_dataset_dir: my_file/end_to_end/L_logical/local_risk_data/dataset_Zd9c9_1_model_100
-  gate_checkpoint: my_file/end_to_end/L_logical/local_gate_models/dataset_Zd9c9_1_model_100/best.pt
-  output: my_file/end_to_end/L_logical/local_gate_models/dataset_Zd9c9_1_model_100/held_out_ler.json
+  risk_dataset_dir: my_file/end_to_end/L_logical/local_risk_data/dataset_Xd9c9_1_model_100
+  gate_checkpoint: my_file/end_to_end/L_logical/local_gate_models/dataset_Xd9c9_1_model_100/best.pt
+  output: my_file/end_to_end/L_logical/local_gate_models/dataset_Xd9c9_1_model_100/held_out_ler.json
   batch_size: 256
   # Must match local_gate_training, so this is the same held-out partition.
   validation_fraction: 0.2
-  split_seed: 20260803
+  split_seed: 12345
   gate_threshold: 0.0
   device: null
