@@ -86,6 +86,8 @@ local_gate_training:
   # making the weighted BCE numerically unstable.
   max_positive_weight: 100.0
   num_workers: 0
+  # Print batch-level loss/ETA every N training batches.
+  log_every_batches: 20
   device: null
   architecture:
     input_channels: 12

@@ -7,7 +7,9 @@ import argparse
 import json
 import random
 import sys
+import time
 from dataclasses import asdict
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -34,6 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS)
     parser.add_argument("--risk-dataset-dir", type=Path, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument("--log-every-batches", type=int, default=None)
     parser.add_argument("--device", default=None)
     return parser.parse_args()
 
@@ -74,6 +77,7 @@ def load_settings(cli: argparse.Namespace) -> SimpleNamespace:
         split_seed=int(pick("split_seed", fallback=20260803)),
         max_positive_weight=float(pick("max_positive_weight", fallback=100.0)),
         num_workers=int(pick("num_workers", fallback=0)),
+        log_every_batches=int(pick("log_every_batches", fallback=20)),
         device=cli.device if cli.device is not None else pick("device"),
         architecture=architecture,
     )
@@ -127,12 +131,36 @@ def count_labels(effect: np.ndarray, rows: np.ndarray, batch_size: int) -> dict[
     return counts
 
 
-def run_epoch(model: LocalSafeNoOpGate, loader: DataLoader, device: torch.device,
-              positive_weight: float, optimizer: torch.optim.Optimizer | None = None) -> dict[str, float]:
+def _format_duration(seconds: float) -> str:
+    """Human-readable non-negative duration for progress logs."""
+    seconds = max(0, int(round(seconds)))
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    return f"{hours:d}h{minutes:02d}m{seconds:02d}s" if hours else f"{minutes:d}m{seconds:02d}s"
+
+
+def run_epoch(
+    model: LocalSafeNoOpGate,
+    loader: DataLoader,
+    device: torch.device,
+    positive_weight: float,
+    optimizer: torch.optim.Optimizer | None = None,
+    *,
+    epoch: int | None = None,
+    total_epochs: int | None = None,
+    log_every_batches: int = 0,
+) -> dict[str, float]:
     training = optimizer is not None
     model.train(training)
     totals = {"loss": 0.0, "labels": 0, "true_positive": 0, "predicted_positive": 0, "correct": 0}
-    for features, target, mask in loader:
+    batches = len(loader)
+    epoch_started = time.perf_counter()
+    window_loss = 0.0
+    window_labels = 0
+    previous_window_loss: float | None = None
+    processed_shots = 0
+    for batch_index, (features, target, mask) in enumerate(loader, start=1):
+        batch_shots = int(features.shape[0])
         features, target, mask = features.to(device), target.to(device), mask.to(device)
         with torch.set_grad_enabled(training):
             logits = model(features)
@@ -154,6 +182,36 @@ def run_epoch(model: LocalSafeNoOpGate, loader: DataLoader, device: torch.device
         totals["true_positive"] += int((target.bool() & mask).sum().item())
         totals["predicted_positive"] += int((predicted & mask).sum().item())
         totals["correct"] += int(((predicted == target.bool()) & mask).sum().item())
+        window_loss += float(loss.detach().item()) * label_count
+        window_labels += label_count
+        processed_shots += batch_shots
+
+        if training and log_every_batches > 0 and (batch_index % log_every_batches == 0 or batch_index == batches):
+            elapsed = time.perf_counter() - epoch_started
+            per_batch = elapsed / batch_index
+            epoch_eta = per_batch * (batches - batch_index)
+            # This is intentionally labelled train-only: validation time has
+            # not yet been measured for the current epoch.
+            future_train_batches = (batches - batch_index) + max(0, (total_epochs or 1) - (epoch or 1)) * batches
+            total_train_eta = per_batch * future_train_batches
+            window_average = window_loss / window_labels if window_labels else float("nan")
+            delta = "n/a" if previous_window_loss is None else f"{window_average - previous_window_loss:+.5f}"
+            samples_per_second = processed_shots / elapsed if elapsed else 0.0
+            finish = datetime.now() + timedelta(seconds=total_train_eta)
+            print(
+                f"[Train Epoch {epoch}/{total_epochs}] Batch {batch_index}/{batches} | "
+                f"Loss: {window_average:.5f} | Delta: {delta} | "
+                f"LR: {optimizer.param_groups[0]['lr']:.3e} | "
+                f"Throughput: {samples_per_second:.1f} shots/s | "
+                f"Elapsed: {_format_duration(elapsed)} | "
+                f"Epoch ETA: {_format_duration(epoch_eta)} | "
+                f"Train ETA: {_format_duration(total_train_eta)} | "
+                f"Est. finish: {finish:%Y-%m-%d %H:%M:%S}",
+                flush=True,
+            )
+            previous_window_loss = window_average
+            window_loss = 0.0
+            window_labels = 0
     if totals["labels"] == 0:
         raise RuntimeError("split has no proposed packets to train or validate")
     return {
@@ -162,13 +220,14 @@ def run_epoch(model: LocalSafeNoOpGate, loader: DataLoader, device: torch.device
         "helpful_rate": totals["true_positive"] / totals["labels"],
         "accept_rate": totals["predicted_positive"] / totals["labels"],
         "accuracy": totals["correct"] / totals["labels"],
+        "elapsed_seconds": time.perf_counter() - epoch_started,
     }
 
 
 def main() -> None:
     args = load_settings(parse_args())
-    if args.batch_size <= 0 or args.epochs <= 0:
-        raise ValueError("batch_size and epochs must be positive")
+    if args.batch_size <= 0 or args.epochs <= 0 or args.log_every_batches <= 0:
+        raise ValueError("batch_size, epochs, and log_every_batches must be positive")
     if not 0.0 < args.validation_fraction < 1.0:
         raise ValueError("validation_fraction must lie between zero and one")
     metadata = json.loads((args.risk_dataset_dir / "metadata.json").read_text(encoding="utf-8"))
@@ -204,12 +263,34 @@ def main() -> None:
     best_loss = float("inf")
     print(json.dumps({"device": str(device), "train_labels": train_counts, "validation_labels": valid_counts,
                       "positive_weight": positive_weight}, indent=2))
+    training_started = time.perf_counter()
     for epoch in range(1, args.epochs + 1):
-        train_metrics = run_epoch(model, train_loader, device, positive_weight, optimizer)
+        print(f"[Train Epoch {epoch}/{args.epochs}] starting: {len(train_loader)} batches, "
+              f"{len(train_set)} shots", flush=True)
+        train_metrics = run_epoch(
+            model, train_loader, device, positive_weight, optimizer,
+            epoch=epoch, total_epochs=args.epochs, log_every_batches=args.log_every_batches,
+        )
+        validation_started = time.perf_counter()
         valid_metrics = run_epoch(model, valid_loader, device, positive_weight)
-        row = {"epoch": epoch, "train": train_metrics, "validation": valid_metrics}
+        validation_seconds = time.perf_counter() - validation_started
+        total_elapsed = time.perf_counter() - training_started
+        average_epoch_seconds = total_elapsed / epoch
+        total_eta = average_epoch_seconds * (args.epochs - epoch)
+        estimated_finish = datetime.now() + timedelta(seconds=total_eta)
+        row = {"epoch": epoch, "train": train_metrics, "validation": valid_metrics,
+               "validation_seconds": validation_seconds, "total_elapsed_seconds": total_elapsed,
+               "total_eta_seconds": total_eta}
         history.append(row)
-        print(json.dumps(row))
+        print(
+            f"[Epoch {epoch}/{args.epochs}] "
+            f"train_loss={train_metrics['loss']:.5f} | valid_loss={valid_metrics['loss']:.5f} | "
+            f"train_time={_format_duration(train_metrics['elapsed_seconds'])} | "
+            f"valid_time={_format_duration(validation_seconds)} | "
+            f"Total ETA: {_format_duration(total_eta)} | "
+            f"Est. finish: {estimated_finish:%Y-%m-%d %H:%M:%S}",
+            flush=True,
+        )
         checkpoint = {
             "schema_version": 1,
             "artifact": "local_safe_no_op_gate",
