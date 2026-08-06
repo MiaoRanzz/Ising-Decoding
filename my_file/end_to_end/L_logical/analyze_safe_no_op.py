@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Extract confidence and validate whole-shot safe no-op.")
     parser.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS)
     parser.add_argument("--score", default=None, help="Override safe_no_op.score.")
-    parser.add_argument("--device", default=None, help="Override comparison/safe_no_op device.")
+    parser.add_argument("--device", default=None, help="Override safe_no_op.device.")
     return parser.parse_args()
 
 
@@ -56,35 +56,26 @@ def _repo_path(value: str | Path) -> Path:
 def load_settings(cli: argparse.Namespace) -> SimpleNamespace:
     settings_path = cli.settings.expanduser().resolve()
     cfg = OmegaConf.load(settings_path)
-    comparison = OmegaConf.to_container(cfg.get("comparison", {}), resolve=True)
     safe = OmegaConf.to_container(cfg.get("safe_no_op", {}), resolve=True)
-    if not isinstance(comparison, dict) or not isinstance(safe, dict):
-        raise ValueError("comparison and safe_no_op settings must both be mappings")
+    if not isinstance(safe, dict):
+        raise ValueError("safe_no_op settings must be a mapping")
 
-    def required(section: dict[str, Any], name: str) -> Any:
-        value = section.get(name)
+    def required(name: str) -> Any:
+        value = safe.get(name)
         if value is None:
-            raise ValueError(f"missing {name} in {settings_path}")
+            raise ValueError(f"missing safe_no_op.{name} in {settings_path}")
         return value
 
-    comparison_output = _repo_path(required(comparison, "output"))
-    per_shot_raw = safe.get("per_shot_file")
-    per_shot_file = (
-        _repo_path(per_shot_raw)
-        if per_shot_raw is not None
-        else comparison_output.with_suffix(".per_shot.npz")
-    )
     return SimpleNamespace(
-        dataset_dir=_repo_path(required(comparison, "dataset_dir")),
-        project_config=_repo_path(required(comparison, "project_config")),
-        checkpoint=_repo_path(required(comparison, "checkpoint")),
-        model_id=comparison.get("model_id"),
-        batch_size=int(required(comparison, "batch_size")),
-        device=cli.device if cli.device is not None else safe.get("device", comparison.get("device")),
-        comparison_output=comparison_output,
-        per_shot_file=per_shot_file,
-        confidence_output=_repo_path(required(safe, "confidence_output")),
-        output=_repo_path(required(safe, "output")),
+        dataset_dir=_repo_path(required("dataset_dir")),
+        project_config=_repo_path(required("project_config")),
+        checkpoint=_repo_path(required("checkpoint")),
+        model_id=safe.get("model_id"),
+        batch_size=int(required("batch_size")),
+        device=cli.device if cli.device is not None else safe.get("device"),
+        per_shot_file=_repo_path(required("per_shot_file")),
+        confidence_output=_repo_path(required("confidence_output")),
+        output=_repo_path(required("output")),
         score=str(cli.score if cli.score is not None else safe.get("score", "positive_margin_q10")),
         num_confidence_bins=int(safe.get("num_confidence_bins", 10)),
         num_thresholds=int(safe.get("num_thresholds", 101)),
@@ -231,14 +222,10 @@ def main() -> None:
     baseline, model_failure = load_outcomes(args.per_shot_file, total)
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
-    # Reuse exactly the same model configuration construction as the comparison.
-    report_model_id = None
-    if args.comparison_output.is_file():
-        report_model_id = json.loads(args.comparison_output.read_text(encoding="utf-8")).get("model_id")
     model_args = SimpleNamespace(
         project_config=args.project_config,
         checkpoint=args.checkpoint,
-        model_id=args.model_id if args.model_id is not None else report_model_id,
+        model_id=args.model_id,
     )
     cfg = build_model_cfg(model_args, metadata)
     print(f"[load] checkpoint={args.checkpoint}, device={device}")

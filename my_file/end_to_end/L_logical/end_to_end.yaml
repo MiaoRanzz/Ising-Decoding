@@ -30,11 +30,18 @@ comparison:
   batch_size: 1024
   device: null
 
-# Offline whole-shot safe-no-op validation. The threshold is selected on a
-# deterministic validation split, then reported once on the held-out split.
+# Offline whole-shot safe-no-op validation. This task consumes the per-shot
+# artifact already produced by comparison, but owns every path it needs.
+# The threshold is selected on a deterministic validation split, then reported
+# once on the held-out split.
 safe_no_op:
-  # Null derives this from comparison.output by replacing .json with .per_shot.npz.
-  per_shot_file: null
+  dataset_dir: my_file/end_to_end/L_logical/data_generated/dataset_Xd9c9_1
+  project_config: conf/config_public.yaml
+  checkpoint: outputs/test1/models/PreDecoderModelMemory_v1.0.100.pt
+  model_id: 1
+  batch_size: 1024
+  device: null
+  per_shot_file: my_file/end_to_end/L_logical/comparison_results/comparison_Xd9c9_1.per_shot.npz
   confidence_output: my_file/end_to_end/L_logical/comparison_results/comparison_Xd9c9_1.confidence.npz
   output: my_file/end_to_end/L_logical/comparison_results/comparison_Xd9c9_1.safe_no_op.json
   score: positive_margin_q10  
@@ -49,9 +56,9 @@ safe_no_op:
   validation_fraction: 0.5
   split_seed: 12345
 
-# New local (packet-level) safe-no-op workflow.  It freezes the proposal
-# checkpoint above: do not point this at a checkpoint different from the one
-# used by `comparison` unless you intentionally generate a new risk dataset.
+# New local (packet-level) safe-no-op workflow. It freezes the proposal
+# checkpoint configured in this section. Changing that checkpoint requires a
+# new local-risk dataset, regardless of any other task's configuration.
 local_risk_generation:
   source_dataset_dir: my_file/end_to_end/L_logical/data_generated/dataset_Xd9c9_1
   project_config: conf/config_public.yaml
