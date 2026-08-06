@@ -52,7 +52,8 @@ def load_settings(cli: argparse.Namespace) -> SimpleNamespace:
         raise ValueError("local_gate_evaluation must be a mapping")
 
     def pick(name: str, *, required: bool = False, fallback: Any = None) -> Any:
-        value = getattr(cli, name)
+        # Most evaluation settings intentionally live only in YAML.
+        value = getattr(cli, name, None)
         if value is None:
             value = section.get(name, fallback)
         if required and value is None:
