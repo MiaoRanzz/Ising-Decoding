@@ -4,20 +4,25 @@ This document covers running pre-decoder training on remote GPU nodes
 using Docker containers, with optional SLURM integration.
 For local single-machine usage, see `README.md`.
 
-## QAdapt example launchers
+## Released-model example launchers
 
 For a local GPU host, use the maintained QAdapt launchers instead of composing
 Hydra overrides manually:
 
 ```bash
 bash code/examples/train_seq_ewc.sh
+bash code/examples/train_ising_fast_t0.sh
 ```
 
-Model ID 111 is registered as `HTnet`; checkpoints are saved as `HTnet.0.<epoch>.pt`.
+Model ID 111 is QAdapt/`HTnet`; model ID 1 is Ising-Fast. The first launcher
+trains QAdapt sequentially on T0→T4 with EWC. The second trains Ising-Fast from
+random initialization on T0 for 100 epochs without EWC.
 
 The launcher uses the five configs under `conf/examples/qadapt/`; EWC is enabled
 by the launcher rather than duplicated YAML. Set `DRY_RUN=1` to inspect all stages.
-See `code/examples/README.md` for environment variables and inference commands.
+See `code/examples/README.md` for final-model export, environment variables,
+two-model OOD inference, and Google Willow inference commands. Intermediate
+training checkpoints and optimizer state are not release assets.
 
 ## Prerequisites
 
