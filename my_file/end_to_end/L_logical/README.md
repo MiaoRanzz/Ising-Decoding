@@ -69,6 +69,9 @@ effects and refers back to the existing source corpus for `train_x`, so it does
 not duplicate the large input tensor.
 
 `packet_effect.npy` holds `+1` helpful, `-1` harmful, `0` neutral and `-2`
-not proposed.  Training turns `+1` into the gate's "apply" target and masks
-`-2`.  The final command reports PyMatching, frozen proposal + PyMatching, and
-local-gate + PyMatching on the training script's held-out split.
+not proposed. Training keeps every helpful/harmful label but randomly
+downsamples neutral loss positions. It writes one `epoch_*.pt` candidate per
+configured interval. The final command selects the candidate checkpoint and
+gate threshold by final LER on the validation split, then reports PyMatching,
+frozen proposal + PyMatching, and local-gate + PyMatching once on a separate
+test split.

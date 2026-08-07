@@ -17,12 +17,32 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
+import numpy as np
 import torch
 from torch import nn
 
 
 PACKET_NAMES = ("data_packet", "x_syndrome_packet", "z_syndrome_packet")
 NO_PACKET_LABEL = -2
+
+
+def split_rows(
+    total: int,
+    train_fraction: float,
+    validation_fraction: float,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Create one deterministic, disjoint train/validation/test split."""
+    if total < 3:
+        raise ValueError("at least three shots are required for train/validation/test splitting")
+    if train_fraction <= 0.0 or validation_fraction <= 0.0 or train_fraction + validation_fraction >= 1.0:
+        raise ValueError("train_fraction and validation_fraction must be positive and sum to less than one")
+    order = np.random.default_rng(seed).permutation(total)
+    train_end = int(total * train_fraction)
+    validation_end = train_end + int(total * validation_fraction)
+    if train_end == 0 or validation_end == train_end or validation_end == total:
+        raise ValueError("split fractions produced an empty train, validation, or test split")
+    return np.sort(order[:train_end]), np.sort(order[train_end:validation_end]), np.sort(order[validation_end:])
 
 
 @dataclass(frozen=True)

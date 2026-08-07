@@ -25,7 +25,7 @@ REPO_ROOT = HERE.parents[2]
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from local_safe_no_op import GateArchitecture, LocalSafeNoOpGate, NO_PACKET_LABEL, gate_features
+from local_safe_no_op import GateArchitecture, LocalSafeNoOpGate, NO_PACKET_LABEL, gate_features, split_rows
 
 
 DEFAULT_SETTINGS = HERE / "end_to_end.yaml"
@@ -72,10 +72,15 @@ def load_settings(cli: argparse.Namespace) -> SimpleNamespace:
         batch_size=int(pick("batch_size", required=True)),
         epochs=int(pick("epochs", required=True)),
         learning_rate=float(pick("learning_rate", required=True)),
+        lr_scheduler=str(pick("lr_scheduler", fallback="cosine")).lower(),
+        min_learning_rate=float(pick("min_learning_rate", fallback=0.0)),
         weight_decay=float(pick("weight_decay", fallback=0.0)),
-        validation_fraction=float(pick("validation_fraction", fallback=0.2)),
+        train_fraction=float(pick("train_fraction", fallback=0.7)),
+        validation_fraction=float(pick("validation_fraction", fallback=0.15)),
         split_seed=int(pick("split_seed", fallback=20260803)),
+        neutral_per_informative=float(pick("neutral_per_informative", fallback=10.0)),
         max_positive_weight=float(pick("max_positive_weight", fallback=100.0)),
+        checkpoint_interval_epochs=int(pick("checkpoint_interval_epochs", fallback=1)),
         num_workers=int(pick("num_workers", fallback=0)),
         log_every_batches=int(pick("log_every_batches", fallback=20)),
         device=cli.device if cli.device is not None else pick("device"),
@@ -107,7 +112,7 @@ class RiskDataset(Dataset):
     def __len__(self) -> int:
         return len(self.rows)
 
-    def __getitem__(self, item: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, item: int) -> tuple[torch.Tensor, torch.Tensor]:
         row = int(self.rows[item])
         source_row = int(self.source_indices[row])
         x = torch.from_numpy(np.array(self.train_x[source_row], dtype=np.float32, copy=True))
@@ -115,9 +120,7 @@ class RiskDataset(Dataset):
         actions_np = np.unpackbits(self.action_packed[row], bitorder="little")[:int(np.prod(self.action_shape))]
         actions = torch.from_numpy(np.array(actions_np.reshape(self.action_shape), dtype=np.bool_, copy=True))
         effect = torch.from_numpy(np.array(self.effect[row], dtype=np.int8, copy=True))
-        target = (effect == 1).to(torch.float32)
-        mask = effect != NO_PACKET_LABEL
-        return gate_features(x.unsqueeze(0), logits.unsqueeze(0), actions.unsqueeze(0)).squeeze(0), target, mask
+        return gate_features(x.unsqueeze(0), logits.unsqueeze(0), actions.unsqueeze(0)).squeeze(0), effect
 
 
 def count_labels(effect: np.ndarray, rows: np.ndarray, batch_size: int) -> dict[str, int]:
@@ -139,6 +142,23 @@ def _format_duration(seconds: float) -> str:
     return f"{hours:d}h{minutes:02d}m{seconds:02d}s" if hours else f"{minutes:d}m{seconds:02d}s"
 
 
+def _loss_targets_and_mask(
+    effect: torch.Tensor, neutral_keep_probability: float, training: bool
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Keep every endpoint-changing label and subsample neutral positions only."""
+    target = (effect == 1).to(torch.float32)
+    informative = (effect == 1) | (effect == -1)
+    neutral = effect == 0
+    if training:
+        keep_neutral = torch.rand_like(target) < neutral_keep_probability
+        mask = informative | (neutral & keep_neutral)
+    else:
+        # This is diagnostic BCE only. Model selection is done by endpoint LER
+        # in evaluate_local_safe_no_op.py, not by this all-active loss.
+        mask = effect != NO_PACKET_LABEL
+    return target, mask
+
+
 def run_epoch(
     model: LocalSafeNoOpGate,
     loader: DataLoader,
@@ -149,6 +169,7 @@ def run_epoch(
     epoch: int | None = None,
     total_epochs: int | None = None,
     log_every_batches: int = 0,
+    neutral_keep_probability: float = 1.0,
 ) -> dict[str, float]:
     training = optimizer is not None
     model.train(training)
@@ -159,9 +180,10 @@ def run_epoch(
     window_labels = 0
     previous_window_loss: float | None = None
     processed_shots = 0
-    for batch_index, (features, target, mask) in enumerate(loader, start=1):
+    for batch_index, (features, effect) in enumerate(loader, start=1):
         batch_shots = int(features.shape[0])
-        features, target, mask = features.to(device), target.to(device), mask.to(device)
+        features, effect = features.to(device), effect.to(device)
+        target, mask = _loss_targets_and_mask(effect, neutral_keep_probability, training)
         with torch.set_grad_enabled(training):
             logits = model(features)
             loss_values = F.binary_cross_entropy_with_logits(
@@ -226,24 +248,31 @@ def run_epoch(
 
 def main() -> None:
     args = load_settings(parse_args())
-    if args.batch_size <= 0 or args.epochs <= 0 or args.log_every_batches <= 0:
-        raise ValueError("batch_size, epochs, and log_every_batches must be positive")
-    if not 0.0 < args.validation_fraction < 1.0:
-        raise ValueError("validation_fraction must lie between zero and one")
+    if (args.batch_size <= 0 or args.epochs <= 0 or args.learning_rate <= 0 or args.log_every_batches <= 0
+            or args.neutral_per_informative < 0 or args.checkpoint_interval_epochs <= 0):
+        raise ValueError("batch_size, epochs, learning_rate, log_every_batches, and checkpoint_interval_epochs must be positive; "
+                         "neutral_per_informative must be non-negative")
+    if args.lr_scheduler not in {"none", "cosine"}:
+        raise ValueError("lr_scheduler must be either 'none' or 'cosine'")
+    if not 0.0 <= args.min_learning_rate <= args.learning_rate:
+        raise ValueError("min_learning_rate must lie between zero and learning_rate")
     metadata = json.loads((args.risk_dataset_dir / "metadata.json").read_text(encoding="utf-8"))
     total = int(metadata["num_samples"])
-    rng = np.random.default_rng(args.split_seed)
-    validation = rng.random(total) < args.validation_fraction
-    if not validation.any() or validation.all():
-        raise RuntimeError("split unexpectedly has an empty training or validation side")
-    train_rows, valid_rows = np.flatnonzero(~validation), np.flatnonzero(validation)
+    train_rows, valid_rows, test_rows = split_rows(
+        total, args.train_fraction, args.validation_fraction, args.split_seed
+    )
     effect = np.load(args.risk_dataset_dir / metadata["files"]["packet_effect"], mmap_mode="r")
     train_counts = count_labels(effect, train_rows, args.batch_size)
     valid_counts = count_labels(effect, valid_rows, args.batch_size)
     if train_counts["helpful"] == 0:
         raise RuntimeError("training split has no helpful packet labels")
-    positive_weight = min(args.max_positive_weight,
-                          (train_counts["active"] - train_counts["helpful"]) / train_counts["helpful"])
+    neutral_keep_probability = min(
+        1.0,
+        args.neutral_per_informative * (train_counts["helpful"] + train_counts["harmful"])
+        / max(1, train_counts["neutral"]),
+    )
+    expected_negative = train_counts["harmful"] + train_counts["neutral"] * neutral_keep_probability
+    positive_weight = min(args.max_positive_weight, expected_negative / train_counts["helpful"])
 
     random.seed(args.split_seed)
     np.random.seed(args.split_seed)
@@ -258,11 +287,22 @@ def main() -> None:
                               pin_memory=device.type == "cuda")
     model = LocalSafeNoOpGate(args.architecture).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+    scheduler = (
+        torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=args.epochs, eta_min=args.min_learning_rate
+        ) if args.lr_scheduler == "cosine" else None
+    )
     args.output_dir.mkdir(parents=True, exist_ok=True)
     history: list[dict[str, Any]] = []
     best_loss = float("inf")
-    print(json.dumps({"device": str(device), "train_labels": train_counts, "validation_labels": valid_counts,
-                      "positive_weight": positive_weight}, indent=2))
+    print(json.dumps({
+        "device": str(device), "train_labels": train_counts, "validation_labels": valid_counts,
+        "test_shots": int(len(test_rows)), "positive_weight": positive_weight,
+        "neutral_per_informative": args.neutral_per_informative,
+        "neutral_keep_probability": neutral_keep_probability,
+        "lr_scheduler": args.lr_scheduler,
+        "min_learning_rate": args.min_learning_rate,
+    }, indent=2))
     training_started = time.perf_counter()
     for epoch in range(1, args.epochs + 1):
         print(f"[Train Epoch {epoch}/{args.epochs}] starting: {len(train_loader)} batches, "
@@ -270,6 +310,7 @@ def main() -> None:
         train_metrics = run_epoch(
             model, train_loader, device, positive_weight, optimizer,
             epoch=epoch, total_epochs=args.epochs, log_every_batches=args.log_every_batches,
+            neutral_keep_probability=neutral_keep_probability,
         )
         validation_started = time.perf_counter()
         valid_metrics = run_epoch(model, valid_loader, device, positive_weight)
@@ -284,7 +325,7 @@ def main() -> None:
         history.append(row)
         print(
             f"[Epoch {epoch}/{args.epochs}] "
-            f"train_loss={train_metrics['loss']:.5f} | valid_loss={valid_metrics['loss']:.5f} | "
+            f"train_loss={train_metrics['loss']:.5f} | valid_bce_diagnostic={valid_metrics['loss']:.5f} | "
             f"train_time={_format_duration(train_metrics['elapsed_seconds'])} | "
             f"valid_time={_format_duration(validation_seconds)} | "
             f"Total ETA: {_format_duration(total_eta)} | "
@@ -298,23 +339,37 @@ def main() -> None:
             "architecture": asdict(args.architecture),
             "risk_dataset_dir": str(args.risk_dataset_dir.resolve()),
             "split_seed": args.split_seed,
+            "train_fraction": args.train_fraction,
             "validation_fraction": args.validation_fraction,
             "positive_weight": positive_weight,
+            "neutral_per_informative": args.neutral_per_informative,
+            "neutral_keep_probability": neutral_keep_probability,
+            "lr_scheduler": args.lr_scheduler,
+            "min_learning_rate": args.min_learning_rate,
+            "scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
             "epoch": epoch,
         }
         torch.save(checkpoint, args.output_dir / "last.pt")
+        if epoch % args.checkpoint_interval_epochs == 0:
+            torch.save(checkpoint, args.output_dir / f"epoch_{epoch:03d}.pt")
         if valid_metrics["loss"] < best_loss:
             best_loss = valid_metrics["loss"]
-            torch.save(checkpoint, args.output_dir / "best.pt")
+            torch.save(checkpoint, args.output_dir / "best_bce.pt")
+        if scheduler is not None:
+            scheduler.step()
     report = {
         "risk_dataset_dir": str(args.risk_dataset_dir), "output_dir": str(args.output_dir),
         "architecture": asdict(args.architecture), "split": {"seed": args.split_seed,
-        "validation_fraction": args.validation_fraction, "train_shots": int(len(train_rows)),
-        "validation_shots": int(len(valid_rows))}, "label_counts": {"train": train_counts, "validation": valid_counts},
-        "positive_weight": positive_weight, "history": history,
+        "train_fraction": args.train_fraction, "validation_fraction": args.validation_fraction,
+        "train_shots": int(len(train_rows)), "validation_shots": int(len(valid_rows)),
+        "test_shots": int(len(test_rows))}, "label_counts": {"train": train_counts, "validation": valid_counts},
+        "neutral_sampling": {"neutral_per_informative": args.neutral_per_informative,
+        "neutral_keep_probability": neutral_keep_probability}, "positive_weight": positive_weight,
+        "lr_scheduler": args.lr_scheduler, "min_learning_rate": args.min_learning_rate, "history": history,
     }
     (args.output_dir / "training_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(f"[done] best={args.output_dir / 'best.pt'}")
+    print(f"[done] endpoint selection candidates={args.output_dir / 'epoch_*.pt'}")
+    print(f"[done] diagnostic BCE best={args.output_dir / 'best_bce.pt'}")
 
 
 if __name__ == "__main__":

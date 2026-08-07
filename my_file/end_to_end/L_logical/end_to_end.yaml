@@ -77,14 +77,24 @@ local_gate_training:
   risk_dataset_dir: my_file/end_to_end/L_logical/local_risk_data/dataset_Xd9c9_1_model_100
   output_dir: my_file/end_to_end/L_logical/local_gate_models/dataset_Xd9c9_1_model_100
   batch_size: 128
-  epochs: 50
+  epochs: 100
   learning_rate: 0.0001
+  # Cosine decay is applied once per epoch, from learning_rate to this value.
+  # Set lr_scheduler: none to use a fixed learning rate.
+  lr_scheduler: cosine
+  min_learning_rate: 0.00001
   weight_decay: 0.00001
-  validation_fraction: 0.2
+  # The third, implicit remainder is an untouched final test split.
+  train_fraction: 0.70
+  validation_fraction: 0.15
   split_seed: 12345
-  # Helpful packets are rare.  This cap prevents a tiny positive set from
-  # making the weighted BCE numerically unstable.
+  # Keep every helpful/harmful packet in BCE, but retain only this many neutral
+  # packet positions per informative packet (on average) each training epoch.
+  neutral_per_informative: 10
+  # Applied after neutral downsampling, not against the full neutral count.
   max_positive_weight: 100.0
+  # Evaluate these saved candidates by endpoint LER in the separate evaluation task.
+  checkpoint_interval_epochs: 1
   num_workers: 0
   # Print batch-level loss/ETA every N training batches.
   log_every_batches: 256
@@ -98,11 +108,14 @@ local_gate_training:
 
 local_gate_evaluation:
   risk_dataset_dir: my_file/end_to_end/L_logical/local_risk_data/dataset_Xd9c9_1_model_100
-  gate_checkpoint: my_file/end_to_end/L_logical/local_gate_models/dataset_Xd9c9_1_model_100/best.pt
-  output: my_file/end_to_end/L_logical/local_gate_models/dataset_Xd9c9_1_model_100/held_out_ler.json
+  checkpoint_dir: my_file/end_to_end/L_logical/local_gate_models/dataset_Xd9c9_1_model_100
+  checkpoint_glob: epoch_*.pt
+  output: my_file/end_to_end/L_logical/local_gate_models/dataset_Xd9c9_1_model_100/endpoint_selected_ler.json
   batch_size: 256
-  # Must match local_gate_training, so this is the same held-out partition.
-  validation_fraction: 0.2
+  # Must match local_gate_training. The unallocated remainder is test-only.
+  train_fraction: 0.70
+  validation_fraction: 0.15
   split_seed: 12345
-  gate_threshold: 0.0
+  # Gate thresholds are validation-logit quantiles, plus accept-all/no-op endpoints.
+  num_thresholds: 21
   device: null
