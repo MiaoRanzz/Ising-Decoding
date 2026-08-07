@@ -101,3 +101,4 @@ third_party/uf_decoder/
 my_file/end_to_end/L_logical/comparison_results
 my_file/end_to_end/L_logical/data_generated
 my_file/end_to_end/L_logical/local_risk_data
+my_file/end_to_end/L_logical/local_gate_models
