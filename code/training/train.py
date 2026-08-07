@@ -62,6 +62,11 @@ from training.utils import (
 )
 from training.ewc import add_ewc_penalty_to_loss, diagonal_ewc_penalty, load_ewc_states
 from model.factory import ModelFactory
+from replay import (
+    ReplayBuffer,
+    combine_current_and_replay_loss,
+    resolve_replay_settings,
+)
 
 # Import optimizers
 from training.optimizers import Lion, DebugLion, get_lr_scheduler
@@ -365,6 +370,44 @@ def _should_use_outer_batch_prefetch(generator) -> bool:
     return not _generator_uses_compiled_generation(generator)
 
 
+def _current_batch_size_with_replay(
+    batch_size,
+    replay_buffer,
+    replay_task_id,
+    replay_ratio,
+):
+    """Return the current-stream portion while keeping total batch fixed."""
+    if replay_buffer is None:
+        return batch_size
+    if isinstance(batch_size, (list, tuple)):
+        raise ValueError("Replay does not yet support multi-pair curriculum batch sizes")
+    total = int(batch_size)
+    target_replay = min(total - 1, int(total * float(replay_ratio)))
+    available = replay_buffer.eligible_count(replay_task_id)
+    return total - min(target_replay, available)
+
+
+def _basis_for_replay_observation(generator, step):
+    """Infer the basis emitted by a Torch generator for replay metadata."""
+    if hasattr(generator, "get_current_basis"):
+        return str(generator.get_current_basis(step)).upper()
+    single_basis = getattr(generator, "_single_basis", None)
+    if single_basis is not None:
+        return str(single_basis).upper()
+    return "X" if int(step) % 2 == 0 else "Z"
+
+
+def _split_replay_losses(loss_fn, outputs, targets, current_batch_size):
+    """Compute sum-reduced current and replay BCE terms from one forward."""
+    current_batch_size = int(current_batch_size)
+    current_loss = loss_fn(outputs[:current_batch_size], targets[:current_batch_size])
+    replay_batch_size = int(outputs.shape[0]) - current_batch_size
+    replay_loss = None
+    if replay_batch_size > 0:
+        replay_loss = loss_fn(outputs[current_batch_size:], targets[current_batch_size:])
+    return current_loss, replay_loss, replay_batch_size
+
+
 def train_epoch(
     generator,
     steps_per_epoch,
@@ -389,6 +432,10 @@ def train_epoch(
     profile_enabled=False,
     profile_log_every=50,
     profile_warmup_steps=2,
+    replay_buffer=None,
+    replay_task_id="",
+    replay_ratio=0.5,
+    replay_lambda=1.0,
     profile_generator_subphases=False,
     ewc_states=None,
     ewc_lambda=0.0,
@@ -411,12 +458,21 @@ def train_epoch(
     profile_count = 0
     ewc_states = list(ewc_states or [])
     use_ewc = bool(ewc_states) and float(ewc_lambda) > 0.0
+    replay_current_samples = 0
+    replay_history_samples = 0
+    replay_admitted_samples = 0
 
     # Pre-generate first batch before loop
     global_step_for_gen = cumulative_steps_before_epoch
+    current_generation_batch_size = _current_batch_size_with_replay(
+        batch_size,
+        replay_buffer,
+        replay_task_id,
+        replay_ratio,
+    )
     next_data = generator.generate_batch(
         step=global_step_for_gen,
-        batch_size=batch_size,
+        batch_size=current_generation_batch_size,
         return_timing=profile_enabled,
         profile_generator_subphases=profile_generator_subphases,
     )
@@ -462,14 +518,34 @@ def train_epoch(
                 batch_timing = None
 
             # Submit next batch generation in background (overlaps with training below)
+            current_trainX = trainX
+            current_trainY = trainY
+            current_batch_size = int(current_trainX.shape[0])
+
+            replay_batch = None
+            if replay_buffer is not None:
+                requested_replay = max(0, int(batch_size) - current_batch_size)
+                replay_batch = replay_buffer.sample(
+                    requested_replay,
+                    current_task_id=replay_task_id,
+                    device=device,
+                )
+                if replay_batch is not None:
+                    trainX = torch.cat([current_trainX, replay_batch.train_x], dim=0)
+                    trainY = torch.cat([current_trainY, replay_batch.train_y], dim=0)
+                replay_current_samples += current_batch_size
+                replay_history_samples += 0 if replay_batch is None else len(replay_batch)
             prefetch_submit_s = 0.0
             if step + 1 < steps_per_epoch and use_outer_prefetch:
                 next_gen_step = cumulative_steps_before_epoch + step + 1
+                next_current_batch_size = _current_batch_size_with_replay(
+                    batch_size, replay_buffer, replay_task_id, replay_ratio
+                )
                 submit_t0 = time.perf_counter()
                 future = prefetch_pool.submit(
                     generator.generate_batch,
                     step=next_gen_step,
-                    batch_size=batch_size,
+                    batch_size=next_current_batch_size,
                     return_timing=profile_enabled,
                     profile_generator_subphases=profile_generator_subphases,
                 )
@@ -489,7 +565,7 @@ def train_epoch(
             trainX = input_to_channels_last_3d(trainX, use_channels_last_3d)
             optimizer_step_skipped = False
 
-            current_batch_size = trainX.shape[0]
+            total_batch_size = int(trainX.shape[0])
             model_fwd_bwd_s = 0.0
             optimizer_step_s = 0.0
 
@@ -499,7 +575,17 @@ def train_epoch(
 
             with autocast_for_precision(device, enable_fp16, enable_bf16):
                 outputs = model(trainX)
-                loss = loss_fn(outputs, trainY)
+                current_loss_sum, replay_loss_sum, replay_batch_size = _split_replay_losses(
+                    loss_fn, outputs, trainY, current_batch_size
+                )
+                data_loss = combine_current_and_replay_loss(
+                    current_loss_sum,
+                    replay_loss_sum,
+                    current_batch_size=current_batch_size,
+                    replay_batch_size=replay_batch_size,
+                    replay_lambda=replay_lambda,
+                )
+                loss = data_loss
             ewc_penalty = None
             if use_ewc:
                 ewc_penalty = diagonal_ewc_penalty(model, ewc_states)
@@ -507,14 +593,22 @@ def train_epoch(
                     loss,
                     ewc_penalty,
                     ewc_lambda=float(ewc_lambda),
-                    batch_size=current_batch_size,
+                    batch_size=total_batch_size,
                 )
 
             scaler.scale(loss).backward()
             if profile_enabled:
                 _sync_cuda_if_needed(device)
                 model_fwd_bwd_s = time.perf_counter() - model_t0
-            accumulated_samples += current_batch_size
+            if replay_buffer is not None:
+                replay_admitted_samples += replay_buffer.observe(
+                    current_trainX,
+                    current_trainY,
+                    task_id=replay_task_id,
+                    basis=_basis_for_replay_observation(generator, global_step_for_gen),
+                    step=global_step_for_gen,
+                )
+            accumulated_samples += total_batch_size
 
             if (step + 1) % accumulate_steps == 0:
                 if profile_enabled:
@@ -574,6 +668,22 @@ def train_epoch(
                 last_loss = running_loss / accumulate_steps
                 if rank == 0:
                     tb_writer.add_scalar('Loss/train_step', last_loss, global_step)
+                    tb_writer.add_scalar(
+                        'Loss/current',
+                        float(current_loss_sum.detach()) / outputs[:current_batch_size].numel(),
+                        global_step,
+                    )
+                    if replay_loss_sum is not None:
+                        tb_writer.add_scalar(
+                            'Loss/replay',
+                            float(replay_loss_sum.detach()) / outputs[current_batch_size:].numel(),
+                            global_step,
+                        )
+                    tb_writer.add_scalar(
+                        'Replay/buffer_size',
+                        len(replay_buffer) if replay_buffer is not None else 0,
+                        global_step,
+                    )
                     if ewc_penalty is not None:
                         tb_writer.add_scalar('Loss/ewc_penalty', float(ewc_penalty.detach()), global_step)
                     tb_writer.add_scalar(
@@ -592,7 +702,9 @@ def train_epoch(
                 else:
                     next_data = generator.generate_batch(
                         step=cumulative_steps_before_epoch + step + 1,
-                        batch_size=batch_size,
+                        batch_size=_current_batch_size_with_replay(
+                            batch_size, replay_buffer, replay_task_id, replay_ratio
+                        ),
                         return_timing=profile_enabled,
                         profile_generator_subphases=profile_generator_subphases,
                     )
@@ -639,6 +751,20 @@ def train_epoch(
             f"train_epoch_generator: Completed {steps_per_epoch} batches in {total_time:.1f}s "
             f"({time_per_batch*1000:.1f}ms/batch), avg_loss={avg_loss:.5f}"
         )
+        if replay_buffer is not None:
+            effective_ratio = replay_history_samples / max(
+                1, replay_current_samples + replay_history_samples
+            )
+            print(
+                f"[Replay] task={replay_task_id} buffer={len(replay_buffer)}/{replay_buffer.capacity} "
+                f"seen={replay_buffer.seen_count} current={replay_current_samples} "
+                f"history={replay_history_samples} admitted={replay_admitted_samples} "
+                f"ratio={effective_ratio:.3f}"
+            )
+            tb_writer.add_scalar('Replay/ratio_effective', effective_ratio, epoch_number)
+            tb_writer.add_scalar('Replay/current_samples', replay_current_samples, epoch_number)
+            tb_writer.add_scalar('Replay/replayed_samples', replay_history_samples, epoch_number)
+            tb_writer.add_scalar('Replay/admitted_samples', replay_admitted_samples, epoch_number)
         if profile_enabled and profile_count > 0:
             avg = {k: v / profile_count for k, v in profile_sums.items()}
             print(
@@ -1402,6 +1528,32 @@ def main(cfg: DictConfig) -> None:
                 f"lambda={ewc_lambda:g} dir={ewc_dir or '<unset>'}"
             )
 
+    replay_settings = resolve_replay_settings(cfg)
+    replay_buffer = None
+    replay_buffer_dir = None
+    loaded_replay = False
+    if replay_settings.enabled:
+        replay_buffer_dir = Path(to_absolute_path(str(replay_settings.buffer_dir)))
+        replay_buffer = ReplayBuffer(
+            capacity=replay_settings.local_capacity(dist.rank, dist.world_size),
+            seed=replay_settings.seed,
+            rank=dist.rank,
+            world_size=dist.world_size,
+            storage_dtype=replay_settings.storage_dtype,
+        )
+        if bool(cfg.load_checkpoint):
+            loaded_replay = replay_buffer.load(
+                replay_buffer_dir,
+                strict_world_size=replay_settings.strict_world_size,
+            )
+        if dist.rank == 0:
+            print(
+                f"[Replay] enabled task={replay_settings.task_id} "
+                f"global_capacity={replay_settings.global_capacity} "
+                f"ratio={replay_settings.ratio:g} lambda={replay_settings.replay_lambda:g} "
+                f"dir={replay_buffer_dir} loaded={loaded_replay}"
+            )
+
     # Create optimizer
     trainable_params = filter(lambda p: p.requires_grad, model.parameters())
     if cfg.optimizer_type == "AdamW":
@@ -1482,6 +1634,7 @@ def main(cfg: DictConfig) -> None:
     steps_per_epoch_estimate = math.ceil(batches_per_epoch / acc0)
 
     # Load optimizer/scheduler/scaler state
+    resume_metadata = {}
     if cfg.load_checkpoint:
         _, _ = load_checkpoint(
             to_absolute_path(cfg.resume_dir),
@@ -1491,8 +1644,28 @@ def main(cfg: DictConfig) -> None:
             scaler=scaler,
             device=dist.device,
             steps_per_epoch_estimate=steps_per_epoch_estimate,
+            metadata_dict=resume_metadata,
             rank=dist.rank
         )
+        replay_snapshot = resume_metadata.get("replay_snapshot")
+        if replay_buffer is not None and replay_snapshot and not loaded_replay:
+            raise FileNotFoundError(
+                "Training checkpoint requires a Replay snapshot, but the current "
+                f"rank shard is missing from {replay_buffer_dir}"
+            )
+        if replay_buffer is not None and loaded_replay and replay_snapshot:
+            expected_epoch = int(replay_snapshot["epoch"])
+            expected_step = int(replay_snapshot["global_step"])
+            if (
+                replay_buffer.snapshot_epoch != expected_epoch
+                or replay_buffer.snapshot_global_step != expected_step
+            ):
+                raise ValueError(
+                    "Replay snapshot does not match the training checkpoint: "
+                    f"buffer epoch/step={replay_buffer.snapshot_epoch}/"
+                    f"{replay_buffer.snapshot_global_step}, checkpoint="
+                    f"{expected_epoch}/{expected_step}"
+                )
         init_epoch = init_epoch_temp
         global_step = global_step_temp
     else:
@@ -1617,6 +1790,10 @@ def main(cfg: DictConfig) -> None:
             profile_generator_subphases=profile_generator_subphases,
             ewc_states=ewc_states,
             ewc_lambda=ewc_lambda,
+            replay_buffer=replay_buffer,
+            replay_task_id=replay_settings.task_id,
+            replay_ratio=replay_settings.ratio,
+            replay_lambda=replay_settings.replay_lambda,
         )
 
         cumulative_steps += steps_per_epoch
@@ -1840,6 +2017,22 @@ def main(cfg: DictConfig) -> None:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+        should_save_replay = (
+            replay_buffer is not None
+            and (
+                replay_settings.save_every_epoch
+                or (epoch + 1) % cfg.train.checkpoint_interval == 0
+            )
+        )
+        if should_save_replay:
+            replay_buffer.save(
+                replay_buffer_dir,
+                epoch=epoch_number + 1,
+                global_step=global_step,
+            )
+        if replay_buffer is not None and dist.world_size > 1:
+            torch.distributed.barrier()
+
         # Save periodic checkpoint
         if dist.rank == 0 and (epoch + 1) % cfg.train.checkpoint_interval == 0:
             save_checkpoint(
@@ -1849,7 +2042,16 @@ def main(cfg: DictConfig) -> None:
                 scheduler=scheduler,
                 scaler=scaler,
                 epoch=epoch_number + 1,
-                metadata={"epochs_completed": epoch + 1},
+                metadata={
+                    "epochs_completed": epoch + 1,
+                    "replay_snapshot": None if replay_buffer is None else {
+                        "epoch": replay_buffer.snapshot_epoch,
+                        "global_step": replay_buffer.snapshot_global_step,
+                        "task_id": replay_settings.task_id,
+                        "world_size": dist.world_size,
+                        "buffer_size_per_rank": len(replay_buffer),
+                    },
+                },
                 global_step=global_step,
             )
 

@@ -300,5 +300,10 @@ class QCDataGeneratorTorch:
             return trainX, trainY, timing
         return trainX, trainY
 
+    def get_current_basis(self, step: int) -> str:
+        if self._mixed:
+            return "X" if int(step) % 2 == 0 else "Z"
+        return str(self._single_basis).upper()
+
 
 __all__ = ["QCDataGeneratorTorch"]

@@ -198,6 +198,21 @@ def _base_hidden_defaults_dict() -> Dict[str, Any]:
                 "save_every_datasets": 5,
                 "epochs": 100,
             },
+        # Internal continual-learning replay. Public users cannot override this
+        # block in config_public.yaml; experiment launchers enable it through
+        # PREDECODER_REPLAY_* environment variables.
+        "replay": {
+            "enabled": False,
+            "task_id": None,
+            "buffer_dir": f"{output_root}/replay",
+            "capacity": 65536,
+            "storage_dtype": "float16",
+            "seed": 12345,
+            "ratio": 0.5,
+            "lambda_replay": 1.0,
+            "save_every_epoch": True,
+            "strict_world_size": True,
+        },
         # NOTE: temporarily reduced for faster iteration during refactor/testing.
         "val": {
             "num_samples": 65536,

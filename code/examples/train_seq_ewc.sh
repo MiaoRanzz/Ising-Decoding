@@ -21,6 +21,7 @@ DISTANCE="${DISTANCE:-9}"
 N_ROUNDS="${N_ROUNDS:-9}"
 EPOCHS_PER_TASK="${EPOCHS_PER_TASK:-20}"
 EWC_DIR="${EWC_DIR:-outputs/${EXPERIMENT_NAME}/ewc}"
+REPLAY_DIR="${PREDECODER_REPLAY_DIR:-outputs/${EXPERIMENT_NAME}/replay}"
 EWC_LAMBDA="${EWC_LAMBDA:-100}"
 EWC_FISHER_SAMPLES="${EWC_FISHER_SAMPLES:-65536}"
 EWC_FISHER_BATCH_SIZE="${EWC_FISHER_BATCH_SIZE:-2048}"
@@ -81,13 +82,15 @@ for i in "${!configs[@]}"; do
     fresh_start=1
     ewc_enabled=0
   fi
-  echo "[seq+ewc] stage=${tasks[$i]} config=${configs[$i]} target_epochs=${target_epochs} ewc=${ewc_enabled}"
+  echo "[seq+ewc] stage=${tasks[$i]} config=${configs[$i]} target_epochs=${target_epochs} ewc=${ewc_enabled} replay=${PREDECODER_REPLAY_ENABLED:-0}"
   if [ "${DRY_RUN}" = "1" ]; then
-    echo "[dry-run] WORKFLOW=train EXPERIMENT_NAME=${EXPERIMENT_NAME} PREDECODER_EWC_ENABLED=${ewc_enabled} PREDECODER_EWC_DIR=${EWC_DIR} PREDECODER_EWC_LAMBDA=${EWC_LAMBDA} PREDECODER_TRAIN_EPOCHS=${target_epochs} FRESH_START=${fresh_start} bash code/scripts/local_run.sh ${DISTANCE} ${N_ROUNDS}"
+    echo "[dry-run] WORKFLOW=train EXPERIMENT_NAME=${EXPERIMENT_NAME} PREDECODER_EWC_ENABLED=${ewc_enabled} PREDECODER_EWC_DIR=${EWC_DIR} PREDECODER_EWC_LAMBDA=${EWC_LAMBDA} PREDECODER_REPLAY_TASK_ID=${tasks[$i]} PREDECODER_REPLAY_DIR=${REPLAY_DIR} PREDECODER_TRAIN_EPOCHS=${target_epochs} FRESH_START=${fresh_start} bash code/scripts/local_run.sh ${DISTANCE} ${N_ROUNDS}"
   else
     PREDECODER_EWC_ENABLED="${ewc_enabled}" \
     PREDECODER_EWC_DIR="${EWC_DIR}" \
     PREDECODER_EWC_LAMBDA="${EWC_LAMBDA}" \
+    PREDECODER_REPLAY_TASK_ID="${tasks[$i]}" \
+    PREDECODER_REPLAY_DIR="${REPLAY_DIR}" \
     PREDECODER_TRAIN_EPOCHS="${target_epochs}" \
     PREDECODER_PYTHON="${PREDECODER_PYTHON}" \
     CONFIG_NAME="${configs[$i]}" \
