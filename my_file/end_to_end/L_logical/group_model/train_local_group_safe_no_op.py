@@ -59,27 +59,48 @@ def group_labels(dataset,rows):
 def main():
     args=settings(parse_args()); meta=json.loads((args.risk_dataset_dir/"metadata.json").read_text()); total=int(meta["num_samples"]); train_rows,val_rows,_=split_rows(total,args.train_fraction,args.validation_fraction,args.split_seed)
     probe=GroupDataset(args.risk_dataset_dir,np.empty(0,dtype=np.int64)); train_effect=group_labels(probe,train_rows); informative=(train_effect!=0); neutral=train_effect==0; keep=min(1.,args.neutral_per_informative*int(informative.sum())/max(1,int(neutral.sum())))
-    rng=np.random.default_rng(args.split_seed); selected=[]
-    for row in train_rows:
+    # Every informative shot is kept.  Neutral-only shots are sampled anew for
+    # every epoch below so the model does not repeatedly memorize one small,
+    # fixed neutral subset.
+    informative_shots = np.empty(len(train_rows), dtype=bool)
+    for index, row in enumerate(train_rows):
         effect=np.asarray(probe.effect[int(probe.ptr[row]):int(probe.ptr[row+1])])
-        if np.any(effect!=0) or rng.random()<keep: selected.append(row)
-    # sampling is by shots; loss masks neutral groups to obtain the requested group-level ratio.
-    train=GroupDataset(args.risk_dataset_dir,np.asarray(selected,dtype=np.int64)); val=GroupDataset(args.risk_dataset_dir,val_rows)
-    sampled_effect = group_labels(probe, train.rows)
-    train_loader=DataLoader(train,args.batch_size,shuffle=True,num_workers=args.num_workers,collate_fn=collate); val_loader=DataLoader(val,args.batch_size,shuffle=False,num_workers=args.num_workers,collate_fn=collate)
+        informative_shots[index] = np.any(effect != 0)
+    val=GroupDataset(args.risk_dataset_dir,val_rows)
+    val_loader=DataLoader(val,args.batch_size,shuffle=False,num_workers=args.num_workers,collate_fn=collate)
     device=torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu")); model=LocalGroupSafeNoOpGate(args.architecture).to(device); opt=torch.optim.AdamW(model.parameters(),lr=args.learning_rate,weight_decay=args.weight_decay); sched=torch.optim.lr_scheduler.CosineAnnealingLR(opt,args.epochs,eta_min=args.min_learning_rate) if args.lr_scheduler=="cosine" else None
-    args.output_dir.mkdir(parents=True,exist_ok=True); (args.output_dir/"settings.json").write_text(json.dumps({"architecture":args.architecture.to_dict(),"risk_dataset_dir":str(args.risk_dataset_dir),"split_seed":args.split_seed,"train_fraction":args.train_fraction,"validation_fraction":args.validation_fraction,"neutral_keep_probability":keep},indent=2))
+    args.output_dir.mkdir(parents=True,exist_ok=True); (args.output_dir/"settings.json").write_text(json.dumps({"architecture":args.architecture.to_dict(),"risk_dataset_dir":str(args.risk_dataset_dir),"split_seed":args.split_seed,"train_fraction":args.train_fraction,"validation_fraction":args.validation_fraction,"neutral_keep_probability":keep,"neutral_resampling":"per_epoch"},indent=2))
     print(
-        f"[data] candidate_train_shots={len(train_rows)}, sampled_train_shots={len(train)}, "
+        f"[data] candidate_train_shots={len(train_rows)}, informative_train_shots={int(informative_shots.sum())}, "
         f"val_shots={len(val)}, candidate_groups(helpful/neutral/harmful)="
         f"{(train_effect==1).sum()}/{(train_effect==0).sum()}/{(train_effect==-1).sum()}, "
-        f"sampled_groups={len(sampled_effect)}, neutral_keep={keep:.6f}"
+        f"neutral_keep={keep:.6f}; neutral-only shots are resampled every epoch"
     )
+    training_started = time.time()
     for epoch in range(1,args.epochs+1):
+        epoch_rng = np.random.default_rng(args.split_seed + epoch)
+        selected = informative_shots | (epoch_rng.random(len(train_rows)) < keep)
+        train_rows_epoch = train_rows[selected]
+        train=GroupDataset(args.risk_dataset_dir, train_rows_epoch)
+        train_loader=DataLoader(train,args.batch_size,shuffle=True,num_workers=args.num_workers,collate_fn=collate)
+        sampled_groups = int(np.asarray(probe.ptr[train_rows_epoch + 1] - probe.ptr[train_rows_epoch]).sum())
+        print(f"[epoch {epoch:03d}] sampled_train_shots={len(train)}, sampled_groups={sampled_groups}")
         model.train(); started=time.time(); losses=[]
         for step,(x,members,ptr,effect) in enumerate(train_loader,1):
             x,members,ptr,effect=x.to(device),members.to(device),ptr.to(device),effect.to(device); logits=model(x,members,ptr); target=(effect==1).float(); weight=torch.where(effect==0,torch.full_like(target,keep),torch.ones_like(target)); pos=min(args.max_positive_weight,(weight.sum()-weight[target.bool()].sum()).item()/max(1,target.sum().item())); loss=F.binary_cross_entropy_with_logits(logits,target,weight=weight,pos_weight=torch.tensor(pos,device=device)); opt.zero_grad(); loss.backward(); opt.step(); losses.append(loss.item())
-            if step%args.log_every_batches==0 or step==len(train_loader): print(f"[epoch {epoch:03d}] batch {step}/{len(train_loader)} loss={np.mean(losses[-args.log_every_batches:]):.5f} elapsed={time.time()-started:.0f}s")
+            if step%args.log_every_batches==0 or step==len(train_loader):
+                epoch_elapsed = time.time() - started
+                epoch_eta = epoch_elapsed / step * (len(train_loader) - step)
+                total_elapsed = time.time() - training_started
+                completed_batches = (epoch - 1) * len(train_loader) + step
+                total_batches_estimate = args.epochs * len(train_loader)
+                total_eta = total_elapsed / completed_batches * max(0, total_batches_estimate - completed_batches)
+                print(
+                    f"[epoch {epoch:03d}] batch {step}/{len(train_loader)} "
+                    f"loss={np.mean(losses[-args.log_every_batches:]):.5f} "
+                    f"lr={opt.param_groups[0]['lr']:.3g} "
+                    f"epoch_eta={epoch_eta:.0f}s total_eta~{total_eta:.0f}s"
+                )
         model.eval(); vl=[]
         with torch.no_grad():
             for x,members,ptr,effect in val_loader:

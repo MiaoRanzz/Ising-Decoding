@@ -155,10 +155,12 @@ group_gate_training:
   train_fraction: 0.70
   validation_fraction: 0.15
   split_seed: 12345
-  neutral_per_informative: 10
+  neutral_per_informative: 100
   max_positive_weight: 100.0
   num_workers: 0
-  log_every_batches: 256
+  # Only about a dozen sampled train batches are expected per epoch, so emit
+  # a live line for each batch.
+  log_every_batches: 128
   device: null
   architecture:
     input_channels: 12
