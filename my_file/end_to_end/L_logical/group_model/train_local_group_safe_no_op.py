@@ -42,7 +42,13 @@ def collate(items):
     features=[]; members=[]; ptr=[0]; effects=[]
     for batch,(x,local_ptr,local_members,effect) in enumerate(items):
         features.append(torch.from_numpy(np.array(x,copy=True))); m=np.array(local_members,copy=True); m=np.column_stack((np.full(len(m),batch,dtype=np.int64),m)); members.append(m); effects.append(effect)
-        for end in local_ptr[1:]: ptr.append(ptr[-1]+int(end-local_ptr[0]))
+        # ``local_ptr`` is already cumulative within this shot.  Convert it
+        # back to one group's member count before extending the batch-global
+        # CSR pointer; adding every cumulative endpoint would over-count.
+        previous = int(local_ptr[0])
+        for end in local_ptr[1:]:
+            ptr.append(ptr[-1] + int(end) - previous)
+            previous = int(end)
     return torch.stack(features),torch.as_tensor(np.concatenate(members) if members else np.empty((0,5),np.int64)),torch.as_tensor(ptr),torch.as_tensor(np.concatenate(effects))
 
 def group_labels(dataset,rows):
@@ -59,10 +65,16 @@ def main():
         if np.any(effect!=0) or rng.random()<keep: selected.append(row)
     # sampling is by shots; loss masks neutral groups to obtain the requested group-level ratio.
     train=GroupDataset(args.risk_dataset_dir,np.asarray(selected,dtype=np.int64)); val=GroupDataset(args.risk_dataset_dir,val_rows)
+    sampled_effect = group_labels(probe, train.rows)
     train_loader=DataLoader(train,args.batch_size,shuffle=True,num_workers=args.num_workers,collate_fn=collate); val_loader=DataLoader(val,args.batch_size,shuffle=False,num_workers=args.num_workers,collate_fn=collate)
     device=torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu")); model=LocalGroupSafeNoOpGate(args.architecture).to(device); opt=torch.optim.AdamW(model.parameters(),lr=args.learning_rate,weight_decay=args.weight_decay); sched=torch.optim.lr_scheduler.CosineAnnealingLR(opt,args.epochs,eta_min=args.min_learning_rate) if args.lr_scheduler=="cosine" else None
     args.output_dir.mkdir(parents=True,exist_ok=True); (args.output_dir/"settings.json").write_text(json.dumps({"architecture":args.architecture.to_dict(),"risk_dataset_dir":str(args.risk_dataset_dir),"split_seed":args.split_seed,"train_fraction":args.train_fraction,"validation_fraction":args.validation_fraction,"neutral_keep_probability":keep},indent=2))
-    print(f"[data] train shots={len(train)}, val shots={len(val)}, train groups helpful={(train_effect==1).sum()} neutral={(train_effect==0).sum()} harmful={(train_effect==-1).sum()}, neutral_keep={keep:.6f}")
+    print(
+        f"[data] candidate_train_shots={len(train_rows)}, sampled_train_shots={len(train)}, "
+        f"val_shots={len(val)}, candidate_groups(helpful/neutral/harmful)="
+        f"{(train_effect==1).sum()}/{(train_effect==0).sum()}/{(train_effect==-1).sum()}, "
+        f"sampled_groups={len(sampled_effect)}, neutral_keep={keep:.6f}"
+    )
     for epoch in range(1,args.epochs+1):
         model.train(); started=time.time(); losses=[]
         for step,(x,members,ptr,effect) in enumerate(train_loader,1):
