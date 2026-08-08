@@ -180,4 +180,10 @@ group_gate_evaluation:
   validation_fraction: 0.15
   split_seed: 12345
   num_thresholds: 21
+  # Use a deterministic validation subset for faster checkpoint/threshold
+  # selection.  Keep the final test null so its reported LER stays full-size.
+  max_validation_shots: 8192
+  max_test_shots: null
+  # Emit one progress line every N gate-score or endpoint-decoder batches.
+  progress_every_batches: 8
   device: null
