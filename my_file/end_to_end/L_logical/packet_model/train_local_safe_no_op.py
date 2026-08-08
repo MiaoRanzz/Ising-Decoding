@@ -21,14 +21,15 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset
 
 HERE = Path(__file__).resolve().parent
-REPO_ROOT = HERE.parents[2]
+L_LOGICAL_ROOT = HERE.parent
+REPO_ROOT = HERE.parents[3]
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from local_safe_no_op import GateArchitecture, LocalSafeNoOpGate, NO_PACKET_LABEL, gate_features, split_rows
 
 
-DEFAULT_SETTINGS = HERE / "end_to_end.yaml"
+DEFAULT_SETTINGS = L_LOGICAL_ROOT / "end_to_end.yaml"
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,9 +49,9 @@ def _repo_path(value: str | Path) -> Path:
 
 def load_settings(cli: argparse.Namespace) -> SimpleNamespace:
     settings_path = cli.settings.expanduser().resolve()
-    section = OmegaConf.to_container(OmegaConf.load(settings_path).get("local_gate_training", {}), resolve=True)
+    section = OmegaConf.to_container(OmegaConf.load(settings_path).get("packet_gate_training", {}), resolve=True)
     if not isinstance(section, dict):
-        raise ValueError("local_gate_training must be a mapping")
+        raise ValueError("packet_gate_training must be a mapping")
 
     def pick(name: str, *, required: bool = False, fallback: Any = None) -> Any:
         # Only a small set of settings have command-line overrides.  The rest
@@ -59,12 +60,12 @@ def load_settings(cli: argparse.Namespace) -> SimpleNamespace:
         if value is None:
             value = section.get(name, fallback)
         if required and value is None:
-            raise ValueError(f"missing local_gate_training.{name} in {settings_path}")
+            raise ValueError(f"missing packet_gate_training.{name} in {settings_path}")
         return value
 
     architecture_cfg = section.get("architecture", {})
     if not isinstance(architecture_cfg, dict):
-        raise ValueError("local_gate_training.architecture must be a mapping")
+        raise ValueError("packet_gate_training.architecture must be a mapping")
     architecture = GateArchitecture(**architecture_cfg)
     return SimpleNamespace(
         risk_dataset_dir=_repo_path(pick("risk_dataset_dir", required=True)),

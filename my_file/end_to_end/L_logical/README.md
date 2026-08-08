@@ -44,7 +44,7 @@ no-op threshold on one random split before reporting its LER on the held-out
 split.  `positive_margin_q10` is the default score: the 10th percentile of
 `|logit|` among the corrections the model proposed for that shot.
 
-## Local safe no-op gate
+## Packet-level safe no-op gate
 
 The local safe no-op experiment is a second-stage model.  It freezes the
 current Ising-fast proposal and learns whether to keep each proposed local
@@ -56,14 +56,14 @@ All normal settings live in `end_to_end.yaml`; update the dataset/checkpoint
 paths there, then run these commands from the repository root:
 
 ```bash
-python my_file/end_to_end/L_logical/generate_local_risk_dataset.py
-python my_file/end_to_end/L_logical/train_local_safe_no_op.py
-python my_file/end_to_end/L_logical/evaluate_local_safe_no_op.py
+python my_file/end_to_end/L_logical/packet_model/generate_local_risk_dataset.py
+python my_file/end_to_end/L_logical/packet_model/train_local_safe_no_op.py
+python my_file/end_to_end/L_logical/packet_model/evaluate_local_safe_no_op.py
 ```
 
 The first command is intentionally expensive: for each proposal packet it
 compares final `predecoder + PyMatching` failure with and without that packet.
-For an initial check, set `local_risk_generation.num_samples: 4096`; use a new
+For an initial check, set `packet_risk_generation.num_samples: 4096`; use a new
 empty `output_dir` for a full run.  It writes only proposal logits and packet
 effects and refers back to the existing source corpus for `train_x`, so it does
 not duplicate the large input tensor.
@@ -75,3 +75,24 @@ configured interval. The final command selects the candidate checkpoint and
 gate threshold by final LER on the validation split, then reports PyMatching,
 frozen proposal + PyMatching, and local-gate + PyMatching once on a separate
 test split.
+
+## Group-level safe no-op gate
+
+`group_model/` is a separate experiment: it first groups neighbouring *active*
+proposal packets using the fixed `group_risk_generation.grouping` rules, then
+learns one decision for each whole group.  A group's counterfactual label is
+computed by removing all of its packets together and measuring final LER.
+This explicitly captures interactions that the packet model's one-packet
+counterfactual misses.
+
+```bash
+python my_file/end_to_end/L_logical/group_model/generate_local_group_risk_dataset.py
+python my_file/end_to_end/L_logical/group_model/train_local_group_safe_no_op.py
+python my_file/end_to_end/L_logical/group_model/evaluate_local_group_safe_no_op.py
+```
+
+The group data is variable-length: `shot_group_ptr.npy` assigns consecutive
+groups to each shot, `group_member_ptr.npy` assigns members to each group, and
+`group_members.npy` stores `[packet_type, round, row, column]`.  Group labels
+are stored in `group_effect.npy` as `+1` helpful, `0` neutral, or `-1` harmful.
+The packet and group YAML sections have no configuration fallback between them.

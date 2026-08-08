@@ -31,9 +31,10 @@ import torch
 from omegaconf import OmegaConf
 
 HERE = Path(__file__).resolve().parent
-REPO_ROOT = HERE.parents[2]
+L_LOGICAL_ROOT = HERE.parent
+REPO_ROOT = HERE.parents[3]
 CODE_ROOT = REPO_ROOT / "code"
-for path in (HERE, CODE_ROOT):
+for path in (HERE, L_LOGICAL_ROOT, CODE_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
@@ -43,7 +44,7 @@ from local_safe_no_op import NO_PACKET_LABEL, PACKET_NAMES, packet_activity, pro
 from training.precision import match_input_to_model_memory_format
 
 
-DEFAULT_SETTINGS = HERE / "end_to_end.yaml"
+DEFAULT_SETTINGS = L_LOGICAL_ROOT / "end_to_end.yaml"
 
 
 def parse_args() -> argparse.Namespace:
@@ -71,16 +72,16 @@ def _repo_path(value: str | Path) -> Path:
 def resolve_settings(cli: argparse.Namespace) -> SimpleNamespace:
     settings_path = cli.settings.expanduser().resolve()
     cfg = OmegaConf.load(settings_path)
-    section = OmegaConf.to_container(cfg.get("local_risk_generation", {}), resolve=True)
+    section = OmegaConf.to_container(cfg.get("packet_risk_generation", {}), resolve=True)
     if not isinstance(section, dict):
-        raise ValueError("local_risk_generation must be a mapping")
+        raise ValueError("packet_risk_generation must be a mapping")
 
     def pick(name: str, *, required: bool = False, fallback: Any = None) -> Any:
         value = getattr(cli, name)
         if value is None:
             value = section.get(name, fallback)
         if required and value is None:
-            raise ValueError(f"missing local_risk_generation.{name} in {settings_path}")
+            raise ValueError(f"missing packet_risk_generation.{name} in {settings_path}")
         return value
 
     return SimpleNamespace(

@@ -56,15 +56,15 @@ safe_no_op:
   validation_fraction: 0.5
   split_seed: 12345
 
-# New local (packet-level) safe-no-op workflow. It freezes the proposal
+# Packet-level safe-no-op workflow. It freezes the proposal
 # checkpoint configured in this section. Changing that checkpoint requires a
 # new local-risk dataset, regardless of any other task's configuration.
-local_risk_generation:
+packet_risk_generation:
   source_dataset_dir: my_file/end_to_end/L_logical/data_generated/dataset_Xd9c9_1
   project_config: conf/config_public.yaml
   checkpoint: outputs/test1/models/PreDecoderModelMemory_v1.0.100.pt
   model_id: 1
-  output_dir: my_file/end_to_end/L_logical/local_risk_data/dataset_Xd9c9_1_model_100
+  output_dir: my_file/end_to_end/L_logical/packet_model/data/dataset_Xd9c9_1_model_100
   # Null means annotate every source shot.  Start with 4096 to smoke-test.
   num_samples: null
   proposal_batch_size: 256
@@ -73,9 +73,9 @@ local_risk_generation:
   seed: 12345
   device: null
 
-local_gate_training:
-  risk_dataset_dir: my_file/end_to_end/L_logical/local_risk_data/dataset_Xd9c9_1_model_100
-  output_dir: my_file/end_to_end/L_logical/local_gate_models/dataset_Xd9c9_1_model_100
+packet_gate_training:
+  risk_dataset_dir: my_file/end_to_end/L_logical/packet_model/data/dataset_Xd9c9_1_model_100
+  output_dir: my_file/end_to_end/L_logical/packet_model/models/dataset_Xd9c9_1_model_100
   batch_size: 128
   epochs: 100
   learning_rate: 0.0001
@@ -106,16 +106,76 @@ local_gate_training:
     kernel_size: 3
     dropout: 0.05
 
-local_gate_evaluation:
-  risk_dataset_dir: my_file/end_to_end/L_logical/local_risk_data/dataset_Xd9c9_1_model_100
-  checkpoint_dir: my_file/end_to_end/L_logical/local_gate_models/dataset_Xd9c9_1_model_100
+packet_gate_evaluation:
+  risk_dataset_dir: my_file/end_to_end/L_logical/packet_model/data/dataset_Xd9c9_1_model_100
+  checkpoint_dir: my_file/end_to_end/L_logical/packet_model/models/dataset_Xd9c9_1_model_100
   checkpoint_glob: epoch_*.pt
-  output: my_file/end_to_end/L_logical/local_gate_models/dataset_Xd9c9_1_model_100/endpoint_selected_ler.json
+  output: my_file/end_to_end/L_logical/packet_model/models/dataset_Xd9c9_1_model_100/endpoint_selected_ler.json
   batch_size: 256
   # Must match local_gate_training. The unallocated remainder is test-only.
   train_fraction: 0.70
   validation_fraction: 0.15
   split_seed: 12345
   # Gate thresholds are validation-logit quantiles, plus accept-all/no-op endpoints.
+  num_thresholds: 21
+  device: null
+
+# Group-level safe-no-op workflow.  It uses a fixed connected-component
+# grouping of active packets, then learns one accept/no-op decision per group.
+# It is independent from all packet_* entries above.
+group_risk_generation:
+  source_dataset_dir: my_file/end_to_end/L_logical/data_generated/dataset_Xd9c9_1
+  project_config: conf/config_public.yaml
+  checkpoint: outputs/test1/models/PreDecoderModelMemory_v1.0.100.pt
+  model_id: 1
+  output_dir: my_file/end_to_end/L_logical/group_model/data/dataset_Xd9c9_1_model_100
+  num_samples: null
+  proposal_batch_size: 256
+  counterfactual_batch_size: 1024
+  seed: 12345
+  device: null
+  grouping:
+    # Packets with |dt| <= 1 and Manhattan spatial distance <= 1 connect.
+    time_radius: 1
+    spatial_radius: 1
+    # Deterministically split large components to keep counterfactual groups local.
+    max_group_members: 8
+    max_time_span: 3
+    max_spatial_span: 3
+
+group_gate_training:
+  risk_dataset_dir: my_file/end_to_end/L_logical/group_model/data/dataset_Xd9c9_1_model_100
+  output_dir: my_file/end_to_end/L_logical/group_model/models/dataset_Xd9c9_1_model_100
+  batch_size: 128
+  epochs: 100
+  learning_rate: 0.0001
+  lr_scheduler: cosine
+  min_learning_rate: 0.00001
+  weight_decay: 0.00001
+  train_fraction: 0.70
+  validation_fraction: 0.15
+  split_seed: 12345
+  neutral_per_informative: 10
+  max_positive_weight: 100.0
+  num_workers: 0
+  log_every_batches: 256
+  device: null
+  architecture:
+    input_channels: 12
+    hidden_channels: 64
+    num_hidden_layers: 3
+    kernel_size: 3
+    dropout: 0.05
+    group_hidden_channels: 128
+
+group_gate_evaluation:
+  risk_dataset_dir: my_file/end_to_end/L_logical/group_model/data/dataset_Xd9c9_1_model_100
+  checkpoint_dir: my_file/end_to_end/L_logical/group_model/models/dataset_Xd9c9_1_model_100
+  checkpoint_glob: epoch_*.pt
+  output: my_file/end_to_end/L_logical/group_model/models/dataset_Xd9c9_1_model_100/endpoint_selected_ler.json
+  batch_size: 256
+  train_fraction: 0.70
+  validation_fraction: 0.15
+  split_seed: 12345
   num_thresholds: 21
   device: null
