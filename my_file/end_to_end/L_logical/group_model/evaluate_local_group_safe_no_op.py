@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select a group gate and threshold by validation endpoint LER; test once."""
+"""Select a conservative harmful-veto group gate by endpoint LER."""
 from __future__ import annotations
 import argparse,json,sys
 from pathlib import Path
@@ -24,7 +24,7 @@ def settings(cli):
         v=getattr(cli,k,None);v=s.get(k,default) if v is None else v
         if required and v is None:raise ValueError(f'missing group_gate_evaluation.{k} in {f}')
         return v
-    return SimpleNamespace(risk_dataset_dir=path(pick('risk_dataset_dir',True)),checkpoint_dir=path(pick('checkpoint_dir',True)),checkpoint_glob=str(pick('checkpoint_glob',default='epoch_*.pt')),output=path(pick('output',True)),batch_size=int(pick('batch_size',True)),train_fraction=float(pick('train_fraction',True)),validation_fraction=float(pick('validation_fraction',True)),split_seed=int(pick('split_seed',True)),num_thresholds=int(pick('num_thresholds',default=21)),max_validation_shots=pick('max_validation_shots'),max_test_shots=pick('max_test_shots'),progress_every_batches=int(pick('progress_every_batches',default=8)),device=cli.device if cli.device else pick('device'))
+    return SimpleNamespace(risk_dataset_dir=path(pick('risk_dataset_dir',True)),checkpoint_dir=path(pick('checkpoint_dir',True)),checkpoint_glob=str(pick('checkpoint_glob',default='epoch_*.pt')),output=path(pick('output',True)),batch_size=int(pick('batch_size',True)),train_fraction=float(pick('train_fraction',True)),validation_fraction=float(pick('validation_fraction',True)),split_seed=int(pick('split_seed',True)),num_thresholds=int(pick('num_thresholds',default=21)),max_veto_coverage=float(pick('max_veto_coverage',default=.05)),max_validation_shots=pick('max_validation_shots'),max_test_shots=pick('max_test_shots'),progress_every_batches=int(pick('progress_every_batches',default=8)),device=cli.device if cli.device else pick('device'))
 def unpack(packed,rows,shape):
     b=np.unpackbits(packed[rows],axis=1,bitorder='little')[:,:int(np.prod(shape))];return b.reshape(len(rows),*shape).astype(np.uint8)
 def summary(x):return {'logical_errors':int(x.sum()),'samples':int(len(x)),'ler':float(x.mean())}
@@ -52,7 +52,9 @@ def apply(actions,rows,scores,threshold,shot_ptr,gptr,members):
     for local,row in enumerate(rows):
         for group in range(int(shot_ptr[row]),int(shot_ptr[row+1])):
             active+=1
-            if scores[group]>=threshold:accepted+=1;continue
+            # High logit means high probability that applying this group is
+            # harmful.  Low-confidence groups are retained by default.
+            if scores[group]<threshold:accepted+=1;continue
             for packet,t,y,x in members[gptr[group]:gptr[group+1]]:
                 if packet==0:result[local,0,t,y,x]=result[local,1,t,y,x]=0
                 else:result[local,packet+1,t,y,x]=0
@@ -65,9 +67,13 @@ def failures(rows,actions,detsobs,source,num_obs,pipeline,action_model,matcher,d
         index=start//batch+1
         if progress_every and (index%progress_every==0 or index==batches):print(f'[decode] {label}: batch {index}/{batches}')
     return np.concatenate(out)
-def thresholds(values,n):
+def thresholds(values,n,max_veto_coverage):
     finite=values[np.isfinite(values)]
-    return np.unique(np.r_[-np.inf,np.quantile(finite,np.linspace(0,1,n)) if len(finite) else [],np.inf])
+    if not 0.0 < max_veto_coverage <= 1.0:raise ValueError('max_veto_coverage must be in (0, 1]')
+    # -inf is an explicit global fallback to raw PyMatching.  All learned
+    # veto candidates retain at least 1-max_veto_coverage of active groups.
+    quantiles=np.quantile(finite,np.linspace(1.0-max_veto_coverage,1.0,n)) if len(finite) else []
+    return np.unique(np.r_[-np.inf,quantiles,np.inf])
 def limit_rows(rows,maximum,seed,label):
     if maximum is None:return rows
     maximum=int(maximum)
@@ -92,11 +98,14 @@ def main():
     best=None; candidates=sorted(args.checkpoint_dir.glob(args.checkpoint_glob)); print(f'[select] {len(candidates)} checkpoints, validation={len(val)}/{len(validation_rows)}, test={len(test)}/{len(test_rows)}')
     for checkpoint_index,ckpt in enumerate(candidates,1):
         print(f'[select] checkpoint {checkpoint_index}/{len(candidates)}: {ckpt.name}')
-        saved=torch.load(ckpt,map_location=device,weights_only=False);model=LocalGroupSafeNoOpGate(GroupGateArchitecture(**saved['architecture'])).to(device);model.load_state_dict(saved['state_dict']);score=scores_for(model,val,x,source,logits,shot_ptr,gptr,members,args.batch_size,device,f'checkpoint {checkpoint_index}/{len(candidates)}',args.progress_every_batches);all_thresholds=thresholds(score,args.num_thresholds)
+        saved=torch.load(ckpt,map_location=device,weights_only=False)
+        if saved.get('gate_target') != 'harmful_veto':
+            raise ValueError(f'{ckpt} is not a harmful-veto checkpoint; retrain into the configured checkpoint_dir')
+        model=LocalGroupSafeNoOpGate(GroupGateArchitecture(**saved['architecture'])).to(device);model.load_state_dict(saved['state_dict']);score=scores_for(model,val,x,source,logits,shot_ptr,gptr,members,args.batch_size,device,f'checkpoint {checkpoint_index}/{len(candidates)}',args.progress_every_batches);all_thresholds=thresholds(score,args.num_thresholds,args.max_veto_coverage)
         for threshold_index,th in enumerate(all_thresholds,1):
             print(f'[select] checkpoint {checkpoint_index}/{len(candidates)}, threshold {threshold_index}/{len(all_thresholds)}')
             gated,accepted,active=apply(val_proposal,val,score,th,shot_ptr,gptr,members);fail=failures(val,gated,detsobs,source,num_obs,pipeline,am,matcher,device,args.batch_size,f'checkpoint {checkpoint_index}/{len(candidates)}, threshold {threshold_index}/{len(all_thresholds)}',args.progress_every_batches);candidate=(int(fail.sum()),str(ckpt),float(th),accepted,active)
             if best is None or candidate<best:best=candidate
     if best is None:raise FileNotFoundError('no gate checkpoint found')
-    _,ckpt,th,_,_=best;print(f'[test] selected checkpoint={Path(ckpt).name}, threshold={th:.6g}');saved=torch.load(ckpt,map_location=device,weights_only=False);model=LocalGroupSafeNoOpGate(GroupGateArchitecture(**saved['architecture'])).to(device);model.load_state_dict(saved['state_dict']);test_score=scores_for(model,test,x,source,logits,shot_ptr,gptr,members,args.batch_size,device,'held-out test',args.progress_every_batches);gated,accepted,active=apply(test_proposal,test,test_score,th,shot_ptr,gptr,members);gate_fail=failures(test,gated,detsobs,source,num_obs,pipeline,am,matcher,device,args.batch_size,'held-out test gate',args.progress_every_batches);proposal_fail=failures(test,test_proposal,detsobs,source,num_obs,pipeline,am,matcher,device,args.batch_size,'held-out test proposal',args.progress_every_batches);report={'risk_dataset_dir':str(args.risk_dataset_dir),'selected_checkpoint':ckpt,'gate_threshold':th,'held_out_shots':len(test),'validation_selection_shots':len(val),'paths':{'pymatching':summary(test_base),'proposal_plus_pymatching':summary(proposal_fail),'local_group_safe_no_op_plus_pymatching':summary(gate_fail)},'group_gate':{'active_groups':active,'accepted_groups':accepted,'accept_coverage':accepted/max(1,active)},'validation_selected_ler':best[0]/len(val)};args.output.parent.mkdir(parents=True,exist_ok=True);args.output.write_text(json.dumps(report,indent=2));print(json.dumps(report,indent=2));print(f'[done] report={args.output}')
+    _,ckpt,th,_,_=best;print(f'[test] selected checkpoint={Path(ckpt).name}, veto_threshold={th:.6g}');saved=torch.load(ckpt,map_location=device,weights_only=False);model=LocalGroupSafeNoOpGate(GroupGateArchitecture(**saved['architecture'])).to(device);model.load_state_dict(saved['state_dict']);test_score=scores_for(model,test,x,source,logits,shot_ptr,gptr,members,args.batch_size,device,'held-out test',args.progress_every_batches);gated,accepted,active=apply(test_proposal,test,test_score,th,shot_ptr,gptr,members);gate_fail=failures(test,gated,detsobs,source,num_obs,pipeline,am,matcher,device,args.batch_size,'held-out test gate',args.progress_every_batches);proposal_fail=failures(test,test_proposal,detsobs,source,num_obs,pipeline,am,matcher,device,args.batch_size,'held-out test proposal',args.progress_every_batches);report={'risk_dataset_dir':str(args.risk_dataset_dir),'selected_checkpoint':ckpt,'gate_target':'harmful_veto','veto_threshold':th,'held_out_shots':len(test),'validation_selection_shots':len(val),'paths':{'pymatching':summary(test_base),'proposal_plus_pymatching':summary(proposal_fail),'local_group_safe_no_op_plus_pymatching':summary(gate_fail)},'group_gate':{'active_groups':active,'accepted_groups':accepted,'accept_coverage':accepted/max(1,active),'vetoed_groups':active-accepted,'veto_coverage':(active-accepted)/max(1,active)},'validation_selected_ler':best[0]/len(val)};args.output.parent.mkdir(parents=True,exist_ok=True);args.output.write_text(json.dumps(report,indent=2));print(json.dumps(report,indent=2));print(f'[done] report={args.output}')
 if __name__=='__main__':main()

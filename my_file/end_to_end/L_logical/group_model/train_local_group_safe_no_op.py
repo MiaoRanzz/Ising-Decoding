@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train the group-level safe-no-op gate, with neutral-group downsampling."""
+"""Train a conservative group-level harmful-veto gate."""
 from __future__ import annotations
 import argparse, json, random, sys, time
 from pathlib import Path
@@ -69,7 +69,7 @@ def main():
     val=GroupDataset(args.risk_dataset_dir,val_rows)
     val_loader=DataLoader(val,args.batch_size,shuffle=False,num_workers=args.num_workers,collate_fn=collate)
     device=torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu")); model=LocalGroupSafeNoOpGate(args.architecture).to(device); opt=torch.optim.AdamW(model.parameters(),lr=args.learning_rate,weight_decay=args.weight_decay); sched=torch.optim.lr_scheduler.CosineAnnealingLR(opt,args.epochs,eta_min=args.min_learning_rate) if args.lr_scheduler=="cosine" else None
-    args.output_dir.mkdir(parents=True,exist_ok=True); (args.output_dir/"settings.json").write_text(json.dumps({"architecture":args.architecture.to_dict(),"risk_dataset_dir":str(args.risk_dataset_dir),"split_seed":args.split_seed,"train_fraction":args.train_fraction,"validation_fraction":args.validation_fraction,"neutral_keep_probability":keep,"neutral_resampling":"per_epoch"},indent=2))
+    args.output_dir.mkdir(parents=True,exist_ok=True); (args.output_dir/"settings.json").write_text(json.dumps({"architecture":args.architecture.to_dict(),"risk_dataset_dir":str(args.risk_dataset_dir),"split_seed":args.split_seed,"train_fraction":args.train_fraction,"validation_fraction":args.validation_fraction,"neutral_keep_probability":keep,"neutral_resampling":"per_epoch","gate_target":"harmful_veto"},indent=2))
     print(
         f"[data] candidate_train_shots={len(train_rows)}, informative_train_shots={int(informative_shots.sum())}, "
         f"val_shots={len(val)}, candidate_groups(helpful/neutral/harmful)="
@@ -87,7 +87,7 @@ def main():
         print(f"[epoch {epoch:03d}] sampled_train_shots={len(train)}, sampled_groups={sampled_groups}")
         model.train(); started=time.time(); losses=[]
         for step,(x,members,ptr,effect) in enumerate(train_loader,1):
-            x,members,ptr,effect=x.to(device),members.to(device),ptr.to(device),effect.to(device); logits=model(x,members,ptr); target=(effect==1).float(); weight=torch.where(effect==0,torch.full_like(target,keep),torch.ones_like(target)); pos=min(args.max_positive_weight,(weight.sum()-weight[target.bool()].sum()).item()/max(1,target.sum().item())); loss=F.binary_cross_entropy_with_logits(logits,target,weight=weight,pos_weight=torch.tensor(pos,device=device)); opt.zero_grad(); loss.backward(); opt.step(); losses.append(loss.item())
+            x,members,ptr,effect=x.to(device),members.to(device),ptr.to(device),effect.to(device); logits=model(x,members,ptr); target=(effect==-1).float(); weight=torch.where(effect==0,torch.full_like(target,keep),torch.ones_like(target)); pos=min(args.max_positive_weight,(weight.sum()-weight[target.bool()].sum()).item()/max(1,target.sum().item())); loss=F.binary_cross_entropy_with_logits(logits,target,weight=weight,pos_weight=torch.tensor(pos,device=device)); opt.zero_grad(); loss.backward(); opt.step(); losses.append(loss.item())
             if step%args.log_every_batches==0 or step==len(train_loader):
                 epoch_elapsed = time.time() - started
                 epoch_eta = epoch_elapsed / step * (len(train_loader) - step)
@@ -104,7 +104,7 @@ def main():
         model.eval(); vl=[]
         with torch.no_grad():
             for x,members,ptr,effect in val_loader:
-                logits=model(x.to(device),members.to(device),ptr.to(device)); vl.append(F.binary_cross_entropy_with_logits(logits,(effect.to(device)==1).float()).item())
-        torch.save({"epoch":epoch,"state_dict":model.state_dict(),"architecture":args.architecture.to_dict()},args.output_dir/f"epoch_{epoch:03d}.pt"); print(f"[epoch {epoch:03d}] train_loss={np.mean(losses):.5f} val_bce={np.mean(vl):.5f} lr={opt.param_groups[0]['lr']:.3g}")
+                logits=model(x.to(device),members.to(device),ptr.to(device)); vl.append(F.binary_cross_entropy_with_logits(logits,(effect.to(device)==-1).float()).item())
+        torch.save({"epoch":epoch,"state_dict":model.state_dict(),"architecture":args.architecture.to_dict(),"gate_target":"harmful_veto"},args.output_dir/f"epoch_{epoch:03d}.pt"); print(f"[epoch {epoch:03d}] train_loss={np.mean(losses):.5f} val_harmful_bce={np.mean(vl):.5f} lr={opt.param_groups[0]['lr']:.3g}")
         if sched: sched.step()
 if __name__=="__main__": main()

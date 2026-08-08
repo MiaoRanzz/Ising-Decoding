@@ -80,7 +80,9 @@ test split.
 
 `group_model/` is a separate experiment: it first groups neighbouring *active*
 proposal packets using the fixed `group_risk_generation.grouping` rules, then
-learns one decision for each whole group.  A group's counterfactual label is
+learns one conservative **harmful-veto** decision for each whole group.  A
+low-risk or uncertain group is retained; only a high harmful-risk score can
+turn it into a no-op.  A group's counterfactual label is
 computed by removing all of its packets together and measuring final LER.
 This explicitly captures interactions that the packet model's one-packet
 counterfactual misses.
@@ -96,3 +98,6 @@ groups to each shot, `group_member_ptr.npy` assigns members to each group, and
 `group_members.npy` stores `[packet_type, round, row, column]`.  Group labels
 are stored in `group_effect.npy` as `+1` helpful, `0` neutral, or `-1` harmful.
 The packet and group YAML sections have no configuration fallback between them.
+The group evaluator always includes an accept-all candidate (the frozen
+proposal) and an all-no-op candidate (raw PyMatching); learned thresholds are
+restricted by `group_gate_evaluation.max_veto_coverage`.
