@@ -58,7 +58,9 @@ def load_settings(cli: argparse.Namespace) -> SimpleNamespace:
         raise ValueError("group_gate_fixed_test must be a mapping")
 
     def pick(name: str, *, required: bool = False, fallback=None):
-        value = getattr(cli, name)
+        # Only the explicit override arguments exist on the CLI Namespace;
+        # task-only values (batch size, split fractions, ...) come from YAML.
+        value = getattr(cli, name, None)
         if value is None:
             value = section.get(name, fallback)
         if required and value is None:
