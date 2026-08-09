@@ -93,6 +93,14 @@ python my_file/end_to_end/L_logical/group_model/train_local_group_safe_no_op.py
 python my_file/end_to_end/L_logical/group_model/evaluate_local_group_safe_no_op.py
 ```
 
+After selecting a checkpoint and veto threshold on validation, copy those two
+values into `group_gate_fixed_test` and run exactly one held-out test without
+rescanning alternatives:
+
+```bash
+python my_file/end_to_end/L_logical/group_model/test_fixed_group_gate.py
+```
+
 The group data is variable-length: `shot_group_ptr.npy` assigns consecutive
 groups to each shot, `group_member_ptr.npy` assigns members to each group, and
 `group_members.npy` stores `[packet_type, round, row, column]`.  Group labels
@@ -101,3 +109,6 @@ The packet and group YAML sections have no configuration fallback between them.
 The group evaluator always includes an accept-all candidate (the frozen
 proposal) and an all-no-op candidate (raw PyMatching); learned thresholds are
 restricted by `group_gate_evaluation.max_veto_coverage`.
+The fixed test checks that the explicitly configured Ising-fast checkpoint is
+the one that generated the risk dataset, then reports harmful-label lift,
+harmful recall, and helpful false-veto rate for the selected veto set.

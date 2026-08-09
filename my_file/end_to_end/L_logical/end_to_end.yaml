@@ -161,7 +161,7 @@ group_gate_training:
   num_workers: 0
   # Only about a dozen sampled train batches are expected per epoch, so emit
   # a live line for each batch.
-  log_every_batches: 128
+  log_every_batches: 64
   device: null
   architecture:
     input_channels: 12
@@ -189,5 +189,20 @@ group_gate_evaluation:
   max_validation_shots: null
   max_test_shots: null
   # Emit one progress line every N gate-score or endpoint-decoder batches.
+  progress_every_batches: 8
+  device: null
+
+# One final held-out test for a checkpoint/threshold already selected on
+# validation.  This task never scans alternatives.
+group_gate_fixed_test:
+  risk_dataset_dir: my_file/end_to_end/L_logical/group_model/data/dataset_Xd9c9_1_model_100
+  ising_fast_checkpoint: outputs/test1/models/PreDecoderModelMemory_v1.0.100.pt
+  gate_checkpoint: my_file/end_to_end/L_logical/group_model/models/dataset_Xd9c9_1_model_100_harmful_veto/epoch_023.pt
+  veto_threshold: 1.3728013843297935
+  output: my_file/end_to_end/L_logical/group_model/models/dataset_Xd9c9_1_model_100_harmful_veto/fixed_test.json
+  batch_size: 256
+  train_fraction: 0.70
+  validation_fraction: 0.15
+  split_seed: 12345
   progress_every_batches: 8
   device: null
