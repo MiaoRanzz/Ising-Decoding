@@ -1,0 +1,113 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+experiment_id: topology_gating_v2_phase1
+evidence_scope: phase1_core_gate_dem_action_proxy
+
+seed: 20260807
+distance: 5
+rounds: 5
+channels: 32
+batch_size: 128
+learning_rate: 0.001
+epochs: 3
+train_shots: 262144
+validation_shots: 50000
+test_shots: 200000
+
+# Smoke mode checks the full data/train/gate/decode/output path. Its numbers
+# must never be quoted as patent-effect evidence.
+smoke:
+  channels: 4
+  batch_size: 64
+  epochs: 1
+  train_shots: 64
+  validation_shots: 4
+  test_shots: 8
+  gate_candidate_thresholds: [0.5]
+  gate_parameter_grid:
+    - uncertainty_weight: 0.005
+      logical_risk_weight: 0.5
+  tasks:
+    - name: base
+      after_clifford_depolarization: 0.001
+      before_round_data_depolarization: 0.0007
+      before_measure_flip_probability: 0.01
+      after_reset_flip_probability: 0.001
+
+pilot:
+  channels: 8
+  batch_size: 128
+  epochs: 1
+  train_shots: 1024
+  validation_shots: 32
+  test_shots: 256
+  gate_candidate_thresholds: [0.5]
+  gate_parameter_grid:
+    - uncertainty_weight: 0.0
+      logical_risk_weight: 0.25
+    - uncertainty_weight: 0.005
+      logical_risk_weight: 0.5
+    - uncertainty_weight: 0.01
+      logical_risk_weight: 1.0
+  gate_overrides:
+    max_candidates: 16
+    combination_budget: 64
+  tasks:
+    - name: base
+      after_clifford_depolarization: 0.001
+      before_round_data_depolarization: 0.0007
+      before_measure_flip_probability: 0.01
+      after_reset_flip_probability: 0.001
+
+
+loss:
+  topology: 0.2
+  logical_frame: 0.1
+  calibration: 0.05
+
+gate:
+  candidate_thresholds: [0.5, 0.7, 0.9]
+  defaults:
+    data_threshold: 0.7
+    measurement_threshold: 0.7
+    interaction_radius: 0
+    exact_cluster_size: 8
+    max_combination_actions: 4
+    combination_budget: 128
+    max_total_actions: 64
+    max_candidates: 32
+    acceptance_threshold: 0.0
+    max_workload_increase: 0.0
+    max_logical_risk: 1.0
+    workload_active_weight: 1.0
+    workload_component_weight: 0.25
+    workload_pair_weight: 0.1
+    uncertainty_weight: 0.1
+    logical_risk_weight: 1.0
+    gate_cost_weight: 0.0
+  parameter_grid:
+    - uncertainty_weight: 0.0
+      logical_risk_weight: 0.25
+    - uncertainty_weight: 0.005
+      logical_risk_weight: 0.5
+    - uncertainty_weight: 0.01
+      logical_risk_weight: 1.0
+
+acceptance:
+  ler_noninferiority_margin: 0.002
+  confidence_level: 0.95
+  bootstrap_repeats: 1000
+
+tasks:
+  - name: base
+    after_clifford_depolarization: 0.001
+    before_round_data_depolarization: 0.0007
+    before_measure_flip_probability: 0.01
+    after_reset_flip_probability: 0.001
+  - name: biased_drift
+    after_clifford_depolarization: 0.0015
+    before_round_data_depolarization: 0.0011
+    before_measure_flip_probability: 0.015
+    after_reset_flip_probability: 0.001
