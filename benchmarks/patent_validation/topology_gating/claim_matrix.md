@@ -11,7 +11,7 @@
 | 每簇至多一个组合 | `gate_actions` | 决策轨迹及测试 | 已实现 |
 | 接纳后更新状态并重算 | `gate_actions` | 后续决策的 workload-before 变化测试 | 已实现 |
 | 残余后端解码及局部逻辑帧组合 | Phase 1 benchmark | PyMatching 成对 smoke/validation | 已接入代理动作 |
-| 四类真实空间动作的扩展 H/L | 待建 surface adapter | 尚无 | 待 Phase 2 |
-| 真实预训练 Ising 四通道概率 | 待提供/训练 checkpoint | 本工作区无可用 checkpoint | 待 Phase 2 |
-| 多 seed、多码距正式统计 | 冻结协议 | 当前配置仅单 seed | 待正式运行 |
+| 四类真实空间动作的扩展 H/L | `evaluation/surface_topology_adapter.py` | 方程一致性、边界及动作位置测试 | 已实现 |
+| 真实 Ising 四通道概率与拓扑联合损失 | `topology_gating_v2_small.py`、`training/topology_loss.py` | 真实模型 smoke；正式 3-seed 结果待运行 | 已接入，待增强型运行 |
+| 多 seed、多码距正式统计 | 增强型配置已冻结 3 seed、单码距 | 4 卡入口和哈希安全续跑测试 | 单码距待运行；第二码距仍缺失 |
 | 优化后端到端时延 | 待 CUDA/C++ 路径 | Python 参考耗时不可外推 | 不在 Phase 1 结论内 |

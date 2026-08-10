@@ -105,3 +105,35 @@ PYTHONPATH=code conda run -n ising-decoding \
 输出位于 `outputs/patent_validation/topology_gating_v2/{smoke,pilot,validation}/`，不提交 Git。
 正式归档需对至少 3 个独立 seed 重复运行、汇总统计并冻结结果目录校验和；当前入口
 只执行配置中的一个 seed。
+
+## 7. Phase 2 单码距增强型入口（4×A100，最长 8 小时）
+
+该入口接入真实 `PreDecoderModelMemory_v1` 四通道输出和显式 surface `H/L` 映射，
+执行 3 seed、BCE/联合损失配对训练、独立 checkpoint validation、门控 validation、
+T0/漂移测试与消融。它覆盖真实四类动作，但仅使用 `d=5`，因此结果一律标记为
+单码距增强型 pilot，不得作为正式申请证据。
+
+冻结配置：`conf/experiments/patent/topology_gating_v2_small.yaml`
+
+标准启动：
+
+```bash
+PREDECODER_PYTHON=/root/miniconda3/envs/ising-decoding/bin/python PATENT_GPUS=0,1,2,3 PATENT_MAX_HOURS=8 PATENT_RESUME=1 bash code/scripts/patent/run_topology_gating_v2_small.sh
+```
+
+只打印任务矩阵可设置 `PATENT_DRY_RUN=1`；用 `PATENT_OUTPUT=/path` 更改输出目录。
+脚本最多并行四个任务，在 7.5 小时截止点停止/终止实验任务，并留出至少 30 分钟
+聚合；主实验未齐时只生成 `INCOMPLETE`。失败任务的日志、候选 checkpoint、优化器
+和 RNG 状态会保留；`PATENT_RESUME=1` 仅从配置、commit、history 与 checkpoint 哈希
+一致的最近 checkpoint 继续。
+
+启动正式预算前先运行完整 smoke：
+
+```bash
+PREDECODER_PYTHON=/root/miniconda3/envs/ising-decoding/bin/python PATENT_GPUS=0,1,2,3 PATENT_MAX_HOURS=1 PATENT_RESUME=1 PATENT_MODE=smoke bash code/scripts/patent/run_topology_gating_v2_small.sh
+```
+
+输出位于 `outputs/patent_validation/topology_gating_v2_small/{full,smoke}/`。每个阶段
+保存环境/Git 清单、冻结配置、数据 seed/哈希、DEM/checkpoint/产物 SHA-256；最终聚合
+生成 `summary.csv`、`paired_deltas.csv`、`ablation.csv`、`decisions.json` 和
+`results.md`。
