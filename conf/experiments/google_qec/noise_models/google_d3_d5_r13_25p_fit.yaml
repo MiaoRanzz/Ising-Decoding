@@ -1,0 +1,61 @@
+noise_model:
+  p_cnot_IX: 0.0014215079172355924
+  p_cnot_IY: 1.0000000152038773e-05
+  p_cnot_IZ: 0.003937706585439737
+  p_cnot_XI: 1.0000000001280449e-05
+  p_cnot_XX: 1.0000000270289624e-05
+  p_cnot_XY: 1.0000000009524148e-05
+  p_cnot_XZ: 0.0010245238280258847
+  p_cnot_YI: 1.0000000068131685e-05
+  p_cnot_YX: 1.0000000253745329e-05
+  p_cnot_YY: 1.0000000013403818e-05
+  p_cnot_YZ: 1.0000000067885873e-05
+  p_cnot_ZI: 0.0010360163332834367
+  p_cnot_ZX: 0.0011973761514550464
+  p_cnot_ZY: 1.0000000165636143e-05
+  p_cnot_ZZ: 1.000000009444152e-05
+  p_idle_cnot_X: 1.0000000000002788e-05
+  p_idle_cnot_Y: 1.0000000000002413e-05
+  p_idle_cnot_Z: 0.001008176406090572
+  p_idle_spam_X: 0.0008234590742686609
+  p_idle_spam_Y: 1.0000000003668833e-05
+  p_idle_spam_Z: 0.0024318019111152114
+  p_meas_X: 0.0069041852090139955
+  p_meas_Z: 0.005838037603757365
+  p_prep_X: 1.0000000001421368e-05
+  p_prep_Z: 0.00025847469189298623
+noise_model_sha256: 394963d6a948a6f11101e423e7ea63a30d6bbc9cd421e8e1eeb24f5eeeb5bc1e
+fit:
+  cost: 84355.39899710483
+  initial_cost: 903394.8912645772
+  cost_reduction_fraction: 0.9066240026230128
+  optimality: 0.006914023261719366
+  iterations: 66
+  success: true
+  status: 2
+  message: '`ftol` termination condition is satisfied.'
+  jacobian_rank: 25
+  jacobian_condition: 9722763.388805734
+  experiment_keys:
+  - google_105Q_surface_code_d3_d5_d7/d3_at_q10_7/X/r13
+  - google_105Q_surface_code_d3_d5_d7/d3_at_q10_7/Z/r13
+  - google_105Q_surface_code_d3_d5_d7/d5_at_q4_7/X/r13
+  - google_105Q_surface_code_d3_d5_d7/d5_at_q4_7/Z/r13
+  moment_count: 1220
+provenance:
+  source: /root/project/ising-decoding/benchmarks/google_qec/google_105Q_surface_code_d3_d5_d7.zip
+  source_size_bytes: 5716907033
+  experiment_keys:
+  - google_105Q_surface_code_d3_d5_d7/d3_at_q10_7/X/r13
+  - google_105Q_surface_code_d3_d5_d7/d3_at_q10_7/Z/r13
+  - google_105Q_surface_code_d3_d5_d7/d5_at_q4_7/X/r13
+  - google_105Q_surface_code_d3_d5_d7/d5_at_q4_7/Z/r13
+  max_shots_per_experiment: 50000
+  max_pair_moments_per_experiment: 96
+  initial_p: 0.001
+  initial_model: null
+  initial_model_sha256: 7d53edc3ba1e95c9fde2b13ce9acf07b071071ca20d0f524d9c9e049c4bf94dc
+  prior_strength: 0.05
+  min_probability: 1.0e-05
+  max_probability: 0.03
+  max_nfev: 80

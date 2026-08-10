@@ -38,7 +38,7 @@ The public release exposes a **single user-facing config** and a **single runner
   - [ONNX export and quantization](#onnx-export-and-quantization-optional-post-training)
   - [Generating data for CUDA-Q QEC](#generating-data-for-cuda-q-qec-realtime-predecoder-test-application)
   - [Offline decoding from Stim detector samples](#offline-decoding-from-stim-detector-samples)
-  - [Google Quantum AI QEC benchmark](#google-quantum-ai-qec-benchmark)
+  - [Google Willow / Quantum AI QEC benchmark](#google-willow--quantum-ai-qec-benchmark)
   - [Decoder ablation study with cudaq-qec](#decoder-ablation-study-with-cudaq-qec-optional)
 - [Configuration and advanced usage](#configuration-and-advanced-usage)
   - [GPU selection](#gpu-selection)
@@ -632,11 +632,76 @@ run is shown below. Treat timing/speedup as a smoke signal, not a benchmark:
 [offline_smoketest.sh] Avg LER 0.002678 (no pre-decoder) -> 0.002285 (after); PyMatching speedup 1.815x
 ```
 
-### Google Quantum AI QEC benchmark
+### QAdapt and Ising-Fast-T0-E100 release examples
 
-The project can index and download the Google Quantum AI benchmark dataset for
-the paper "Quantum error correction below the surface code threshold". The
-official source is Zenodo record
+The release workflow contains two models: QAdapt (`HTnet`, `model_id: 111`),
+trained sequentially on T0→T4 with EWC, and Ising-Fast-T0-E100
+(`PreDecoderModelMemory_v1`, `model_id: 1`), trained from random initialization
+on T0 for 100 epochs without EWC.
+
+```bash
+bash code/examples/train_seq_ewc.sh
+bash code/examples/train_ising_fast_t0.sh
+
+QADAPT_CHECKPOINT=/path/to/HTnet.0.100.pt \
+ISING_FAST_T0_CHECKPOINT=/path/to/PreDecoderModelMemory_v1.0.100.pt \
+  bash code/examples/export_release_models.sh
+
+python code/examples/infer_ood.py \
+  --model qadapt:111:release_models/qadapt/qadapt.safetensors \
+  --model ising_fast_t0_e100:1:release_models/ising-fast-t0-e100/ising-fast-t0-e100.safetensors \
+  --gpus 0,1 --parallelism 2 --resume
+
+python code/examples/download_google_benchmark.py --extract
+python code/examples/infer_willow.py \
+  --model qadapt:111:release_models/qadapt/qadapt.safetensors \
+  --model ising_fast_t0_e100:1:release_models/ising-fast-t0-e100/ising-fast-t0-e100.safetensors \
+  --gpus 0 --resume
+```
+
+Use `DRY_RUN=1` for shell launchers or `--dry-run` for Python launchers to
+inspect commands without starting training or inference. See
+[`code/examples/README.md`](code/examples/README.md) for checkpoint and runtime
+overrides. Only the two final SafeTensors files are weight release assets;
+intermediate checkpoints, EWC snapshots, outputs, generated OOD configs, and
+downloaded benchmark data stay outside version control. The exporter also
+stages a model card, Apache-2.0 `LICENSE`, `NOTICE`, `config.json`,
+`evaluation.json`, `.gitattributes`, and `SHA256SUMS` for each Hugging Face
+repository.
+### Paired comparison on external samples
+
+Provide pre-generated `samples_X.dets`/`metadata_X.json` and/or
+`samples_Z.dets`/`metadata_Z.json` artifacts from the QPU provider or another
+compatible conversion tool.
+
+Use the paired runner to compare PyMatching and multiple pre-decoders on the
+same QPU or third-party detector shots:
+
+```bash
+PYTHONPATH=code python code/scripts/paired_inference_compare.py \
+  --config-name experiments/external_qpu/config_domestic_fast_opt_stfusion_r9_x \
+  --distance 3 --n-rounds 9 --basis both \
+  --num-samples 100000 \
+  --stim-samples-dir /path/to/qpu_dets \
+  --model ising_fast:1:/path/to/ising_fast.pt \
+  --model r9_x:111:/path/to/r9_x.pt \
+  --output outputs/paired_inference_compare/qpu_d3_r9.json
+```
+
+The directory must follow the offline Stim sample contract. Structural
+metadata validation remains strict. Both neural models and the PyMatching-only
+baseline consume the same loaded shots and the same matcher; the JSON and CSV
+outputs therefore support shot-matched LER and residual-decoder latency
+comparisons. The JSON `paired_comparisons` section additionally reports both
+methods wrong, only A wrong, only B wrong, neither wrong, and the paired LER
+difference with a normal 95% interval. Omit `--stim-samples-dir` to retain the
+original Stim-generated comparison path.
+
+### Google Willow / Quantum AI QEC benchmark
+
+The project can index and download the 105-qubit Google Willow surface-code
+benchmark dataset for the paper "Quantum error correction below the surface
+code threshold". The official source is Zenodo record
 [`10.5281/zenodo.13273331`](https://zenodo.org/records/13273331), licensed
 under CC-BY-4.0.
 
@@ -649,21 +714,109 @@ The full record contains four archives totaling about 104.8 GiB, so avoid
 
 ```bash
 # List available Google QEC benchmark archives.
-PYTHONPATH=code python code/scripts/download_google_qec_benchmark.py --list
+python code/examples/download_google_benchmark.py --list
 
 # Write the official manifest without downloading data.
-PYTHONPATH=code python code/scripts/download_google_qec_benchmark.py --manifest-only
+python code/examples/download_google_benchmark.py --manifest-only
 
 # Download the default 105Q surface-code benchmark archive.
-PYTHONPATH=code python code/scripts/download_google_qec_benchmark.py
+python code/examples/download_google_benchmark.py
 
 # Download and extract the default archive.
-PYTHONPATH=code python code/scripts/download_google_qec_benchmark.py --extract
+python code/examples/download_google_benchmark.py --extract
 ```
 
 Files are written under `benchmarks/google_qec/` by default. The downloader
 stores `manifest.json`, verifies each archive size and MD5 against Zenodo,
 and keeps the dataset external to the repository.
+
+#### Learn and adapt the 25-parameter model from hardware syndromes
+
+The hardware fit reads `circuit_ideal.stim`, `metadata.json`,
+`detection_events.b8`, and `obs_flips_actual.b8` directly from the Google zip.
+It matches detector, logical-observable, and local parity moments to exact Stim
+DEM probabilities. Use matched X/Z experiments at more than one distance, then
+require `fit.success: true`, inspect the data-only `fit.jacobian_rank`, and check
+`fit.cost_reduction_fraction`.
+
+```bash
+PYTHONPATH=code python code/scripts/fit_google_qec_noise.py \
+  benchmarks/google_qec/google_105Q_surface_code_d3_d5_d7.zip \
+  --experiment-key google_105Q_surface_code_d3_d5_d7/d3_at_q10_7/X/r13 \
+  --experiment-key google_105Q_surface_code_d3_d5_d7/d3_at_q10_7/Z/r13 \
+  --experiment-key google_105Q_surface_code_d3_d5_d7/d5_at_q4_7/X/r13 \
+  --experiment-key google_105Q_surface_code_d3_d5_d7/d5_at_q4_7/Z/r13 \
+  --max-shots 50000 --max-pair-moments 96 --max-nfev 80 \
+  --output outputs/google_noise_learning/google_d3_d5_r13_25p.yaml \
+  --training-config conf/config_public.yaml \
+  --training-config-output conf/experiments/google_qec/config_google_d3_d5_r13_noise_learned.yaml \
+  --target-distance 5 --target-rounds 13
+```
+
+Next adapt the paper CNN on hardware syndrome tensors. The implementation uses
+the Eq. (58)-(61) `8-channel CNN -> GAP -> MLP(256,128,25)` architecture,
+post-MLP batch-logit averaging, and bounded log-space outputs in
+`[1e-5, 3e-2]`.
+
+```bash
+PYTHONPATH=code python code/scripts/adapt_google_noise_network.py \
+  benchmarks/google_qec/google_105Q_surface_code_d3_d5_d7.zip \
+  --fit-result outputs/google_noise_learning/google_d3_d5_r13_25p.yaml \
+  --experiment-key google_105Q_surface_code_d3_d5_d7/d3_at_q10_7/X/r13 \
+  --experiment-key google_105Q_surface_code_d3_d5_d7/d3_at_q10_7/Z/r13 \
+  --experiment-key google_105Q_surface_code_d3_d5_d7/d5_at_q4_7/X/r13 \
+  --experiment-key google_105Q_surface_code_d3_d5_d7/d5_at_q4_7/Z/r13 \
+  --max-shots 20000 --validation-shots 2000 \
+  --steps 300 --batch-size 512 --device cuda:0 \
+  --output outputs/google_noise_learning/paper_noise_network.pt \
+  --prediction-output outputs/google_noise_learning/google_d3_d5_r13_25p_network.yaml \
+  --training-config conf/config_public.yaml \
+  --training-config-output conf/experiments/google_qec/config_google_d3_d5_r13_noise_network.yaml \
+  --target-distance 5 --target-rounds 13
+```
+
+This hardware-adaptation objective is deliberately two stage: hardware moments
+first identify the effective 25-vector, then log-parameter supervision adapts
+the paper network to that vector. It reproduces the paper network and output
+parameterization, but does not claim that Google data provides the papers
+synthetic 18-edge/43-hyperedge training labels.
+
+The exact differentiable objective in Eqs. (62)-(68) is implemented in
+`code/noise_learning/paper_loss.py`. A formula catalog contains exactly 18
+`edge_formulas`, 43 `hyperedge_formulas`, and their corresponding instance
+counts. Each formula is an outer list of independent fault locations; each
+inner list contains the 25-parameter names whose mutually exclusive
+probabilities are summed at that location. Pass a verified catalog with
+`--formula-catalog PATH`; add `--unbiased-paper-loss --base-error-rate P` for
+Eqs. (66)-(68). The public paper does not enumerate the 43 formulas and prints
+only representative subsets for three complex boundary formulas, so this
+repository intentionally rejects incomplete catalogs instead of silently
+inventing missing terms.
+
+Both generated decoder configs set `data.skip_noise_upscaling: true`. Verify the
+network-derived config with a real GPU optimizer step:
+
+```bash
+PYTHONPATH=code python code/scripts/smoke_train_learned_noise.py \
+  conf/experiments/google_qec/config_google_d3_d5_r13_noise_network.yaml --device cuda:0 \
+  --output outputs/google_noise_learning/smoke_train_network_checkpoint.pt
+```
+
+Then launch the adapted decoder training with:
+
+```bash
+PYTHONPATH=code python code/workflows/run.py \
+  --config-name=experiments/google_qec/config_google_d3_d5_r13_noise_network
+```
+
+The reference run converged in 66 function evaluations, reduced fit cost by
+90.66%, and had data-only Jacobian rank 25/25. Its fitted-vector SHA-256 is
+`394963d6...b5bc1e`; the network-vector SHA-256 is
+`e94b4195...571b5f`, with held-out log-RMSE `0.04410`. Several Pauli components
+sit at the lower bound, so these are compact effective channel-family
+probabilities, not per-qubit calibration constants. The auditable YAML snapshots are in
+`conf/experiments/google_qec/noise_models/google_d3_d5_r13_25p_fit.yaml` and
+`conf/experiments/google_qec/noise_models/google_d3_d5_r13_25p_network.yaml`.
 
 ### Decoder ablation study with cudaq-qec (optional)
 
@@ -1006,9 +1159,9 @@ internal Hydra schema, so they bypass the public validator.
 
 | Config file | Purpose |
 |-------------|---------|
-| `conf/config_color_model_1_s_LR3e-4.yaml` | Train a model-1-shaped color-code pre-decoder at `d=9, r=9` (superdense schedule). |
-| `conf/config_color_threshold_model_1_d13.yaml` | Threshold sweep against a trained color-code checkpoint at `d=13` (set `model_checkpoint_dir` to a training run's `models/` directory). |
-| `conf/config_inference_color_model_5.yaml` | Run inference with a trained model-5-shaped color-code checkpoint via the public runner (`workflow.task=inference`; set `model_checkpoint_file` to your `.pt`). Model 5 has receptive field `R=13`; the test window defaults to `distance=9, n_rounds=9, p=1e-3`. Override `test.num_samples` / `test.p_error` / `test.meas_basis_test` for sweeps. |
+| `conf/presets/color/config_color_model_1_s_LR3e-4.yaml` | Train a model-1-shaped color-code pre-decoder at `d=9, r=9` (superdense schedule). |
+| `conf/presets/color/config_color_threshold_model_1_d13.yaml` | Threshold sweep against a trained color-code checkpoint at `d=13` (set `model_checkpoint_dir` to a training run's `models/` directory). |
+| `conf/presets/color/config_inference_color_model_5.yaml` | Run inference with a trained model-5-shaped color-code checkpoint via the public runner (`workflow.task=inference`; set `model_checkpoint_file` to your `.pt`). Model 5 has receptive field `R=13`; the test window defaults to `distance=9, n_rounds=9, p=1e-3`. Override `test.num_samples` / `test.p_error` / `test.meas_basis_test` for sweeps. |
 
 #### Precompute the augmented DEM bundle
 
@@ -1034,14 +1187,14 @@ sampling probabilities are refreshed at load time.
 The public runner (`code/workflows/run.py`, driven by
 `code/scripts/local_run.sh`) dispatches color-code configs to the same
 `inference` / `threshold` / `sdr` / `chromobius_timing` workflow tasks that
-surface code uses. `conf/config_inference_color_model_5.yaml` is a standalone
+surface code uses. `conf/presets/color/config_inference_color_model_5.yaml` is a standalone
 inference config pinned to a model-5-shaped architecture
 (`PreDecoderModelMemory_v1`, 6-layer conv `[256, 256, 256, 256, 256, 4]`,
 kernel 3) — train such a checkpoint with the configs below, then point the
 launcher at it:
 
 ```bash
-CONFIG_NAME=config_inference_color_model_5 \
+CONFIG_NAME=presets/color/config_inference_color_model_5 \
     WORKFLOW=inference \
     EXTRA_PARAMS="model_checkpoint_file=/path/to/your/checkpoint.pt" \
     bash code/scripts/local_run.sh
@@ -1050,7 +1203,7 @@ CONFIG_NAME=config_inference_color_model_5 \
 To sweep noise or measurement bases add overrides to `EXTRA_PARAMS`:
 
 ```bash
-CONFIG_NAME=config_inference_color_model_5 \
+CONFIG_NAME=presets/color/config_inference_color_model_5 \
     WORKFLOW=inference \
     EXTRA_PARAMS="model_checkpoint_file=/path/to/your/checkpoint.pt test.num_samples=1024 test.p_error=0.001 test.meas_basis_test=both" \
     bash code/scripts/local_run.sh
@@ -1067,7 +1220,7 @@ Color-code **training** runs through the same launcher as inference — pick
 a color training config and set `WORKFLOW=train`:
 
 ```bash
-CONFIG_NAME=config_color_model_1_s_LR3e-4 \
+CONFIG_NAME=presets/color/config_color_model_1_s_LR3e-4 \
     WORKFLOW=train \
     EXTRA_PARAMS="data.precomputed_frames_dir=$(pwd)/frames_data" \
     bash code/scripts/local_run.sh

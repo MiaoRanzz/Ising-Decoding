@@ -12,7 +12,6 @@ from typing import Any, Mapping
 CODE_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = CODE_ROOT.parent
 CONF_ROOT = REPO_ROOT / "conf"
-EXPERIMENTS_ROOT = CONF_ROOT / "experiments"
 
 
 def rel(path: str | Path) -> Path:
@@ -23,9 +22,8 @@ def rel(path: str | Path) -> Path:
 def config_path(config_name: str | Path) -> Path:
     """Return the YAML path for a Hydra config name below ``conf/``.
 
-    Historical generated experiment configs lived directly under ``conf/``. If a
-    basename no longer exists there, look for a unique match under
-    ``conf/experiments/*/`` so old ad-hoc commands keep working.
+    Configs are grouped in nested preset and experiment directories. For callers
+    that still pass a historical basename, return its unique recursive match.
     """
     raw = str(config_name)
     if raw.endswith(".yaml"):
@@ -33,7 +31,7 @@ def config_path(config_name: str | Path) -> Path:
     direct = CONF_ROOT / f"{raw}.yaml"
     if direct.exists() or "/" in raw or "\\" in raw:
         return direct
-    matches = sorted(EXPERIMENTS_ROOT.glob(f"*/{raw}.yaml"))
+    matches = sorted(CONF_ROOT.rglob(f"{raw}.yaml"))
     if len(matches) == 1:
         return matches[0]
     return direct

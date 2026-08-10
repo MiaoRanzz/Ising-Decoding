@@ -885,10 +885,10 @@ class PreDecoderSTFusion_v1(nn.Module):
         return self.head(self.blocks(self.stem(x)))  # x: (B, 4, T, D, D)
 
 
-class PreDecoderSTFusion_v2(nn.Module):
+class HTnet(nn.Module):
 
     def __init__(self, cfg):
-        super(PreDecoderSTFusion_v2, self).__init__()
+        super().__init__()
 
         self.distance = cfg.distance
         self.n_rounds = cfg.n_rounds

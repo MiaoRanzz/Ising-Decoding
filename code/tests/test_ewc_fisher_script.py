@@ -19,12 +19,12 @@ class TestEWCFisherScript(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / "checkpoint.0.99.pt").write_text("skip")
-            (root / "PreDecoderSTFusion_v2.0.5.pt").write_text("old")
-            (root / "PreDecoderSTFusion_v2.0.20.pt").write_text("new")
+            (root / "HTnet.0.5.pt").write_text("old")
+            (root / "HTnet.0.20.pt").write_text("new")
 
             selected = select_model_checkpoint(root)
 
-            self.assertEqual(selected.name, "PreDecoderSTFusion_v2.0.20.pt")
+            self.assertEqual(selected.name, "HTnet.0.20.pt")
 
     def test_normalize_state_dict_keys_strips_ddp_and_compile_prefixes(self):
         state = {

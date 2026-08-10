@@ -1,0 +1,39 @@
+noise_model:
+  p_cnot_IX: 0.0013857749290764332
+  p_cnot_IY: 1.020736453938298e-05
+  p_cnot_IZ: 0.003907500300556421
+  p_cnot_XI: 1.0277057299390435e-05
+  p_cnot_XX: 1.0326838491891976e-05
+  p_cnot_XY: 1.0238386494165752e-05
+  p_cnot_XZ: 0.0010045362869277596
+  p_cnot_YI: 1.0309657227480784e-05
+  p_cnot_YX: 1.0395939170848578e-05
+  p_cnot_YY: 1.0183630365645513e-05
+  p_cnot_YZ: 1.0221509000984952e-05
+  p_cnot_ZI: 0.0009664595127105713
+  p_cnot_ZX: 0.0010744851315394044
+  p_cnot_ZY: 1.0110095900017768e-05
+  p_cnot_ZZ: 1.041950145008741e-05
+  p_idle_cnot_X: 1.0169441338803153e-05
+  p_idle_cnot_Y: 1.031231204251526e-05
+  p_idle_cnot_Z: 0.0009603038779459894
+  p_idle_spam_X: 0.0008725432562641799
+  p_idle_spam_Y: 1.0434994692332111e-05
+  p_idle_spam_Z: 0.002521268557757139
+  p_meas_X: 0.00711736548691988
+  p_meas_Z: 0.005723688751459122
+  p_prep_X: 1.025038454827154e-05
+  p_prep_Z: 0.00023256814165506512
+noise_model_sha256: e94b41952cdb7b3fc955f85a63a30c3b535e9d916ea26858d821186cbd571b5f
+adaptation:
+  architecture: Chamberland2026NoiseLearning_Eqs58_61
+  target_noise_model_sha256: 394963d6a948a6f11101e423e7ea63a30d6bbc9cd421e8e1eeb24f5eeeb5bc1e
+  validation_log_rmse: 0.04409760236740112
+  steps: 300
+  final_training_log_mse: 0.0031310366466641426
+  experiment_keys:
+  - google_105Q_surface_code_d3_d5_d7/d3_at_q10_7/X/r13
+  - google_105Q_surface_code_d3_d5_d7/d3_at_q10_7/Z/r13
+  - google_105Q_surface_code_d3_d5_d7/d5_at_q4_7/X/r13
+  - google_105Q_surface_code_d3_d5_d7/d5_at_q4_7/Z/r13
+  checkpoint: outputs/google_noise_learning/paper_noise_network.pt

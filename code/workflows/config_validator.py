@@ -123,7 +123,7 @@ def _base_hidden_defaults_dict() -> Dict[str, Any]:
 
     IMPORTANT: We intentionally embed these defaults directly in code so the public
     release does not ship internal/legacy config files. These values were copied
-    from the historical `config_pre_decoder_memory_surface_model_1_d9.yaml`.
+    from the historical `presets/surface/config_pre_decoder_memory_surface_model_1_d9.yaml`.
     """
     base_output_dir = os.environ.get("PREDECODER_BASE_OUTPUT_DIR", "outputs")
     output_root = f"{base_output_dir}/${{exp_tag}}"
@@ -145,6 +145,7 @@ def _base_hidden_defaults_dict() -> Dict[str, Any]:
         "torch_compile": _get_env_bool("PREDECODER_TORCH_COMPILE", True),
         "torch_compile_mode": os.environ.get("PREDECODER_TORCH_COMPILE_MODE", "default"),
         "load_checkpoint": False,
+        "init_model_checkpoint_file": None,
         "code": "surface",
         "distance": 9,
         "n_rounds": 9,
@@ -197,6 +198,21 @@ def _base_hidden_defaults_dict() -> Dict[str, Any]:
                 "save_every_datasets": 5,
                 "epochs": 100,
             },
+        # Internal continual-learning replay. Public users cannot override this
+        # block in config_public.yaml; experiment launchers enable it through
+        # PREDECODER_REPLAY_* environment variables.
+        "replay": {
+            "enabled": False,
+            "task_id": None,
+            "buffer_dir": f"{output_root}/replay",
+            "capacity": 65536,
+            "storage_dtype": "float16",
+            "seed": 12345,
+            "ratio": 0.5,
+            "lambda_replay": 1.0,
+            "save_every_epoch": True,
+            "strict_world_size": True,
+        },
         # NOTE: temporarily reduced for faster iteration during refactor/testing.
         "val": {
             "num_samples": 65536,
@@ -463,6 +479,8 @@ def validate_public_config(cfg: DictConfig) -> PublicModelSpec:
             "code_rotation",
             "noise_model",
             "skip_noise_upscaling",
+            "use_requested_training_window",
+            "train_meas_basis",
             "use_compile",
             "use_parallel_spacelike",
         }
@@ -477,12 +495,25 @@ def validate_public_config(cfg: DictConfig) -> PublicModelSpec:
         # from trusted defaults. OmegaConf accepts strings like "True"/"yes",
         # which would otherwise flow into downstream `bool(...)` casts and
         # become truthy regardless of the user's intent.
-        for bool_key in ("skip_noise_upscaling", "use_compile", "use_parallel_spacelike"):
+        for bool_key in (
+            "skip_noise_upscaling",
+            "use_requested_training_window",
+            "use_compile",
+            "use_parallel_spacelike",
+        ):
             if bool_key in cfg.data and not isinstance(cfg.data[bool_key], bool):
                 raise ValueError(
                     f"Config field 'data.{bool_key}' must be a boolean "
                     f"(got {type(cfg.data[bool_key]).__name__}: {cfg.data[bool_key]!r})."
                 )
+        if "train_meas_basis" in cfg.data:
+            train_basis = str(cfg.data.train_meas_basis).strip().upper()
+            if train_basis not in ("X", "Z", "BOTH"):
+                raise ValueError(
+                    "Config field 'data.train_meas_basis' must be X, Z, or both "
+                    f"(got {cfg.data.train_meas_basis!r})."
+                )
+
         # Validate rotation value (accept O1..O4; also allow internal XV/XH/ZV/ZH for compatibility).
         if "code_rotation" in cfg.data:
             _normalize_code_rotation(cfg.data.code_rotation)
@@ -496,8 +527,14 @@ def validate_public_config(cfg: DictConfig) -> PublicModelSpec:
                     f"Only 'optimizer.lr' is user-configurable."
                 )
 
-    return model_spec
+    if "init_model_checkpoint_file" in cfg:
+        init_path = cfg.init_model_checkpoint_file
+        if not isinstance(init_path, str) or not init_path.strip():
+            raise ValueError(
+                "Config field 'init_model_checkpoint_file' must be a non-empty path string."
+            )
 
+    return model_spec
 
 def clamp_to_receptive_field(cfg: DictConfig, R: int) -> None:
     """In-place clamp of cfg.distance and cfg.n_rounds to receptive field R."""
@@ -534,7 +571,10 @@ def apply_public_defaults_and_model(cfg: DictConfig, model_spec: PublicModelSpec
     merged.enable_matmul_tf32 = True
     merged.enable_cudnn_tf32 = True
 
-    merged.meas_basis = "both"
+    requested_train_basis = str(
+        getattr(merged.data, "train_meas_basis", "both")
+    ).strip().upper()
+    merged.meas_basis = "both" if requested_train_basis == "BOTH" else requested_train_basis
 
     # Disable multi-patch mode explicitly
     if "data" not in merged:
@@ -625,7 +665,10 @@ def apply_public_defaults_and_model(cfg: DictConfig, model_spec: PublicModelSpec
     R = int(model_spec.receptive_field)
     if R <= 0:
         raise ValueError(f"Invalid receptive field R={R!r}")
-    if task == "train":
+    use_requested_training_window = bool(
+        getattr(merged.data, "use_requested_training_window", False)
+    )
+    if task == "train" and not use_requested_training_window:
         merged.distance = R
         merged.n_rounds = R
     else:
@@ -633,6 +676,15 @@ def apply_public_defaults_and_model(cfg: DictConfig, model_spec: PublicModelSpec
         merged.n_rounds = int(requested_n_rounds)
 
     # Public code_rotation aliases: normalize O1..O4 -> internal XV/XH/ZV/ZH.
+
+    if bool(getattr(merged, "load_checkpoint", False)) and getattr(
+        merged, "init_model_checkpoint_file", None
+    ):
+        raise ValueError(
+            "init_model_checkpoint_file is weights-only initialization and cannot be combined "
+            "with load_checkpoint=True."
+        )
+
     if "data" in merged and "code_rotation" in merged.data:
         merged.data.code_rotation = _normalize_code_rotation(merged.data.code_rotation)
 

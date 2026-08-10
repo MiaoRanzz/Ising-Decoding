@@ -63,7 +63,7 @@ class TestPublicConfig(unittest.TestCase):
             101: "predecoder_memory_factorized_v1",
             102: "predecoder_memory_factorized_v1",
             110: "predecoder_st_fusion_v1",
-            111: "predecoder_st_fusion_v2",
+            111: "htnet",
             112: "predecoder_fasthyper_rf13_v1",
         }
         for model_id, version in expected.items():
@@ -591,9 +591,9 @@ class TestColorConfigRouting(unittest.TestCase):
 
         repo_root = Path(__file__).resolve().parents[2]
         for name in (
-            "config_color_model_1_s_LR3e-4.yaml",
-            "config_color_threshold_model_1_d13.yaml",
-            "config_inference_color_model_5.yaml",
+            "presets/color/config_color_model_1_s_LR3e-4.yaml",
+            "presets/color/config_color_threshold_model_1_d13.yaml",
+            "presets/color/config_inference_color_model_5.yaml",
         ):
             path = repo_root / "conf" / name
             if not path.exists():
@@ -610,6 +610,84 @@ class TestColorConfigRouting(unittest.TestCase):
         # Even with a test section, surface always goes through the validator.
         cfg = OmegaConf.create({"code": "surface", "test": {"num_samples": 8}})
         self.assertFalse(_is_standalone_color_config(cfg, "surface"))
+
+
+class TestQAdaptExampleLayout(unittest.TestCase):
+    """The shipped QAdapt examples form a small, portable public surface."""
+
+    def setUp(self):
+        self.repo_root = Path(__file__).resolve().parents[2]
+
+    def test_exact_example_entrypoints_are_shipped(self):
+        example_root = self.repo_root / "code" / "examples"
+        expected = {
+            "train_seq_ewc.sh",
+            "infer_t0_t4.py",
+            "infer_ood.py",
+            "infer_google_benchmark.py",
+            "download_google_benchmark.py",
+        }
+        observed = {
+            path.name
+            for path in example_root.iterdir()
+            if path.is_file() and path.name != "README.md"
+        }
+        self.assertEqual(observed, expected)
+
+    def test_exact_qadapt_example_configs_are_shipped(self):
+        config_root = self.repo_root / "conf" / "examples" / "qadapt"
+        expected = {
+            "config_qadapt_t0_base.yaml",
+            "config_qadapt_t1_meas_1p5.yaml",
+            "config_qadapt_t2_cnot_1p5.yaml",
+            "config_qadapt_t3_idle_1p5.yaml",
+            "config_qadapt_t4_z_bias_1p5.yaml",
+        }
+        observed = {path.name for path in config_root.glob("*.yaml")}
+        self.assertEqual(observed, expected)
+        for path in config_root.glob("*.yaml"):
+            with self.subTest(config=path.name):
+                cfg = OmegaConf.load(path)
+                self.assertEqual(int(cfg.model_id), 111)
+                self.assertEqual(str(cfg.workflow.task), "train")
+                self.assertNotIn("ewc", cfg)
+
+    def test_public_example_model_name_is_qadapt(self):
+        public_paths = [
+            self.repo_root / "README.md",
+            self.repo_root / "README_zh.md",
+            self.repo_root / "TRAINING.md",
+            self.repo_root / "conf" / "README.md",
+            self.repo_root / "code" / "examples" / "README.md",
+            self.repo_root / "code" / "scripts" / "qadapt_example_utils.py",
+        ]
+        public_paths.extend(
+            path
+            for path in (self.repo_root / "code" / "examples").iterdir()
+            if path.suffix in {".py", ".sh"}
+        )
+        for path in public_paths:
+            with self.subTest(path=path.relative_to(self.repo_root)):
+                text = path.read_text(encoding="utf-8")
+                self.assertNotIn("R9-X", text)
+                self.assertNotIn("r9x_", text)
+        helper_text = public_paths[5].read_text(encoding="utf-8")
+        self.assertIn('"qadapt_seq_ewc"', helper_text)
+        self.assertNotIn('"qadapt_mixed"', helper_text)
+        self.assertNotIn('"qadapt_seq"', helper_text)
+        self.assertIn('"--checkpoint"', helper_text)
+        self.assertNotIn('"--mixed-checkpoint"', helper_text)
+        self.assertNotIn('"--seq-checkpoint"', helper_text)
+
+    def test_examples_do_not_hardcode_machine_specific_runtime(self):
+        example_root = self.repo_root / "code" / "examples"
+        for path in example_root.iterdir():
+            if not path.is_file():
+                continue
+            with self.subTest(example=path.name):
+                text = path.read_text(encoding="utf-8")
+                self.assertNotIn("/root/miniconda3", text)
+                self.assertNotIn("4,5,6,7", text)
 
 
 if __name__ == "__main__":
