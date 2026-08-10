@@ -104,6 +104,7 @@ logs/
 
 # paper
 /paper
+/patent
 
 # Local dev artifacts
 /EXECUTIVE_SUMMARY.md

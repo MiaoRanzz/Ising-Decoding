@@ -250,9 +250,14 @@ def validation_step(
     enable_bf16=False,
     rank=0,
     use_channels_last_3d=False,
+    positive_weight=1.0,
 ):
     """Validation using the configured on-the-fly data generator."""
-    loss_fn = torch.nn.BCEWithLogitsLoss()
+    if float(positive_weight) <= 0:
+        raise ValueError("positive_weight must be positive")
+    loss_fn = torch.nn.BCEWithLogitsLoss(
+        pos_weight=torch.tensor(float(positive_weight), device=device)
+    )
     running_vloss = 0.0
 
     if isinstance(batch_size, (list, tuple)):
@@ -439,9 +444,15 @@ def train_epoch(
     profile_generator_subphases=False,
     ewc_states=None,
     ewc_lambda=0.0,
+    positive_weight=1.0,
 ):
     """Training epoch using the configured on-the-fly data generator."""
-    loss_fn = torch.nn.BCEWithLogitsLoss(reduction='sum')
+    if float(positive_weight) <= 0:
+        raise ValueError("positive_weight must be positive")
+    loss_fn = torch.nn.BCEWithLogitsLoss(
+        reduction='sum',
+        pos_weight=torch.tensor(float(positive_weight), device=device),
+    )
     gradient_clipping_counter = 0
 
     epoch_start_time = time.time()
@@ -844,6 +855,33 @@ def main(cfg: DictConfig) -> None:
             cfg.train.epochs = int(_epochs_env)
     except Exception:
         pass
+    _batch_size_env = os.environ.get("PREDECODER_BATCH_SIZE")
+    if _batch_size_env:
+        batch_size = int(_batch_size_env)
+        if batch_size <= 0:
+            raise ValueError("PREDECODER_BATCH_SIZE must be positive")
+        cfg.batch_schedule.enabled = False
+        cfg.batch_schedule.initial = batch_size
+        cfg.batch_schedule.final = batch_size
+    _accumulate_steps_env = os.environ.get("PREDECODER_ACCUMULATE_STEPS")
+    if _accumulate_steps_env:
+        accumulate_steps = int(_accumulate_steps_env)
+        if accumulate_steps <= 0:
+            raise ValueError("PREDECODER_ACCUMULATE_STEPS must be positive")
+        cfg.train.accumulate_steps = accumulate_steps
+    _validation_ler_env = os.environ.get("PREDECODER_VALIDATION_LER")
+    if _validation_ler_env is not None:
+        cfg.validation_ler = str(_validation_ler_env).strip().lower() in (
+            "1", "true", "yes", "on"
+        )
+    _use_ema_env = os.environ.get("PREDECODER_USE_EMA")
+    if _use_ema_env is not None:
+        cfg.ema.use_ema = str(_use_ema_env).strip().lower() in (
+            "1", "true", "yes", "on"
+        )
+    positive_weight = float(os.environ.get("PREDECODER_POSITIVE_WEIGHT", "1"))
+    if positive_weight <= 0:
+        raise ValueError("PREDECODER_POSITIVE_WEIGHT must be positive")
 
     # Suppress torch.compile verbose output
     import logging
@@ -961,10 +999,19 @@ def main(cfg: DictConfig) -> None:
         print("🚀 Setting up on-the-fly data generation")
         print("=" * 80)
 
-    # Generate random base seed on rank 0, broadcast to all
+    # Resolve one explicit experiment seed on rank 0, then broadcast it. The
+    # old unconditional random draw made nominally paired continual-learning
+    # methods start from different weights and sample different training data.
     import random
     if dist.rank == 0:
-        base_seed = random.randint(0, 2**31 - 1)
+        seed_raw = os.environ.get("PREDECODER_SEED")
+        if seed_raw is None:
+            seed_raw = OmegaConf.select(cfg, "seed", default=None)
+        base_seed = (
+            int(seed_raw)
+            if seed_raw is not None
+            else random.SystemRandom().randint(0, 2**31 - 1)
+        )
     else:
         base_seed = 0
 
@@ -974,7 +1021,13 @@ def main(cfg: DictConfig) -> None:
         base_seed = int(seed_tensor.item())
 
     if dist.rank == 0:
-        print(f"🎲 Random base seed for this session: {base_seed}")
+        print(f"🎲 Experiment base seed: {base_seed}")
+
+    random.seed(base_seed)
+    np.random.seed(base_seed % (2**32))
+    torch.manual_seed(base_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(base_seed)
 
     # Get p settings
     p_error_value = getattr(cfg.data, 'p_error', None)
@@ -1794,6 +1847,7 @@ def main(cfg: DictConfig) -> None:
             replay_task_id=replay_settings.task_id,
             replay_ratio=replay_settings.ratio,
             replay_lambda=replay_settings.replay_lambda,
+            positive_weight=positive_weight,
         )
 
         cumulative_steps += steps_per_epoch
@@ -1813,7 +1867,8 @@ def main(cfg: DictConfig) -> None:
             enable_fp16=cfg.enable_fp16,
             enable_bf16=getattr(cfg, 'enable_bf16', False),
             use_channels_last_3d=use_channels_last_3d,
-            rank=dist.rank
+            rank=dist.rank,
+            positive_weight=positive_weight,
         )
 
         # Synchronize losses

@@ -3,6 +3,7 @@
 
 import tempfile
 import unittest
+from collections import Counter
 
 import torch
 import torch.nn as nn
@@ -77,6 +78,25 @@ class TestReplayLoss(unittest.TestCase):
 
 
 class TestReplayBuffer(unittest.TestCase):
+
+    def test_equal_task_streams_remain_approximately_balanced(self):
+        replay = ReplayBuffer(capacity=2000, seed=23)
+        for task in range(5):
+            train_x, train_y = _batch(task * 10000, 10000)
+            replay.observe(
+                train_x,
+                train_y,
+                task_id=f"T{task}",
+                basis="X" if task % 2 == 0 else "Z",
+                step=task,
+            )
+        counts = Counter(replay.state_dict()["task_ids"])
+        self.assertEqual(sum(counts.values()), 2000)
+        # Five equal-sized streams should each occupy roughly 20%, rather than
+        # the exponential recency distribution caused by re-keying old rows.
+        for task in range(5):
+            self.assertGreaterEqual(counts[f"T{task}"], 320)
+            self.assertLessEqual(counts[f"T{task}"], 480)
 
     def test_current_task_is_admitted_but_not_retrieved(self):
         replay = ReplayBuffer(capacity=8, seed=7)

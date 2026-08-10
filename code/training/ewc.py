@@ -148,10 +148,16 @@ def estimate_diagonal_fisher(
     device: Union[str, torch.device],
     enable_fp16: bool = False,
     enable_bf16: bool = False,
+    positive_weight: float = 1.0,
 ) -> EWCState:
     model.eval()
     device = torch.device(device)
-    loss_fn = torch.nn.BCEWithLogitsLoss(reduction="sum")
+    if float(positive_weight) <= 0:
+        raise ValueError("positive_weight must be positive")
+    loss_fn = torch.nn.BCEWithLogitsLoss(
+        reduction="sum",
+        pos_weight=torch.tensor(float(positive_weight), device=device),
+    )
     fisher = {
         name: torch.zeros_like(param.detach(), device=device, dtype=torch.float32)
         for name, param in iter_trainable_named_parameters(model)

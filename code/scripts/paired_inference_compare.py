@@ -553,6 +553,7 @@ def evaluate_model(
     saved_residual_chunks: list[np.ndarray] = []
     error_chunks: list[np.ndarray] = []
     residual_count = 0
+    active_correction_shots = 0
     input_density = SyndromeDensityAccumulator()
     residual_density = SyndromeDensityAccumulator()
 
@@ -566,8 +567,12 @@ def evaluate_model(
             output = module(dets_only)
             pre_l = output[:, 0].to(torch.int64).cpu()
             residual = output[:, 1:].to(torch.uint8).cpu().numpy()
-            input_density.update(dets_only.to(torch.uint8).cpu().numpy())
+            input_detectors = dets_only.to(torch.uint8).cpu().numpy()
+            input_density.update(input_detectors)
             residual_density.update(residual)
+            active_correction_shots += int(
+                np.count_nonzero(np.any(residual != input_detectors, axis=1))
+            )
             if residual_tensor_path is not None:
                 saved_residual_chunks.append(
                     np.ascontiguousarray(residual, dtype=np.uint8)
@@ -594,6 +599,10 @@ def evaluate_model(
         "samples": total,
         "ler": float(logical_errors / total) if total else float("nan"),
         "latency_us_per_round": time_single_shot(matcher, residual_rows, n_rounds),
+        "active_correction_shots": active_correction_shots,
+        "active_correction_fraction": (
+            float(active_correction_shots / total) if total else float("nan")
+        ),
         **model_density_statistics(input_density, residual_density),
     }
     if residual_tensor_path is not None:
@@ -865,6 +874,18 @@ def main() -> None:
         if any(row.get("residual_syndrome_elements") for row in method_rows):
             residual_stats = combine_density_statistics(method_rows, "residual")
             summary_row.update(residual_stats)
+            active_correction_shots = sum(
+                int(row.get("active_correction_shots", 0)) for row in method_rows
+            )
+            active_correction_samples = sum(int(row["samples"]) for row in method_rows)
+            summary_row.update(
+                active_correction_shots=active_correction_shots,
+                active_correction_fraction=(
+                    float(active_correction_shots / active_correction_samples)
+                    if active_correction_samples
+                    else float("nan")
+                ),
+            )
             summary_row.update(
                 density_reduction_statistics(
                     float(summary_row["input_syndrome_density"]),
@@ -901,6 +922,8 @@ def main() -> None:
         "ler",
         "latency_us_per_round",
         "speedup_vs_pymatching",
+        "active_correction_shots",
+        "active_correction_fraction",
         "input_density_shots",
         "input_syndrome_ones",
         "input_syndrome_elements",
