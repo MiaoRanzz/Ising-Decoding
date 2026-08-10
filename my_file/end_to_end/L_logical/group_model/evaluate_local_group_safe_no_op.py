@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select a conservative harmful-vs-helpful margin veto by endpoint LER."""
+"""Select a conservative harmful-vs-helpful direction veto by endpoint LER."""
 from __future__ import annotations
 import argparse,json,sys
 from pathlib import Path
@@ -44,11 +44,11 @@ def scores_for(model,rows,x,source,logits,shot_ptr,gptr,members,batch,device,lab
             if not len(gids):continue
             action=(logits[rr]>=0).astype(np.float32);feature=np.concatenate((np.array(x[source[rr]],dtype=np.float32,copy=True),np.array(logits[rr],dtype=np.float32,copy=True),action),axis=1)
             out=model(torch.as_tensor(feature,device=device),torch.as_tensor(desc,device=device),torch.as_tensor(ptr,device=device)).cpu().numpy()
-            if out.ndim != 2 or out.shape[1] != 3:
-                raise ValueError("group gate must output harmful/neutral/helpful logits")
+            if out.ndim != 2 or out.shape[1] != 2:
+                raise ValueError("group gate must output harmful/helpful direction logits")
             # A large positive margin means this group is more likely harmful
             # than helpful, and is therefore a candidate for a conservative veto.
-            score[gids]=out[:, 0] - out[:, 2]
+            score[gids]=out[:, 0] - out[:, 1]
             index=start//batch+1
             if progress_every and (index%progress_every==0 or index==batches):print(f'[score] {label}: batch {index}/{batches}')
     return score
@@ -104,13 +104,13 @@ def main():
     for checkpoint_index,ckpt in enumerate(candidates,1):
         print(f'[select] checkpoint {checkpoint_index}/{len(candidates)}: {ckpt.name}')
         saved=torch.load(ckpt,map_location=device,weights_only=False)
-        if saved.get('gate_target') != 'harmful_helpful_margin_veto':
-            raise ValueError(f'{ckpt} is not a harmful-vs-helpful margin-veto checkpoint; retrain into the configured checkpoint_dir')
+        if saved.get('gate_target') != 'harmful_helpful_direction_veto':
+            raise ValueError(f'{ckpt} is not a harmful-vs-helpful direction-veto checkpoint; retrain into the configured checkpoint_dir')
         model=LocalGroupSafeNoOpGate(GroupGateArchitecture(**saved['architecture'])).to(device);model.load_state_dict(saved['state_dict']);score=scores_for(model,val,x,source,logits,shot_ptr,gptr,members,args.batch_size,device,f'checkpoint {checkpoint_index}/{len(candidates)}',args.progress_every_batches);all_thresholds=thresholds(score,args.num_thresholds,args.max_veto_coverage)
         for threshold_index,th in enumerate(all_thresholds,1):
             print(f'[select] checkpoint {checkpoint_index}/{len(candidates)}, threshold {threshold_index}/{len(all_thresholds)}')
             gated,accepted,active=apply(val_proposal,val,score,th,shot_ptr,gptr,members);fail=failures(val,gated,detsobs,source,num_obs,pipeline,am,matcher,device,args.batch_size,f'checkpoint {checkpoint_index}/{len(candidates)}, threshold {threshold_index}/{len(all_thresholds)}',args.progress_every_batches);candidate=(int(fail.sum()),str(ckpt),float(th),accepted,active)
             if best is None or candidate<best:best=candidate
     if best is None:raise FileNotFoundError('no gate checkpoint found')
-    _,ckpt,th,_,_=best;print(f'[test] selected checkpoint={Path(ckpt).name}, veto_margin_threshold={th:.6g}');saved=torch.load(ckpt,map_location=device,weights_only=False);model=LocalGroupSafeNoOpGate(GroupGateArchitecture(**saved['architecture'])).to(device);model.load_state_dict(saved['state_dict']);test_score=scores_for(model,test,x,source,logits,shot_ptr,gptr,members,args.batch_size,device,'held-out test',args.progress_every_batches);gated,accepted,active=apply(test_proposal,test,test_score,th,shot_ptr,gptr,members);gate_fail=failures(test,gated,detsobs,source,num_obs,pipeline,am,matcher,device,args.batch_size,'held-out test gate',args.progress_every_batches);proposal_fail=failures(test,test_proposal,detsobs,source,num_obs,pipeline,am,matcher,device,args.batch_size,'held-out test proposal',args.progress_every_batches);report={'risk_dataset_dir':str(args.risk_dataset_dir),'selected_checkpoint':ckpt,'gate_target':'harmful_helpful_margin_veto','veto_margin_threshold':th,'held_out_shots':len(test),'validation_selection_shots':len(val),'paths':{'pymatching':summary(test_base),'proposal_plus_pymatching':summary(proposal_fail),'local_group_safe_no_op_plus_pymatching':summary(gate_fail)},'group_gate':{'active_groups':active,'accepted_groups':accepted,'accept_coverage':accepted/max(1,active),'vetoed_groups':active-accepted,'veto_coverage':(active-accepted)/max(1,active)},'validation_selected_ler':best[0]/len(val)};args.output.parent.mkdir(parents=True,exist_ok=True);args.output.write_text(json.dumps(report,indent=2));print(json.dumps(report,indent=2));print(f'[done] report={args.output}')
+    _,ckpt,th,_,_=best;print(f'[test] selected checkpoint={Path(ckpt).name}, veto_direction_threshold={th:.6g}');saved=torch.load(ckpt,map_location=device,weights_only=False);model=LocalGroupSafeNoOpGate(GroupGateArchitecture(**saved['architecture'])).to(device);model.load_state_dict(saved['state_dict']);test_score=scores_for(model,test,x,source,logits,shot_ptr,gptr,members,args.batch_size,device,'held-out test',args.progress_every_batches);gated,accepted,active=apply(test_proposal,test,test_score,th,shot_ptr,gptr,members);gate_fail=failures(test,gated,detsobs,source,num_obs,pipeline,am,matcher,device,args.batch_size,'held-out test gate',args.progress_every_batches);proposal_fail=failures(test,test_proposal,detsobs,source,num_obs,pipeline,am,matcher,device,args.batch_size,'held-out test proposal',args.progress_every_batches);report={'risk_dataset_dir':str(args.risk_dataset_dir),'selected_checkpoint':ckpt,'gate_target':'harmful_helpful_direction_veto','veto_direction_threshold':th,'held_out_shots':len(test),'validation_selection_shots':len(val),'paths':{'pymatching':summary(test_base),'proposal_plus_pymatching':summary(proposal_fail),'local_group_safe_no_op_plus_pymatching':summary(gate_fail)},'group_gate':{'active_groups':active,'accepted_groups':accepted,'accept_coverage':accepted/max(1,active),'vetoed_groups':active-accepted,'veto_coverage':(active-accepted)/max(1,active)},'validation_selected_ler':best[0]/len(val)};args.output.parent.mkdir(parents=True,exist_ok=True);args.output.write_text(json.dumps(report,indent=2));print(json.dumps(report,indent=2));print(f'[done] report={args.output}')
 if __name__=='__main__':main()

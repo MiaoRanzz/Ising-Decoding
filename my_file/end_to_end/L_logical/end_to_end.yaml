@@ -145,8 +145,8 @@ group_risk_generation:
 
 group_gate_training:
   risk_dataset_dir: my_file/end_to_end/L_logical/group_model/data/dataset_Xd9c9_1_model_100
-  # Separate from old binary helpful-acceptance / harmful-veto checkpoints.
-  output_dir: my_file/end_to_end/L_logical/group_model/models/dataset_Xd9c9_1_model_100_harmful_helpful_margin
+  # Direction-only training: harmful vs helpful; neutral has no direction loss.
+  output_dir: my_file/end_to_end/L_logical/group_model/models/dataset_Xd9c9_1_model_100_harmful_helpful_direction
   batch_size: 128
   epochs: 100
   learning_rate: 0.0001
@@ -156,6 +156,7 @@ group_gate_training:
   train_fraction: 0.70
   validation_fraction: 0.15
   split_seed: 12345
+  # Unused by this direction-only objective: neutral-only shots are excluded.
   neutral_per_informative: 100
   max_positive_weight: 100.0
   num_workers: 0
@@ -170,13 +171,13 @@ group_gate_training:
     kernel_size: 3
     dropout: 0.05
     group_hidden_channels: 128
-    num_risk_classes: 3
+    num_risk_classes: 2
 
 group_gate_evaluation:
   risk_dataset_dir: my_file/end_to_end/L_logical/group_model/data/dataset_Xd9c9_1_model_100
-  checkpoint_dir: my_file/end_to_end/L_logical/group_model/models/dataset_Xd9c9_1_model_100_harmful_helpful_margin
+  checkpoint_dir: my_file/end_to_end/L_logical/group_model/models/dataset_Xd9c9_1_model_100_harmful_helpful_direction
   checkpoint_glob: epoch_*.pt
-  output: my_file/end_to_end/L_logical/group_model/models/dataset_Xd9c9_1_model_100_harmful_helpful_margin/endpoint_selected_ler.json
+  output: my_file/end_to_end/L_logical/group_model/models/dataset_Xd9c9_1_model_100_harmful_helpful_direction/endpoint_selected_ler.json
   batch_size: 256
   train_fraction: 0.70
   validation_fraction: 0.15
@@ -201,7 +202,7 @@ group_gate_fixed_test:
   # Fill these from group_gate_evaluation after the new three-class run.
   gate_checkpoint: null
   veto_threshold: null
-  output: my_file/end_to_end/L_logical/group_model/models/dataset_Xd9c9_1_model_100_harmful_helpful_margin/fixed_test.json
+  output: my_file/end_to_end/L_logical/group_model/models/dataset_Xd9c9_1_model_100_harmful_helpful_direction/fixed_test.json
   batch_size: 256
   train_fraction: 0.70
   validation_fraction: 0.15

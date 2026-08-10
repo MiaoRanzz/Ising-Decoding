@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one pre-selected harmful-vs-helpful margin veto once on the test split.
+"""Run one pre-selected harmful-vs-helpful direction veto once on the test split.
 
 This task deliberately does *not* scan checkpoints or thresholds.  It is for
 the final test of a gate/threshold selected on validation data.  It also
@@ -138,8 +138,8 @@ def main() -> None:
 
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     saved = torch.load(args.gate_checkpoint, map_location=device, weights_only=False)
-    if saved.get("gate_target") != "harmful_helpful_margin_veto":
-        raise ValueError("gate_checkpoint is not a harmful-vs-helpful margin-veto checkpoint")
+    if saved.get("gate_target") != "harmful_helpful_direction_veto":
+        raise ValueError("gate_checkpoint is not a harmful-vs-helpful direction-veto checkpoint")
     gate = LocalGroupSafeNoOpGate(GroupGateArchitecture(**saved["architecture"])).to(device).eval()
     gate.load_state_dict(saved["state_dict"])
 
@@ -197,8 +197,8 @@ def main() -> None:
         "risk_dataset_dir": str(args.risk_dataset_dir),
         "ising_fast_checkpoint": str(args.ising_fast_checkpoint),
         "gate_checkpoint": str(args.gate_checkpoint),
-        "gate_target": "harmful_helpful_margin_veto",
-        "veto_margin_threshold": args.veto_threshold,
+        "gate_target": "harmful_helpful_direction_veto",
+        "veto_direction_threshold": args.veto_threshold,
         "held_out_shots": int(len(test_rows)),
         "paths": {
             "pymatching": summary(pymatching_failure),
