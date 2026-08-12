@@ -1,0 +1,65 @@
+# Standalone configuration for integrated structured-action safe no-op training.
+structured_model:
+  dataset_dir: my_file/end_to_end/L_logical/data_generated/dataset_Xd9c9_1
+  project_config: conf/config_public.yaml
+  base_checkpoint: outputs/test1/models/PreDecoderModelMemory_v1.0.100.pt
+  model_id: 1
+
+structured_oracle_training:
+  output_dir: my_file/end_to_end/L_logical/structured_model/models/oracle
+  epochs: 5
+  batch_size: 128
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  train_fraction: 0.70
+  validation_fraction: 0.15
+  split_seed: 12345
+  num_workers: 0
+  device: null
+
+structured_teacher_generation:
+  checkpoint: my_file/end_to_end/L_logical/structured_model/models/oracle/best.pt
+  output_dir: my_file/end_to_end/L_logical/structured_model/data/teacher_round_1
+  # Start with 4096; null generates a teacher for the whole corpus.
+  num_samples: 4096
+  seed: 12345
+  proposal_batch_size: 128
+  endpoint_batch_size: 512
+  max_groups_per_shot: 3
+  include_pairs: true
+  include_all_no_op: true
+  logical_failure_weight: 1000.0
+  residual_weight: 1.0
+  action_weight: 0.01
+  grouping:
+    time_radius: 1
+    spatial_radius: 1
+    max_group_members: 8
+    max_time_span: 3
+    max_spatial_span: 3
+  device: null
+
+structured_teacher_training:
+  teacher_dataset_dir: my_file/end_to_end/L_logical/structured_model/data/teacher_round_1
+  output_dir: my_file/end_to_end/L_logical/structured_model/models/teacher_round_1
+  epochs: 3
+  batch_size: 128
+  learning_rate: 0.00003
+  weight_decay: 0.00001
+  endpoint_weight: 0.25
+  train_fraction: 0.70
+  validation_fraction: 0.15
+  split_seed: 12345
+  num_workers: 0
+  device: null
+
+structured_evaluation:
+  checkpoint: my_file/end_to_end/L_logical/structured_model/models/teacher_round_1/best.pt
+  output: my_file/end_to_end/L_logical/structured_model/models/teacher_round_1/endpoint_selected_ler.json
+  batch_size: 256
+  train_fraction: 0.70
+  validation_fraction: 0.15
+  split_seed: 12345
+  # Positive values make no-op more likely. Select only on validation.
+  no_op_biases: [-0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0]
+  device: null
