@@ -1,0 +1,107 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+experiment_id: ising_domestic_fast_topology_gate_comparison
+evidence_scope: external_bce_single_distance_paired_gate_validation
+
+external_checkpoint: /mnt/public/miaoran/Ising-Decoding-storage/outputs/ising_domestic_fast/models/best_model/PreDecoderModelMemory_v1.0.53.pt
+
+geometry:
+  distance: 9
+  rounds: 9
+  rotation: XV
+
+seeds: [20260811, 20260812, 20260813]
+
+model:
+  version: predecoder_memory_v1
+  input_channels: 4
+  out_channels: 4
+  num_filters: [128, 128, 128, 4]
+  kernel_size: [3, 3, 3, 3]
+  dropout_p: 0.05
+  activation: gelu
+
+evaluation:
+  batch_size: 512
+
+gate_validation_shots_per_basis: 8192
+test_shots_per_basis: 50000
+
+noise_tasks:
+  t0:
+    p_prep_X: 0.001
+    p_prep_Z: 0.001
+    p_meas_X: 0.01
+    p_meas_Z: 0.01
+    p_idle_cnot_X: 0.000333
+    p_idle_cnot_Y: 0.000333
+    p_idle_cnot_Z: 0.000333
+    p_idle_spam_X: 0.000667
+    p_idle_spam_Y: 0.000667
+    p_idle_spam_Z: 0.000667
+    p_cnot_IX: 0.000667
+    p_cnot_IY: 0.000667
+    p_cnot_IZ: 0.000667
+    p_cnot_XI: 0.000667
+    p_cnot_XX: 0.000667
+    p_cnot_XY: 0.000667
+    p_cnot_XZ: 0.000667
+    p_cnot_YI: 0.000667
+    p_cnot_YX: 0.000667
+    p_cnot_YY: 0.000667
+    p_cnot_YZ: 0.000667
+    p_cnot_ZI: 0.000667
+    p_cnot_ZX: 0.000667
+    p_cnot_ZY: 0.000667
+    p_cnot_ZZ: 0.000667
+
+gate:
+  data_thresholds: [0.5, 0.7, 0.9]
+  measurement_thresholds: [0.5, 0.7, 0.9]
+  logical_risk_weights: [0.25, 0.5]
+  defaults:
+    data_threshold: 0.7
+    measurement_threshold: 0.7
+    interaction_radius: 0
+    exact_cluster_size: 8
+    max_combination_actions: 4
+    combination_budget: 64
+    max_total_actions: 64
+    max_candidates: 16
+    acceptance_threshold: 0.0
+    max_workload_increase: 0.0
+    max_logical_risk: 1.0
+    workload_active_weight: 1.0
+    workload_component_weight: 0.25
+    workload_pair_weight: 0.1
+    uncertainty_weight: 0.005
+    logical_risk_weight: 0.25
+    gate_cost_weight: 0.0
+
+statistics:
+  bootstrap_repeats: 2000
+  bootstrap_seed: 20260811
+  ler_noninferiority_margin: 0.005
+
+seed_offsets:
+  gate_validation: 5000000
+  test_t0: 6000000
+
+modes:
+  smoke:
+    seeds: [20260811]
+    gate_validation_shots_per_basis: 64
+    test_shots_per_basis: 256
+    evaluation:
+      batch_size: 64
+    gate:
+      data_thresholds: [0.5]
+      measurement_thresholds: [0.5]
+      logical_risk_weights: [0.25]
+      defaults:
+        max_candidates: 8
+        combination_budget: 32
+    statistics:
+      bootstrap_repeats: 100
