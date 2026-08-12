@@ -49,3 +49,8 @@ validation split and reports the untouched test split once.
 `logical_failure_weight` is deliberately dominant. Residual weight and action
 count are only tie breakers, so the teacher does not learn to minimize residual
 at the expense of logical correctness.
+
+Both training phases report progress during execution. Set
+`log_every_batches` in the corresponding training YAML section to choose the
+reporting interval; each line includes current loss, oracle/endpoint loss,
+learning rate, throughput, and estimated time remaining in the epoch.

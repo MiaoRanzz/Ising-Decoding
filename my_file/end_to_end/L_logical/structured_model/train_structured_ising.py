@@ -54,11 +54,17 @@ class ActionDataset(Dataset):
         return tuple(values)
 
 
-def run_epoch(model, loader, optimizer, device, endpoint_weight: float) -> dict[str, float]:
+def run_epoch(model, loader, optimizer, device, endpoint_weight: float, *, epoch: int,
+              total_epochs: int, log_every_batches: int) -> dict[str, float]:
+    """Run one epoch and emit live batch-level progress for training/validation."""
     training = optimizer is not None
     model.train(training)
     sums = {"loss": 0.0, "oracle": 0.0, "endpoint": 0.0, "count": 0}
-    for batch in loader:
+    stage = "train" if training else "validation"
+    started = time.perf_counter()
+    window = {"loss": 0.0, "oracle": 0.0, "endpoint": 0.0, "count": 0}
+    total_batches = len(loader)
+    for batch_index, batch in enumerate(loader, start=1):
         train_x, train_y = batch[0].to(device), batch[1].to(device)
         with torch.set_grad_enabled(training):
             logits = model(train_x)
@@ -78,6 +84,26 @@ def run_epoch(model, loader, optimizer, device, endpoint_weight: float) -> dict[
         sums["oracle"] += float(oracle.detach()) * n
         sums["endpoint"] += float(endpoint.detach()) * n
         sums["count"] += n
+        window["loss"] += float(loss.detach()) * n
+        window["oracle"] += float(oracle.detach()) * n
+        window["endpoint"] += float(endpoint.detach()) * n
+        window["count"] += n
+        if batch_index % log_every_batches == 0 or batch_index == total_batches:
+            elapsed = time.perf_counter() - started
+            samples_per_second = sums["count"] / elapsed if elapsed else 0.0
+            remaining = (total_batches - batch_index) * elapsed / batch_index if batch_index else 0.0
+            lr = optimizer.param_groups[0]["lr"] if training else 0.0
+            print(
+                f"[{stage} epoch {epoch:03d}/{total_epochs:03d}] "
+                f"batch {batch_index}/{total_batches} "
+                f"loss={window['loss'] / window['count']:.5f} "
+                f"oracle={window['oracle'] / window['count']:.5f} "
+                f"endpoint={window['endpoint'] / window['count']:.5f} "
+                f"lr={lr:.3e} throughput={samples_per_second:.1f} shots/s "
+                f"epoch_eta={remaining:.0f}s",
+                flush=True,
+            )
+            window = {"loss": 0.0, "oracle": 0.0, "endpoint": 0.0, "count": 0}
     return {key: value / sums["count"] for key, value in sums.items() if key != "count"}
 
 
@@ -96,6 +122,9 @@ def main() -> None:
     output_dir = repo_path(get("output_dir"))
     epochs, batch_size = int(get("epochs")), int(get("batch_size"))
     learning_rate = float(get("learning_rate"))
+    log_every_batches = int(cfg.get("log_every_batches", 25))
+    if log_every_batches <= 0:
+        raise ValueError("log_every_batches must be positive")
     endpoint_weight = float(cfg.get("endpoint_weight", 0.0))
     device = torch.device(get("device") or ("cuda" if torch.cuda.is_available() else "cpu"))
     resume_value = cfg.get("resume_checkpoint")
@@ -130,9 +159,15 @@ def main() -> None:
     print(f"[setup] phase={phase} device={device} train={len(train_set)} validation={len(valid_set)} test={len(test_rows)}")
     for epoch in range(1, epochs + 1):
         started = time.perf_counter()
-        train_metrics = run_epoch(model, train_loader, optimizer, device, endpoint_weight)
+        train_metrics = run_epoch(
+            model, train_loader, optimizer, device, endpoint_weight,
+            epoch=epoch, total_epochs=epochs, log_every_batches=log_every_batches,
+        )
         with torch.no_grad():
-            valid_metrics = run_epoch(model, valid_loader, None, device, endpoint_weight)
+            valid_metrics = run_epoch(
+                model, valid_loader, None, device, endpoint_weight,
+                epoch=epoch, total_epochs=epochs, log_every_batches=log_every_batches,
+            )
         payload = {"phase": phase, "epoch": epoch, "base_checkpoint": str(base_checkpoint), "settings": str(settings),
                    "train": train_metrics, "validation": valid_metrics, "endpoint_weight": endpoint_weight}
         save_checkpoint(output_dir / f"epoch_{epoch:03d}.pt", model, **payload)

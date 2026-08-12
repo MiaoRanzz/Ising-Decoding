@@ -17,6 +17,8 @@ structured_oracle_training:
   epochs: 5
   batch_size: 128
   learning_rate: 0.0001
+  # Print live training/validation progress every N batches.
+  log_every_batches: 25
   weight_decay: 0.00001
   train_fraction: 0.70
   validation_fraction: 0.15
@@ -54,6 +56,8 @@ structured_teacher_training:
   epochs: 5
   batch_size: 128
   learning_rate: 0.00003
+  # Print live training/validation progress every N batches.
+  log_every_batches: 25
   weight_decay: 0.00001
   endpoint_weight: 0.25
   train_fraction: 0.70
