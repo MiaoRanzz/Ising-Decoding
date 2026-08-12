@@ -44,7 +44,12 @@ from benchmarks.patent_validation.topology_gating_v2_small import (
     _seed_everything,
 )
 from evaluation.surface_topology_adapter import build_surface_action_adapter
-from evaluation.topology_gating_v2 import config_from_mapping, workload_features
+from evaluation.topology_gating_v2 import (
+    WorkloadGraph,
+    build_workload_graph,
+    config_from_mapping,
+    workload_features,
+)
 
 
 DEFAULT_CONFIG = (
@@ -67,6 +72,7 @@ _PARALLEL_PROBABILITIES: np.ndarray | None = None
 _PARALLEL_ADAPTER: Any = None
 _PARALLEL_ADJACENCY: list[set[int]] | None = None
 _PARALLEL_VALID: np.ndarray | None = None
+_PARALLEL_WORKLOAD_GRAPHS: dict[int, WorkloadGraph] = {}
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -207,6 +213,14 @@ def _parallel_gate_chunk(
     exact = []
     complexity = []
     density = []
+    selection_source = []
+    combination_score = []
+    pointwise_score = []
+    radius = int(gate_config.workload_pair_radius)
+    graph = _PARALLEL_WORKLOAD_GRAPHS.get(radius)
+    if graph is None:
+        graph = build_workload_graph(_PARALLEL_ADJACENCY, radius)
+        _PARALLEL_WORKLOAD_GRAPHS[radius] = graph
     for index in range(int(start), int(stop)):
         result = _method_gate(
             gate_method,
@@ -216,6 +230,7 @@ def _parallel_gate_chunk(
             _PARALLEL_ADJACENCY,
             gate_config,
             _PARALLEL_VALID,
+            workload_graph=graph,
         )
         residual = result.residual
         residuals.append(residual)
@@ -224,10 +239,11 @@ def _parallel_gate_chunk(
         candidate_counts.append(result.candidate_count)
         combinations.append(result.combinations_evaluated)
         exact.append(result.exact_search)
-        complexity.append(
-            workload_features(residual, _PARALLEL_ADJACENCY).component_square_sum
-        )
+        complexity.append(workload_features(residual, graph).component_square_sum)
         density.append(float(residual.mean()))
+        selection_source.append(result.selection_source == "pointwise_fallback")
+        combination_score.append(result.combination_workload_score)
+        pointwise_score.append(result.pointwise_workload_score)
     return {
         "residual": np.stack(residuals).astype(np.uint8, copy=False),
         "frame": np.asarray(frames, dtype=np.uint8),
@@ -237,6 +253,15 @@ def _parallel_gate_chunk(
         "exact": np.asarray(exact, dtype=np.float32),
         "complexity": np.asarray(complexity, dtype=np.float32),
         "density": np.asarray(density, dtype=np.float32),
+        "pointwise_fallback": np.asarray(selection_source, dtype=np.uint8),
+        "combination_workload_score": np.asarray(
+            [np.nan if value is None else value for value in combination_score],
+            dtype=np.float32,
+        ),
+        "pointwise_workload_score": np.asarray(
+            [np.nan if value is None else value for value in pointwise_score],
+            dtype=np.float32,
+        ),
     }
 
 
@@ -301,6 +326,7 @@ class _ParallelGatePool:
         _PARALLEL_ADAPTER = None
         _PARALLEL_ADJACENCY = None
         _PARALLEL_VALID = None
+        _PARALLEL_WORKLOAD_GRAPHS.clear()
 
 
 def _evaluate_method_parallel(

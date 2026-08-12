@@ -66,6 +66,11 @@ class GateConfig:
     workload_active_weight: float = 1.0
     workload_component_weight: float = 0.25
     workload_pair_weight: float = 0.1
+    workload_mode: str = "legacy"
+    workload_largest_weight: float = 0.0
+    workload_pair_radius: int = 1
+    pointwise_guard_enabled: bool = False
+    pointwise_guard_relative_margin: float = 0.0
     uncertainty_weight: float = 0.1
     logical_risk_weight: float = 1.0
     gate_cost_weight: float = 0.0
@@ -82,11 +87,26 @@ class GateConfig:
             "combination_budget",
             "max_total_actions",
             "max_candidates",
+            "workload_pair_radius",
         ):
             if int(getattr(self, name)) < 0:
                 raise ValueError(f"{name} must be non-negative")
         if self.combination_budget < 1:
             raise ValueError("combination_budget must include at least the empty combination")
+        if self.workload_pair_radius < 1:
+            raise ValueError("workload_pair_radius must be positive")
+        if self.workload_mode not in ("legacy", "topology_v3"):
+            raise ValueError("workload_mode must be legacy or topology_v3")
+        if not 0.0 <= self.pointwise_guard_relative_margin < 1.0:
+            raise ValueError("pointwise_guard_relative_margin must be in [0, 1)")
+        for name in (
+            "workload_active_weight",
+            "workload_component_weight",
+            "workload_pair_weight",
+            "workload_largest_weight",
+        ):
+            if float(getattr(self, name)) < 0.0:
+                raise ValueError(f"{name} must be non-negative")
 
 
 @dataclass(frozen=True)
@@ -97,6 +117,14 @@ class WorkloadFeatures:
     largest_component: int
     component_square_sum: int
     local_pair_count: int
+    radius_pair_count: int = 0
+
+
+@dataclass(frozen=True)
+class WorkloadGraph:
+    adjacency: tuple[frozenset[int], ...]
+    radius_adjacency: tuple[frozenset[int], ...]
+    pair_radius: int
 
 
 @dataclass(frozen=True)
@@ -136,6 +164,9 @@ class GateResult:
     local_logical_frame: np.ndarray
     candidate_count: int
     decisions: tuple[GateDecision, ...]
+    selection_source: str = "native"
+    combination_workload_score: float | None = None
+    pointwise_workload_score: float | None = None
 
     @property
     def accepted_count(self) -> int:
@@ -198,6 +229,37 @@ def _normalise_adjacency(
             rows[left].add(right)
             rows[right].add(left)
     return tuple(frozenset(row) for row in rows)
+
+
+def build_workload_graph(
+    detector_adjacency: Sequence[Iterable[int]], pair_radius: int = 1
+) -> WorkloadGraph:
+    """Precompute immediate and finite-radius detector neighbourhoods."""
+
+    radius = int(pair_radius)
+    if radius < 1:
+        raise ValueError("pair_radius must be positive")
+    adjacency = _normalise_adjacency(
+        detector_adjacency, len(detector_adjacency)
+    )
+    radius_rows: list[frozenset[int]] = []
+    for root in range(len(adjacency)):
+        visited = {root}
+        frontier = {root}
+        for _ in range(radius):
+            following = {
+                neighbour
+                for node in frontier
+                for neighbour in adjacency[node]
+                if neighbour not in visited
+            }
+            if not following:
+                break
+            visited.update(following)
+            frontier = following
+        visited.remove(root)
+        radius_rows.append(frozenset(visited))
+    return WorkloadGraph(adjacency, tuple(radius_rows), radius)
 
 
 def _normalise_incompatible(
@@ -409,17 +471,32 @@ def legal_combinations(
 
 
 def workload_features(
-    syndrome: np.ndarray | Sequence[int], detector_adjacency: Sequence[Iterable[int]]
+    syndrome: np.ndarray | Sequence[int],
+    detector_adjacency: Sequence[Iterable[int]] | WorkloadGraph,
+    *,
+    pair_radius: int = 1,
 ) -> WorkloadFeatures:
     """Compute state-dependent active-detector workload proxies."""
 
     bits = _binary_vector(syndrome, name="syndrome")
-    adjacency = _normalise_adjacency(detector_adjacency, bits.size)
-    return _workload_features_normalized(bits, adjacency)
+    graph = (
+        detector_adjacency
+        if isinstance(detector_adjacency, WorkloadGraph)
+        else build_workload_graph(detector_adjacency, pair_radius)
+    )
+    if len(graph.adjacency) != bits.size:
+        raise ValueError(
+            f"workload graph has {len(graph.adjacency)} rows, expected {bits.size}"
+        )
+    return _workload_features_normalized(
+        bits, graph.adjacency, graph.radius_adjacency
+    )
 
 
 def _workload_features_normalized(
-    syndrome: np.ndarray | Sequence[int], adjacency: tuple[frozenset[int], ...]
+    syndrome: np.ndarray | Sequence[int],
+    adjacency: tuple[frozenset[int], ...],
+    radius_adjacency: tuple[frozenset[int], ...] | None = None,
 ) -> WorkloadFeatures:
     """Compute state-dependent active-detector workload proxies."""
 
@@ -445,6 +522,13 @@ def _workload_features_normalized(
         for right in adjacency[left]
         if right in active and left < right
     )
+    pair_rows = adjacency if radius_adjacency is None else radius_adjacency
+    radius_pairs = sum(
+        1
+        for left in active
+        for right in pair_rows[left]
+        if right in active and left < right
+    )
     active_count = len(active)
     return WorkloadFeatures(
         active_count=active_count,
@@ -453,18 +537,47 @@ def _workload_features_normalized(
         largest_component=max(component_sizes, default=0),
         component_square_sum=sum(size * size for size in component_sizes),
         local_pair_count=local_pairs,
+        radius_pair_count=radius_pairs,
     )
 
 
-def workload_score(features: WorkloadFeatures, detector_count: int, config: GateConfig) -> float:
+def workload_score(
+    features: WorkloadFeatures, detector_count: int, config: GateConfig
+) -> float:
     detector_count = max(1, int(detector_count))
-    pair_scale = max(1, detector_count * (detector_count - 1) // 2)
+    if config.workload_mode == "legacy":
+        pair_scale = max(1, detector_count * (detector_count - 1) // 2)
+        return (
+            config.workload_active_weight * features.active_density
+            + config.workload_component_weight
+            * features.component_square_sum
+            / (detector_count * detector_count)
+            + config.workload_pair_weight * features.local_pair_count / pair_scale
+        )
+
+    active_count = int(features.active_count)
+    if active_count <= 1:
+        component_concentration = 0.0
+        radius_pair_concentration = 0.0
+    else:
+        active_pair_scale = active_count * (active_count - 1)
+        component_concentration = (
+            features.component_square_sum - active_count
+        ) / active_pair_scale
+        radius_pair_concentration = (
+            2.0 * features.radius_pair_count / active_pair_scale
+        )
     return (
         config.workload_active_weight * features.active_density
         + config.workload_component_weight
-        * features.component_square_sum
-        / (detector_count * detector_count)
-        + config.workload_pair_weight * features.local_pair_count / pair_scale
+        * features.active_density
+        * component_concentration
+        + config.workload_largest_weight
+        * features.largest_component
+        / detector_count
+        + config.workload_pair_weight
+        * features.active_density
+        * radius_pair_concentration
     )
 
 
@@ -494,6 +607,7 @@ def evaluate_cluster(
     incompatible_pairs: Iterable[tuple[int, int]] = (),
     boundary_risk: np.ndarray | None = None,
     nontrivial_risk: np.ndarray | None = None,
+    workload_graph: WorkloadGraph | None = None,
 ) -> CombinationEvaluation:
     """Select the highest-utility legal combination for one cluster."""
 
@@ -525,15 +639,24 @@ def evaluate_cluster(
         max_actions=config.max_combination_actions,
         budget=config.combination_budget,
     )
-    adjacency = _normalise_adjacency(detector_adjacency, state.size)
-    before = _workload_features_normalized(state, adjacency)
+    graph = workload_graph or build_workload_graph(
+        detector_adjacency, config.workload_pair_radius
+    )
+    if len(graph.adjacency) != state.size:
+        raise ValueError("workload graph detector count does not match syndrome")
+    adjacency = graph.adjacency
+    before = _workload_features_normalized(
+        state, adjacency, graph.radius_adjacency
+    )
     before_score = workload_score(before, state.size, config)
     evaluations: list[CombinationEvaluation] = []
     for actions in choices:
         detector_delta = _xor_columns(h, actions)
         trial = state ^ detector_delta
         logical_delta = _xor_columns(logical, actions)
-        after = _workload_features_normalized(trial, adjacency)
+        after = _workload_features_normalized(
+            trial, adjacency, graph.radius_adjacency
+        )
         after_score = workload_score(after, state.size, config)
         uncertainty = _uncertainty(probability, actions)
         logical_risk = 0.0
@@ -595,6 +718,7 @@ def gate_actions(
     incompatible_pairs: Iterable[tuple[int, int]] = (),
     boundary_risk: np.ndarray | None = None,
     nontrivial_risk: np.ndarray | None = None,
+    workload_graph: WorkloadGraph | None = None,
 ) -> GateResult:
     """Run the complete typed-candidate, combination, and update loop."""
 
@@ -603,6 +727,9 @@ def gate_actions(
     if h.shape[0] != state.size:
         raise ValueError("extended_h detector count does not match syndrome")
     logical = _logical_matrix(extended_l, h.shape[1])
+    graph = workload_graph or build_workload_graph(
+        detector_adjacency, config.workload_pair_radius
+    )
     probability = np.asarray(probabilities, dtype=np.float64)
     candidates = typed_candidates(
         probability,
@@ -616,7 +743,7 @@ def gate_actions(
     pending = interaction_clusters(
         candidates,
         h,
-        detector_adjacency,
+        graph.adjacency,
         radius=config.interaction_radius,
         incompatible_pairs=incompatible,
     )
@@ -638,6 +765,7 @@ def gate_actions(
                     incompatible_pairs=incompatible,
                     boundary_risk=boundary_risk,
                     nontrivial_risk=nontrivial_risk,
+                    workload_graph=graph,
                 ),
             )
             for cluster in pending
@@ -716,6 +844,92 @@ def pointwise_actions(
     result = np.zeros(len(action_types), dtype=np.uint8)
     result[candidates] = 1
     return result
+
+
+def gate_actions_latency_guarded(
+    syndrome: np.ndarray,
+    probabilities: np.ndarray,
+    action_types: Sequence[str],
+    extended_h: np.ndarray,
+    extended_l: np.ndarray,
+    detector_adjacency: Sequence[Iterable[int]],
+    config: GateConfig,
+    *,
+    valid_actions: np.ndarray | None = None,
+    incompatible_pairs: Iterable[tuple[int, int]] = (),
+    boundary_risk: np.ndarray | None = None,
+    nontrivial_risk: np.ndarray | None = None,
+    workload_graph: WorkloadGraph | None = None,
+) -> GateResult:
+    """Use combination gating only when it beats the pointwise S07 reference."""
+
+    graph = workload_graph or build_workload_graph(
+        detector_adjacency, config.workload_pair_radius
+    )
+    combination = gate_actions(
+        syndrome,
+        probabilities,
+        action_types,
+        extended_h,
+        extended_l,
+        detector_adjacency,
+        config,
+        valid_actions=valid_actions,
+        incompatible_pairs=incompatible_pairs,
+        boundary_risk=boundary_risk,
+        nontrivial_risk=nontrivial_risk,
+        workload_graph=graph,
+    )
+    pointwise = pointwise_actions(
+        probabilities, action_types, config, valid_actions=valid_actions
+    )
+    pointwise_residual, pointwise_frame = apply_actions(
+        syndrome, pointwise, extended_h, extended_l
+    )
+    combination_score = workload_score(
+        workload_features(combination.residual, graph),
+        combination.residual.size,
+        config,
+    )
+    pointwise_score = workload_score(
+        workload_features(pointwise_residual, graph),
+        pointwise_residual.size,
+        config,
+    )
+    risk_legal = all(
+        (not decision.accepted)
+        or decision.logical_risk <= config.max_logical_risk
+        for decision in combination.decisions
+    )
+    budget_legal = combination.accepted_count <= config.max_total_actions
+    guard_passed = combination_score <= (
+        1.0 - config.pointwise_guard_relative_margin
+    ) * pointwise_score
+    use_combination = (
+        not config.pointwise_guard_enabled
+        or (guard_passed and risk_legal and budget_legal)
+    )
+    if use_combination:
+        return GateResult(
+            accepted_actions=combination.accepted_actions,
+            residual=combination.residual,
+            local_logical_frame=combination.local_logical_frame,
+            candidate_count=combination.candidate_count,
+            decisions=combination.decisions,
+            selection_source="combination",
+            combination_workload_score=combination_score,
+            pointwise_workload_score=pointwise_score,
+        )
+    return GateResult(
+        accepted_actions=pointwise,
+        residual=pointwise_residual,
+        local_logical_frame=pointwise_frame,
+        candidate_count=int(pointwise.sum()),
+        decisions=combination.decisions,
+        selection_source="pointwise_fallback",
+        combination_workload_score=combination_score,
+        pointwise_workload_score=pointwise_score,
+    )
 
 
 def apply_actions(

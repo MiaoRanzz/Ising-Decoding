@@ -63,10 +63,13 @@ from evaluation.topology_gating_v2 import (
     GateConfig,
     GateDecision,
     GateResult,
+    WorkloadGraph,
     apply_actions,
+    build_workload_graph,
     config_from_mapping,
     evaluate_cluster,
     gate_actions,
+    gate_actions_latency_guarded,
     interaction_clusters,
     pointwise_actions,
     typed_candidates,
@@ -963,6 +966,7 @@ def _method_gate(
     adjacency: list[set[int]],
     config: GateConfig,
     valid: np.ndarray,
+    workload_graph: WorkloadGraph | None = None,
 ) -> GateResult:
     h, logical, _, action_types = adapter.numpy_maps()
     if method == "pointwise":
@@ -989,6 +993,19 @@ def _method_gate(
             adjacency,
             config,
             valid_actions=valid,
+            workload_graph=workload_graph,
+        )
+    if method == "combination_v3_latency_guarded":
+        return gate_actions_latency_guarded(
+            syndrome,
+            probabilities,
+            action_types,
+            h,
+            logical,
+            adjacency,
+            config,
+            valid_actions=valid,
+            workload_graph=workload_graph,
         )
     if method == "no_recompute":
         return _static_gate(syndrome, probabilities, adapter, adjacency, config, valid)

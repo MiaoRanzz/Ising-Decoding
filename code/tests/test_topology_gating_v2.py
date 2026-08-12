@@ -25,11 +25,16 @@ from evaluation.topology_gating_v2 import (
     MEASUREMENT_X,
     MEASUREMENT_Z,
     GateConfig,
+    WorkloadFeatures,
     apply_actions,
+    build_workload_graph,
     gate_actions,
+    gate_actions_latency_guarded,
     interaction_clusters,
     legal_combinations,
     typed_candidates,
+    workload_features,
+    workload_score,
 )
 
 
@@ -169,6 +174,117 @@ class TopologyGatingV2Test(unittest.TestCase):
         self.assertEqual(result.decisions[0].workload_before.active_count, 2)
         self.assertEqual(result.decisions[1].workload_before.active_count, 1)
         np.testing.assert_array_equal(result.residual, np.zeros(3, dtype=np.uint8))
+
+    def test_legacy_workload_score_is_bitwise_compatible(self):
+        features = WorkloadFeatures(
+            active_count=3,
+            active_density=0.3,
+            component_count=2,
+            largest_component=2,
+            component_square_sum=5,
+            local_pair_count=1,
+            radius_pair_count=3,
+        )
+        config = GateConfig(
+            workload_mode="legacy",
+            workload_active_weight=1.25,
+            workload_component_weight=0.75,
+            workload_pair_weight=0.2,
+            workload_largest_weight=99.0,
+            workload_pair_radius=2,
+        )
+        expected = 1.25 * 0.3 + 0.75 * 5 / 100 + 0.2 * 1 / 45
+        self.assertEqual(workload_score(features, 10, config), expected)
+
+    def test_topology_v3_zero_and_single_active_are_finite(self):
+        config = GateConfig(
+            workload_mode="topology_v3",
+            workload_component_weight=1.0,
+            workload_largest_weight=0.5,
+            workload_pair_weight=1.0,
+        )
+        graph = build_workload_graph(line_adjacency(3), pair_radius=2)
+        for syndrome in (
+            np.zeros(3, dtype=np.uint8),
+            np.array([0, 1, 0], dtype=np.uint8),
+        ):
+            score = workload_score(workload_features(syndrome, graph), 3, config)
+            self.assertTrue(np.isfinite(score))
+
+    def test_topology_v3_terms_are_monotone(self):
+        config = GateConfig(
+            workload_mode="topology_v3",
+            workload_component_weight=1.0,
+            workload_largest_weight=1.0,
+            workload_pair_weight=1.0,
+        )
+        base = WorkloadFeatures(3, 0.3, 3, 1, 3, 0, 0)
+        larger = WorkloadFeatures(3, 0.3, 2, 2, 5, 1, 1)
+        more_pairs = WorkloadFeatures(3, 0.3, 2, 2, 5, 1, 2)
+        more_active = WorkloadFeatures(4, 0.4, 2, 2, 8, 2, 3)
+        self.assertLess(workload_score(base, 10, config), workload_score(larger, 10, config))
+        self.assertLess(
+            workload_score(larger, 10, config),
+            workload_score(more_pairs, 10, config),
+        )
+        self.assertLess(
+            workload_score(more_pairs, 10, config),
+            workload_score(more_active, 10, config),
+        )
+
+    def test_radius_cache_matches_direct_line_graph_distance(self):
+        graph = build_workload_graph(line_adjacency(5), pair_radius=2)
+        self.assertEqual(graph.radius_adjacency[0], frozenset((1, 2)))
+        self.assertEqual(graph.radius_adjacency[2], frozenset((0, 1, 3, 4)))
+        features = workload_features(
+            np.array([1, 0, 1, 0, 1], dtype=np.uint8), graph
+        )
+        self.assertEqual(features.radius_pair_count, 2)
+
+    def test_pointwise_guard_fallback_is_atomic(self):
+        syndrome = np.array([1], dtype=np.uint8)
+        probabilities = np.array([0.9])
+        action_types = [DATA_Z]
+        h = np.array([[1]], dtype=np.uint8)
+        logical = np.array([[1]], dtype=np.uint8)
+        config = GateConfig(
+            data_threshold=0.5,
+            measurement_threshold=0.5,
+            workload_mode="topology_v3",
+            workload_component_weight=0.0,
+            workload_largest_weight=0.0,
+            workload_pair_weight=0.0,
+            uncertainty_weight=0.0,
+            logical_risk_weight=0.0,
+            max_workload_increase=1.0,
+            acceptance_threshold=100.0,
+            pointwise_guard_enabled=True,
+        )
+        result = gate_actions_latency_guarded(
+            syndrome,
+            probabilities,
+            action_types,
+            h,
+            logical,
+            [set()],
+            config,
+        )
+        expected_actions = np.ones(1, dtype=np.uint8)
+        expected_residual, expected_frame = apply_actions(
+            syndrome, expected_actions, h, logical
+        )
+        self.assertEqual(result.selection_source, "pointwise_fallback")
+        np.testing.assert_array_equal(result.accepted_actions, expected_actions)
+        np.testing.assert_array_equal(result.residual, expected_residual)
+        np.testing.assert_array_equal(result.local_logical_frame, expected_frame)
+
+    def test_invalid_v3_configuration_is_rejected(self):
+        with self.assertRaises(ValueError):
+            GateConfig(workload_mode="unknown")
+        with self.assertRaises(ValueError):
+            GateConfig(workload_pair_radius=0)
+        with self.assertRaises(ValueError):
+            GateConfig(pointwise_guard_relative_margin=1.0)
 
     def test_apply_actions_uses_gf2_for_detector_and_logical_maps(self):
         residual, logical = apply_actions(
