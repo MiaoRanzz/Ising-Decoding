@@ -2,7 +2,6 @@
 """Select a structured checkpoint no-op bias on validation and report held-out LER."""
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
 
 import numpy as np
@@ -13,15 +12,6 @@ from common import (DEFAULT_SETTINGS, build_structured_model, endpoint_outcomes,
 from compare_three_paths import load_corpus
 from structured_actions import actions_from_logits
 from train_structured_ising import split_rows
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS)
-    parser.add_argument("--checkpoint", type=Path, default=None)
-    parser.add_argument("--output", type=Path, default=None)
-    parser.add_argument("--device", default=None)
-    return parser.parse_args()
 
 
 def actions_for_rows(model, train_x: np.ndarray, rows: np.ndarray, device: torch.device, batch_size: int, bias: float):
@@ -35,13 +25,12 @@ def actions_for_rows(model, train_x: np.ndarray, rows: np.ndarray, device: torch
 
 
 def main() -> None:
-    cli = parse_args()
-    settings = cli.settings.resolve()
+    settings = DEFAULT_SETTINGS.resolve()
     model_cfg, cfg = section(settings, "structured_model"), section(settings, "structured_evaluation")
     dataset_dir = repo_path(model_cfg["dataset_dir"])
     base_checkpoint, project_config = repo_path(model_cfg["base_checkpoint"]), repo_path(model_cfg["project_config"])
-    checkpoint, output = repo_path(cli.checkpoint or cfg["checkpoint"]), repo_path(cli.output or cfg["output"])
-    device = torch.device(cli.device or cfg.get("device") or ("cuda" if torch.cuda.is_available() else "cpu"))
+    checkpoint, output = repo_path(cfg["checkpoint"]), repo_path(cfg["output"])
+    device = torch.device(cfg.get("device") or ("cuda" if torch.cuda.is_available() else "cpu"))
     metadata, dets_and_obs, train_x, _ = load_corpus(dataset_dir)
     model, endpoint_cfg = build_structured_model(metadata, project_config, base_checkpoint, model_cfg.get("model_id"), device, checkpoint)
     model.eval()

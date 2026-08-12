@@ -5,6 +5,15 @@ structured_model:
   base_checkpoint: outputs/test1/models/PreDecoderModelMemory_v1.0.100.pt
   model_id: 1
 
+# Change only this section to advance the workflow. All scripts read this one
+# YAML file and deliberately accept no command-line configuration switches.
+structured_training:
+  # First run with oracle. After generate_endpoint_teacher.py finishes, set
+  # phase: teacher and point resume_checkpoint to the oracle (or prior-round)
+  # structured checkpoint.
+  phase: oracle
+  resume_checkpoint: null
+
 structured_oracle_training:
   output_dir: my_file/end_to_end/L_logical/structured_model/models/oracle
   epochs: 5

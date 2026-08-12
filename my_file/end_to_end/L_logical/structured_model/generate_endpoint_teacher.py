@@ -8,7 +8,6 @@ positions actually changed by that winning candidate receive teacher loss.
 """
 from __future__ import annotations
 
-import argparse
 import itertools
 from pathlib import Path
 
@@ -20,16 +19,6 @@ from common import (DEFAULT_SETTINGS, build_structured_model, endpoint_outcomes,
 from compare_three_paths import load_corpus
 from group_model.local_group_safe_no_op import GroupingConfig, build_groups
 from structured_actions import actions_from_logits, packet_mask_from_action_difference
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS)
-    parser.add_argument("--checkpoint", type=Path, default=None, help="Structured checkpoint that proposes candidates.")
-    parser.add_argument("--output-dir", type=Path, default=None)
-    parser.add_argument("--num-samples", type=int, default=None)
-    parser.add_argument("--device", default=None)
-    return parser.parse_args()
 
 
 def remove_groups(actions: np.ndarray, groups: list[np.ndarray]) -> np.ndarray:
@@ -72,21 +61,20 @@ def candidates_for_shot(actions: np.ndarray, logits: np.ndarray, grouping: Group
 
 
 def main() -> None:
-    cli = parse_args()
-    settings = cli.settings.resolve()
+    settings = DEFAULT_SETTINGS.resolve()
     model_cfg, cfg = section(settings, "structured_model"), section(settings, "structured_teacher_generation")
     dataset_dir = repo_path(model_cfg["dataset_dir"])
     project_config, base_checkpoint = repo_path(model_cfg["project_config"]), repo_path(model_cfg["base_checkpoint"])
-    checkpoint = repo_path(cli.checkpoint or cfg["checkpoint"])
-    output_dir = repo_path(cli.output_dir or cfg["output_dir"])
+    checkpoint = repo_path(cfg["checkpoint"])
+    output_dir = repo_path(cfg["output_dir"])
     if output_dir.exists() and any(output_dir.iterdir()):
         raise FileExistsError(f"output directory is non-empty: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
-    device_name = cli.device or cfg.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
+    device_name = cfg.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
     device = torch.device(device_name)
     metadata, dets_and_obs, train_x, _ = load_corpus(dataset_dir)
     total = len(train_x)
-    requested = cli.num_samples if cli.num_samples is not None else cfg.get("num_samples")
+    requested = cfg.get("num_samples")
     if requested is None:
         source_rows = np.arange(total, dtype=np.int64)
     else:

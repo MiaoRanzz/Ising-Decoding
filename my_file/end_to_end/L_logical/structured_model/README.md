@@ -15,12 +15,26 @@ actions apart from exact threshold ties. The workflow then trains on `trainY`, g
 teachers through the real `predecoder + PyMatching` path, and fine-tunes the
 same model with both losses.
 
-Edit `settings.yaml`, then run from repository root:
+Edit `settings.yaml`, then run from repository root. There are no command-line
+configuration switches. Initially leave `structured_training.phase: oracle`:
 
 ```bash
-python my_file/end_to_end/L_logical/structured_model/train_structured_ising.py --phase oracle
+python my_file/end_to_end/L_logical/structured_model/train_structured_ising.py
 python my_file/end_to_end/L_logical/structured_model/generate_endpoint_teacher.py
-python my_file/end_to_end/L_logical/structured_model/train_structured_ising.py --phase teacher --resume my_file/end_to_end/L_logical/structured_model/models/oracle/best.pt
+```
+
+Then change this YAML section:
+
+```yaml
+structured_training:
+  phase: teacher
+  resume_checkpoint: my_file/end_to_end/L_logical/structured_model/models/oracle/best.pt
+```
+
+and run:
+
+```bash
+python my_file/end_to_end/L_logical/structured_model/train_structured_ising.py
 python my_file/end_to_end/L_logical/structured_model/evaluate_structured_ising.py
 ```
 
