@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train a three-class group-risk model for conservative harmful vetoes."""
+"""Train a conservative group-level harmful-veto gate."""
 from __future__ import annotations
 import argparse, json, random, sys, time
 from pathlib import Path
@@ -56,49 +56,33 @@ def group_labels(dataset,rows):
     for row in rows: out.append(np.asarray(dataset.effect[int(dataset.ptr[row]):int(dataset.ptr[row+1])]))
     return np.concatenate(out)
 
-def direction_classes(effect):
-    """Map the informative effects -1/+1 to harmful/helpful IDs."""
-    if torch.any(effect == 0):
-        raise ValueError("direction_classes only accepts informative effects")
-    return torch.where(effect == -1, 0, 1).long()
-
 def main():
     args=settings(parse_args()); meta=json.loads((args.risk_dataset_dir/"metadata.json").read_text()); total=int(meta["num_samples"]); train_rows,val_rows,_=split_rows(total,args.train_fraction,args.validation_fraction,args.split_seed)
-    probe=GroupDataset(args.risk_dataset_dir,np.empty(0,dtype=np.int64)); train_effect=group_labels(probe,train_rows)
-    # Direction supervision exists only for counterfactually informative
-    # groups.  Neutral-only shots do not enter the loss or batch sampler.
+    probe=GroupDataset(args.risk_dataset_dir,np.empty(0,dtype=np.int64)); train_effect=group_labels(probe,train_rows); informative=(train_effect!=0); neutral=train_effect==0; keep=min(1.,args.neutral_per_informative*int(informative.sum())/max(1,int(neutral.sum())))
+    # Retain all informative shots; resample neutral-only context each epoch.
     informative_shots = np.empty(len(train_rows), dtype=bool)
     for index, row in enumerate(train_rows):
         effect=np.asarray(probe.effect[int(probe.ptr[row]):int(probe.ptr[row+1])])
         informative_shots[index] = np.any(effect != 0)
-    val_informative = np.empty(len(val_rows), dtype=bool)
-    for index, row in enumerate(val_rows):
-        effect=np.asarray(probe.effect[int(probe.ptr[row]):int(probe.ptr[row+1])])
-        val_informative[index] = np.any(effect != 0)
-    train=GroupDataset(args.risk_dataset_dir,train_rows[informative_shots])
-    val=GroupDataset(args.risk_dataset_dir,val_rows[val_informative])
-    direction_effect=train_effect[train_effect != 0]
-    harmful_count, helpful_count=int((direction_effect == -1).sum()), int((direction_effect == 1).sum())
-    if harmful_count == 0 or helpful_count == 0: raise ValueError("need both harmful and helpful groups for direction training")
+    val=GroupDataset(args.risk_dataset_dir,val_rows)
     val_loader=DataLoader(val,args.batch_size,shuffle=False,num_workers=args.num_workers,collate_fn=collate)
-    train_loader=DataLoader(train,args.batch_size,shuffle=True,num_workers=args.num_workers,collate_fn=collate)
     device=torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu")); model=LocalGroupSafeNoOpGate(args.architecture).to(device); opt=torch.optim.AdamW(model.parameters(),lr=args.learning_rate,weight_decay=args.weight_decay); sched=torch.optim.lr_scheduler.CosineAnnealingLR(opt,args.epochs,eta_min=args.min_learning_rate) if args.lr_scheduler=="cosine" else None
-    class_weight=torch.tensor([len(direction_effect)/(2*harmful_count),len(direction_effect)/(2*helpful_count)],dtype=torch.float32,device=device)
-    args.output_dir.mkdir(parents=True,exist_ok=True); (args.output_dir/"settings.json").write_text(json.dumps({"architecture":args.architecture.to_dict(),"risk_dataset_dir":str(args.risk_dataset_dir),"split_seed":args.split_seed,"train_fraction":args.train_fraction,"validation_fraction":args.validation_fraction,"direction_loss":"harmful_vs_helpful_only","class_counts":{"harmful":harmful_count,"helpful":helpful_count},"gate_target":"harmful_helpful_direction_veto"},indent=2))
+    args.output_dir.mkdir(parents=True,exist_ok=True); (args.output_dir/"settings.json").write_text(json.dumps({"architecture":args.architecture.to_dict(),"risk_dataset_dir":str(args.risk_dataset_dir),"split_seed":args.split_seed,"train_fraction":args.train_fraction,"validation_fraction":args.validation_fraction,"neutral_keep_probability":keep,"neutral_resampling":"per_epoch","gate_target":"harmful_veto"},indent=2))
     print(
-        f"[data] candidate_train_shots={len(train_rows)}, direction_train_shots={len(train)}, "
-        f"direction_val_shots={len(val)}, candidate_groups(helpful/neutral/harmful)="
+        f"[data] candidate_train_shots={len(train_rows)}, informative_train_shots={int(informative_shots.sum())}, "
+        f"val_shots={len(val)}, candidate_groups(helpful/neutral/harmful)="
         f"{(train_effect==1).sum()}/{(train_effect==0).sum()}/{(train_effect==-1).sum()}, "
-        f"direction_class_weight(harmful/helpful)={class_weight[0].item():.3f}/{class_weight[1].item():.3f}; neutral groups have no direction loss"
+        f"neutral_keep={keep:.6f}; neutral-only shots are resampled every epoch"
     )
     training_started = time.time()
     for epoch in range(1,args.epochs+1):
-        print(f"[epoch {epoch:03d}] direction_train_shots={len(train)}, batches={len(train_loader)}")
+        epoch_rng=np.random.default_rng(args.split_seed + epoch); selected=informative_shots | (epoch_rng.random(len(train_rows)) < keep); train_rows_epoch=train_rows[selected]
+        train=GroupDataset(args.risk_dataset_dir,train_rows_epoch); train_loader=DataLoader(train,args.batch_size,shuffle=True,num_workers=args.num_workers,collate_fn=collate)
+        sampled_groups=int(np.asarray(probe.ptr[train_rows_epoch + 1] - probe.ptr[train_rows_epoch]).sum())
+        print(f"[epoch {epoch:03d}] sampled_train_shots={len(train)}, sampled_groups={sampled_groups}")
         model.train(); started=time.time(); losses=[]
         for step,(x,members,ptr,effect) in enumerate(train_loader,1):
-            x,members,ptr,effect=x.to(device),members.to(device),ptr.to(device),effect.to(device); logits=model(x,members,ptr); informative=effect!=0
-            if not torch.any(informative): continue
-            loss=F.cross_entropy(logits[informative],direction_classes(effect[informative]),weight=class_weight); opt.zero_grad(); loss.backward(); opt.step(); losses.append(loss.item())
+            x,members,ptr,effect=x.to(device),members.to(device),ptr.to(device),effect.to(device); logits=model(x,members,ptr); target=(effect==-1).float(); weight=torch.where(effect==0,torch.full_like(target,keep),torch.ones_like(target)); pos=min(args.max_positive_weight,(weight.sum()-weight[target.bool()].sum()).item()/max(1,target.sum().item())); loss=F.binary_cross_entropy_with_logits(logits,target,weight=weight,pos_weight=torch.tensor(pos,device=device)); opt.zero_grad(); loss.backward(); opt.step(); losses.append(loss.item())
             if step%args.log_every_batches==0 or step==len(train_loader):
                 epoch_elapsed = time.time() - started
                 epoch_eta = epoch_elapsed / step * (len(train_loader) - step)
@@ -115,8 +99,7 @@ def main():
         model.eval(); vl=[]
         with torch.no_grad():
             for x,members,ptr,effect in val_loader:
-                effect=effect.to(device); logits=model(x.to(device),members.to(device),ptr.to(device)); informative=effect!=0
-                if torch.any(informative): vl.append(F.cross_entropy(logits[informative],direction_classes(effect[informative]),weight=class_weight).item())
-        torch.save({"epoch":epoch,"state_dict":model.state_dict(),"architecture":args.architecture.to_dict(),"gate_target":"harmful_helpful_direction_veto"},args.output_dir/f"epoch_{epoch:03d}.pt"); print(f"[epoch {epoch:03d}] train_loss={np.mean(losses):.5f} val_direction_ce={np.mean(vl):.5f} lr={opt.param_groups[0]['lr']:.3g}")
+                logits=model(x.to(device),members.to(device),ptr.to(device)); vl.append(F.binary_cross_entropy_with_logits(logits,(effect.to(device)==-1).float()).item())
+        torch.save({"epoch":epoch,"state_dict":model.state_dict(),"architecture":args.architecture.to_dict(),"gate_target":"harmful_veto"},args.output_dir/f"epoch_{epoch:03d}.pt"); print(f"[epoch {epoch:03d}] train_loss={np.mean(losses):.5f} val_harmful_bce={np.mean(vl):.5f} lr={opt.param_groups[0]['lr']:.3g}")
         if sched: sched.step()
 if __name__=="__main__": main()

@@ -80,10 +80,8 @@ test split.
 
 `group_model/` is a separate experiment: it first groups neighbouring *active*
 proposal packets using the fixed `group_risk_generation.grouping` rules, then
-learns a direction head only on counterfactually informative groups:
-**harmful** versus **helpful**.  Neutral groups supply no direction loss.  A
-low-risk or uncertain group is retained; only a high
-`harmful_logit - helpful_logit` margin can turn it into a no-op.  A group's
+learns one harmful-risk logit per group.  A low-risk or uncertain group is
+retained; only a high harmful-risk logit can turn it into a no-op.  A group's
 counterfactual label is
 computed by removing all of its packets together and measuring final LER.
 This explicitly captures interactions that the packet model's one-packet

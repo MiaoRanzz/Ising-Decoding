@@ -45,7 +45,7 @@ class GroupGateArchitecture:
     kernel_size: int = 3
     dropout: float = 0.05
     group_hidden_channels: int = 128
-    num_risk_classes: int = 2
+    num_risk_classes: int = 1
     def to_dict(self): return asdict(self)
 
 
@@ -106,10 +106,10 @@ def gate_features(train_x: torch.Tensor, proposal_logits: torch.Tensor, proposal
 
 
 class LocalGroupSafeNoOpGate(nn.Module):
-    """3-D context trunk followed by a group-risk/direction head."""
+    """3-D context trunk followed by a scalar harmful-risk head."""
     def __init__(self, architecture: GroupGateArchitecture = GroupGateArchitecture()):
         super().__init__()
-        if architecture.input_channels != 12 or architecture.num_hidden_layers < 1 or architecture.num_risk_classes not in (2, 3):
+        if architecture.input_channels != 12 or architecture.num_hidden_layers < 1 or architecture.num_risk_classes != 1:
             raise ValueError("invalid group-gate architecture")
         self.architecture = architecture
         layers, c = [], architecture.input_channels
@@ -137,4 +137,4 @@ class LocalGroupSafeNoOpGate(nn.Module):
         shot_context = context.mean(dim=(2, 3, 4))[b[group_ptr[:-1]]]
         type_counts = context.new_zeros((groups, 3)); type_counts.index_add_(0, gidx, torch.nn.functional.one_hot(p, 3).to(context.dtype))
         stats = torch.cat((counts[:, None].to(context.dtype) / 8.0, type_counts / counts[:, None].clamp_min(1)), dim=1)
-        return self.head(torch.cat((mean, maximum, shot_context, stats), dim=1))
+        return self.head(torch.cat((mean, maximum, shot_context, stats), dim=1)).squeeze(1)

@@ -145,39 +145,36 @@ group_risk_generation:
 
 group_gate_training:
   risk_dataset_dir: my_file/end_to_end/L_logical/group_model/data/dataset_Xd9c9_1_model_100
-  # Direction-only training: harmful vs helpful; neutral has no direction loss.
-  output_dir: my_file/end_to_end/L_logical/group_model/models/dataset_Xd9c9_1_model_100_harmful_helpful_direction_small
+  # Scalar harmful-risk classifier: high logit vetoes the whole group.
+  output_dir: my_file/end_to_end/L_logical/group_model/models/dataset_Xd9c9_1_model_100_harmful_veto
   batch_size: 128
-  epochs: 25
+  epochs: 100
   learning_rate: 0.0001
   lr_scheduler: cosine
   min_learning_rate: 0.00001
-  weight_decay: 0.001
+  weight_decay: 0.00001
   train_fraction: 0.70
   validation_fraction: 0.15
   split_seed: 12345
-  # Unused by this direction-only objective: neutral-only shots are excluded.
   neutral_per_informative: 100
   max_positive_weight: 100.0
   num_workers: 0
-  # Only about a dozen sampled train batches are expected per epoch, so emit
-  # a live line for each batch.
-  log_every_batches: 64
+  log_every_batches: 1
   device: null
   architecture:
     input_channels: 12
-    hidden_channels: 16
-    num_hidden_layers: 1
+    hidden_channels: 64
+    num_hidden_layers: 3
     kernel_size: 3
-    dropout: 0.25
-    group_hidden_channels: 32
-    num_risk_classes: 2
+    dropout: 0.05
+    group_hidden_channels: 128
+    num_risk_classes: 1
 
 group_gate_evaluation:
   risk_dataset_dir: my_file/end_to_end/L_logical/group_model/data/dataset_Xd9c9_1_model_100
-  checkpoint_dir: my_file/end_to_end/L_logical/group_model/models/dataset_Xd9c9_1_model_100_harmful_helpful_direction_small
+  checkpoint_dir: my_file/end_to_end/L_logical/group_model/models/dataset_Xd9c9_1_model_100_harmful_veto
   checkpoint_glob: epoch_*.pt
-  output: my_file/end_to_end/L_logical/group_model/models/dataset_Xd9c9_1_model_100_harmful_helpful_direction_small/endpoint_selected_ler.json
+  output: my_file/end_to_end/L_logical/group_model/models/dataset_Xd9c9_1_model_100_harmful_veto/endpoint_selected_ler.json
   batch_size: 256
   train_fraction: 0.70
   validation_fraction: 0.15
@@ -199,10 +196,10 @@ group_gate_evaluation:
 group_gate_fixed_test:
   risk_dataset_dir: my_file/end_to_end/L_logical/group_model/data/dataset_Xd9c9_1_model_100
   ising_fast_checkpoint: outputs/test1/models/PreDecoderModelMemory_v1.0.100.pt
-  # Fill these from group_gate_evaluation after the new three-class run.
+  # Fill these from group_gate_evaluation after the harmful-veto run.
   gate_checkpoint: null
   veto_threshold: null
-  output: my_file/end_to_end/L_logical/group_model/models/dataset_Xd9c9_1_model_100_harmful_helpful_direction_small/fixed_test.json
+  output: my_file/end_to_end/L_logical/group_model/models/dataset_Xd9c9_1_model_100_harmful_veto/fixed_test.json
   batch_size: 256
   train_fraction: 0.70
   validation_fraction: 0.15
