@@ -23,11 +23,13 @@ python my_file/end_to_end/L_logical/structured_model/train_structured_ising.py
 python my_file/end_to_end/L_logical/structured_model/generate_endpoint_teacher.py
 ```
 
-Then change this YAML section:
+Then change these YAML sections:
 
 ```yaml
 structured_training:
   phase: teacher
+
+structured_teacher_training:
   resume_checkpoint: my_file/end_to_end/L_logical/structured_model/models/oracle/best.pt
 ```
 

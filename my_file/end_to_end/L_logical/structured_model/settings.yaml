@@ -9,10 +9,8 @@ structured_model:
 # YAML file and deliberately accept no command-line configuration switches.
 structured_training:
   # First run with oracle. After generate_endpoint_teacher.py finishes, set
-  # phase: teacher and point resume_checkpoint to the oracle (or prior-round)
-  # structured checkpoint.
+  # phase: teacher.
   phase: oracle
-  resume_checkpoint: null
 
 structured_oracle_training:
   output_dir: my_file/end_to_end/L_logical/structured_model/models/oracle
@@ -50,8 +48,10 @@ structured_teacher_generation:
 
 structured_teacher_training:
   teacher_dataset_dir: my_file/end_to_end/L_logical/structured_model/data/teacher_round_1
+  # Usually the oracle (or prior teacher round) model selected on validation.
+  resume_checkpoint: my_file/end_to_end/L_logical/structured_model/models/oracle/best.pt
   output_dir: my_file/end_to_end/L_logical/structured_model/models/teacher_round_1
-  epochs: 3
+  epochs: 5
   batch_size: 128
   learning_rate: 0.00003
   weight_decay: 0.00001

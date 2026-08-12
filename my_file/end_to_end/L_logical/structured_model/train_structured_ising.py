@@ -98,9 +98,9 @@ def main() -> None:
     learning_rate = float(get("learning_rate"))
     endpoint_weight = float(cfg.get("endpoint_weight", 0.0))
     device = torch.device(get("device") or ("cuda" if torch.cuda.is_available() else "cpu"))
-    resume_value = workflow.get("resume_checkpoint")
+    resume_value = cfg.get("resume_checkpoint")
     if phase == "teacher" and resume_value is None:
-        raise ValueError("teacher phase requires structured_training.resume_checkpoint")
+        raise ValueError("teacher phase requires structured_teacher_training.resume_checkpoint")
     metadata, _, train_x, train_y = load_corpus(dataset_dir)
     resume = repo_path(resume_value) if resume_value else None
     model, _ = build_structured_model(metadata, project_config, base_checkpoint, model_id, device, resume)
