@@ -54,3 +54,8 @@ Both training phases report progress during execution. Set
 `log_every_batches` in the corresponding training YAML section to choose the
 reporting interval; each line includes current loss, oracle/endpoint loss,
 learning rate, throughput, and estimated time remaining in the epoch.
+
+Evaluation reports four paths on exactly the same held-out shots: raw
+PyMatching, the original Ising-fast checkpoint, the structured oracle model,
+and the structured teacher model. `oracle_checkpoint` and `checkpoint` in
+`structured_evaluation` select the latter two paths.

@@ -67,7 +67,9 @@ structured_teacher_training:
   device: null
 
 structured_evaluation:
+  # All four paths below are tested on the same held-out split.
   checkpoint: my_file/end_to_end/L_logical/structured_model/models/teacher_round_1/best.pt
+  oracle_checkpoint: my_file/end_to_end/L_logical/structured_model/models/oracle/best.pt
   output: my_file/end_to_end/L_logical/structured_model/models/teacher_round_1/endpoint_selected_ler.json
   batch_size: 256
   train_fraction: 0.70
