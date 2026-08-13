@@ -15,8 +15,6 @@ representation does not materially change the initial decoder policy.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
-
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -49,11 +47,10 @@ class StructuredIsingFast(nn.Module):
         return self.action_head(self.trunk(train_x))
 
 
-def _last_conv(layers: Iterable[nn.Module]) -> tuple[int, nn.Conv3d]:
-    all_layers = list(layers)
-    if not all_layers or not isinstance(all_layers[-1], nn.Conv3d):
+def _last_conv(layers: list[nn.Module]) -> tuple[int, nn.Conv3d]:
+    if not layers or not isinstance(layers[-1], nn.Conv3d):
         raise ValueError("expected the source Ising-fast model to end in Conv3d")
-    return len(all_layers) - 1, all_layers[-1]
+    return len(layers) - 1, layers[-1]
 
 
 def from_ising_fast(source_model: nn.Module) -> StructuredIsingFast:
@@ -67,10 +64,18 @@ def from_ising_fast(source_model: nn.Module) -> StructuredIsingFast:
     source_net = getattr(source_model, "net", None)
     if not isinstance(source_net, nn.Sequential):
         raise TypeError("source checkpoint is not a sequential Ising-fast model")
-    index, old_head = _last_conv(source_net.children())
+    # IMPORTANT: index the Sequential directly. ``Module.children()`` uses
+    # ``named_children()``, which de-duplicates repeated module objects.  The
+    # original Ising-fast construction reuses one activation instance after
+    # several convolutions, so ``list(source_net.children())`` silently drops
+    # activation occurrences and changes the trunk computation completely.
+    # Sequential iteration preserves every registered position and therefore
+    # reconstructs the exact original forward path.
+    source_layers = list(source_net)
+    index, old_head = _last_conv(source_layers)
     if old_head.out_channels < 4:
         raise ValueError("source head needs at least four correction channels")
-    trunk = nn.Sequential(*list(source_net.children())[:index])
+    trunk = nn.Sequential(*source_layers[:index])
     head = nn.Conv3d(
         old_head.in_channels,
         STRUCTURED_CHANNELS,

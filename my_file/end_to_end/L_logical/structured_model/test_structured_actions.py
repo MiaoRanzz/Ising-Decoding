@@ -23,7 +23,15 @@ except ImportError:
 class _Original(nn.Module):
     def __init__(self):
         super().__init__()
-        self.net = nn.Sequential(nn.Conv3d(4, 6, 3, padding=1), nn.GELU(), nn.Conv3d(6, 4, 3, padding=1))
+        # Match the real Ising-fast construction: the same activation module
+        # is registered at more than one Sequential position. ``children()``
+        # de-duplicates it, while Sequential iteration must preserve it.
+        activation = nn.GELU()
+        self.net = nn.Sequential(
+            nn.Conv3d(4, 6, 3, padding=1), activation,
+            nn.Conv3d(6, 6, 3, padding=1), activation,
+            nn.Conv3d(6, 4, 3, padding=1),
+        )
 
 
 class TestStructuredActions(unittest.TestCase):
@@ -35,6 +43,11 @@ class TestStructuredActions(unittest.TestCase):
         old = source(x) >= 0
         new = actions_from_logits(structured(x))
         self.assertTrue(torch.equal(old, new))
+
+    def test_conversion_preserves_every_sequential_position(self):
+        source = _Original().eval()
+        structured = from_ising_fast(source).eval()
+        self.assertEqual(len(structured.trunk), len(source.net) - 1)
 
     def test_round_trip_and_packet_difference(self):
         actions = torch.zeros((1, 4, 2, 3, 3), dtype=torch.bool)
