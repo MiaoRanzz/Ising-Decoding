@@ -59,3 +59,9 @@ Evaluation reports four paths on exactly the same held-out shots: raw
 PyMatching, the original Ising-fast checkpoint, the structured oracle model,
 and the structured teacher model. `oracle_checkpoint` and `checkpoint` in
 `structured_evaluation` select the latter two paths.
+
+The evaluation JSON also contains `warm_start_audit`. It compares the original
+four-logit actions to an untrained structured model freshly converted from the
+same Ising-fast checkpoint. Zero action and endpoint mismatches prove that any
+oracle-stage LER regression was caused by structured-CE fine-tuning, not by
+the head conversion.

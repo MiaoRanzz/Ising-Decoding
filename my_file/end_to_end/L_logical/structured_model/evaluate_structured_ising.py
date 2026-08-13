@@ -25,6 +25,17 @@ def actions_for_rows(model, train_x: np.ndarray, rows: np.ndarray, device: torch
     return np.concatenate(result, axis=0)
 
 
+def legacy_actions_for_rows(model, train_x: np.ndarray, rows: np.ndarray, device: torch.device, batch_size: int):
+    """Return the original model's four ``logit >= 0`` correction actions."""
+    result = []
+    with torch.no_grad():
+        for start in range(0, len(rows), batch_size):
+            part = rows[start:start + batch_size]
+            logits = model(torch.as_tensor(np.array(train_x[part], dtype=np.float32, copy=True), device=device))
+            result.append((logits >= 0).cpu().numpy().astype(np.uint8))
+    return np.concatenate(result, axis=0)
+
+
 def action_report(failure: np.ndarray, residual: np.ndarray, actions: np.ndarray) -> dict[str, int | float]:
     """Summarize one fixed-action endpoint path in the common report format."""
     return {
@@ -90,7 +101,22 @@ def main() -> None:
     original_failure, original_residual = final_failures(
         original_pipeline, matcher, test_dets_and_obs, 1, batch_size, device
     )
+    original_actions = legacy_actions_for_rows(original_model, train_x, test_rows, device, batch_size)
     baseline_failure = baseline_failures(matcher, test_dets_and_obs, 1, batch_size)
+
+    # This is the decisive heat-start audit.  It uses a freshly constructed
+    # structured model with *no* structured checkpoint loaded.  If it differs
+    # from original actions (beyond exact old-logit == 0 ties), the conversion
+    # itself is wrong; if it matches, any later regression is from training.
+    warm_model, _ = build_structured_model(
+        metadata, project_config, base_checkpoint, model_cfg.get("model_id"), device
+    )
+    warm_model.eval()
+    warm_actions = actions_for_rows(warm_model, train_x, test_rows, device, batch_size, bias=0.0)
+    warm_failure, warm_residual = endpoint_outcomes(
+        pipeline, action_model, matcher, test_dets, test_obs, warm_actions, device, batch_size
+    )
+    action_mismatch = warm_actions != original_actions
 
     report = {
         "teacher_checkpoint": str(checkpoint),
@@ -101,6 +127,13 @@ def main() -> None:
         "held_out_test": {
             "pymatching": summarize(baseline_failure),
             "original_ising_fast": {**summarize(original_failure), "mean_residual_weight": float(original_residual.mean())},
+            "warm_start_audit": {
+                "structured_warm_start": action_report(warm_failure, warm_residual, warm_actions),
+                "original_actions_from_train_x": action_report(original_failure, original_residual, original_actions),
+                "action_mismatch_bits": int(action_mismatch.sum()),
+                "action_mismatch_shots": int(np.any(action_mismatch, axis=(1, 2, 3, 4)).sum()),
+                "endpoint_failure_mismatch_shots": int((warm_failure != original_failure).sum()),
+            },
             "structured_oracle": action_report(oracle_failure, oracle_residual, oracle_actions),
             "structured_teacher": teacher_report,
             "paired_vs_original": {
