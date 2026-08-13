@@ -65,3 +65,8 @@ four-logit actions to an untrained structured model freshly converted from the
 same Ising-fast checkpoint. Zero action and endpoint mismatches prove that any
 oracle-stage LER regression was caused by structured-CE fine-tuning, not by
 the head conversion.
+
+After changing conversion code, first set `structured_evaluation.mode` to
+`warm_start_audit`. This mode deliberately ignores old structured checkpoints,
+which may have an incompatible trunk layout. Once all three mismatch counts are
+zero, retrain oracle and teacher from scratch and change the mode to `full`.

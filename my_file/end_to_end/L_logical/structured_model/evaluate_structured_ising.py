@@ -48,18 +48,67 @@ def action_report(failure: np.ndarray, residual: np.ndarray, actions: np.ndarray
 def main() -> None:
     settings = DEFAULT_SETTINGS.resolve()
     model_cfg, cfg = section(settings, "structured_model"), section(settings, "structured_evaluation")
+    mode = str(cfg.get("mode", "full")).lower()
+    if mode not in {"warm_start_audit", "full"}:
+        raise ValueError("structured_evaluation.mode must be 'warm_start_audit' or 'full'")
     dataset_dir = repo_path(model_cfg["dataset_dir"])
     base_checkpoint, project_config = repo_path(model_cfg["base_checkpoint"]), repo_path(model_cfg["project_config"])
-    checkpoint, output = repo_path(cfg["checkpoint"]), repo_path(cfg["output"])
+    output = repo_path(cfg["audit_output"] if mode == "warm_start_audit" else cfg["output"])
     device = torch.device(cfg.get("device") or ("cuda" if torch.cuda.is_available() else "cpu"))
     metadata, dets_and_obs, train_x, _ = load_corpus(dataset_dir)
-    model, endpoint_cfg = build_structured_model(metadata, project_config, base_checkpoint, model_cfg.get("model_id"), device, checkpoint)
-    model.eval()
-    matcher, action_model, pipeline = endpoint_pipeline(endpoint_cfg, metadata, device)
     _, validation_rows, test_rows = split_rows(
         len(train_x), float(cfg.get("train_fraction", .70)), float(cfg.get("validation_fraction", .15)), int(cfg.get("split_seed", 12345))
     )
     batch_size = int(cfg.get("batch_size", 256))
+    test_dets_and_obs = np.asarray(dets_and_obs[test_rows], dtype=np.uint8)
+    test_dets, test_obs = test_dets_and_obs[:, :-1], test_dets_and_obs[:, -1:]
+
+    if mode == "warm_start_audit":
+        # Do not load oracle/teacher checkpoints here. Checkpoints produced
+        # before the trunk-conversion fix have a different and invalid layout.
+        original_model, original_cfg = build_base_model(
+            metadata, project_config, base_checkpoint, model_cfg.get("model_id"), device
+        )
+        matcher, action_model, pipeline = endpoint_pipeline(original_cfg, metadata, device)
+        original_maps = _build_stab_maps(int(metadata["distance"]), str(metadata["code_rotation"]))
+        original_pipeline = PreDecoderMemoryEvalModule(
+            original_model, original_cfg, original_maps, device
+        ).to(device).eval()
+        original_failure, original_residual = final_failures(
+            original_pipeline, matcher, test_dets_and_obs, 1, batch_size, device
+        )
+        original_actions = legacy_actions_for_rows(original_model, train_x, test_rows, device, batch_size)
+
+        warm_model, _ = build_structured_model(
+            metadata, project_config, base_checkpoint, model_cfg.get("model_id"), device
+        )
+        warm_model.eval()
+        warm_actions = actions_for_rows(warm_model, train_x, test_rows, device, batch_size, bias=0.0)
+        warm_failure, warm_residual = endpoint_outcomes(
+            pipeline, action_model, matcher, test_dets, test_obs, warm_actions, device, batch_size
+        )
+        action_mismatch = warm_actions != original_actions
+        report = {
+            "mode": mode,
+            "base_ising_fast_checkpoint": str(base_checkpoint),
+            "held_out_test": {
+                "original_ising_fast": action_report(original_failure, original_residual, original_actions),
+                "structured_warm_start": action_report(warm_failure, warm_residual, warm_actions),
+                "action_mismatch_bits": int(action_mismatch.sum()),
+                "action_mismatch_shots": int(np.any(action_mismatch, axis=(1, 2, 3, 4)).sum()),
+                "endpoint_failure_mismatch_shots": int((warm_failure != original_failure).sum()),
+            },
+        }
+        write_json(output, report)
+        print(report)
+        return
+
+    checkpoint = repo_path(cfg["checkpoint"])
+    model, endpoint_cfg = build_structured_model(
+        metadata, project_config, base_checkpoint, model_cfg.get("model_id"), device, checkpoint
+    )
+    model.eval()
+    matcher, action_model, pipeline = endpoint_pipeline(endpoint_cfg, metadata, device)
     candidates = [float(value) for value in cfg.get("no_op_biases", [0.0])]
     validation = []
     for bias in candidates:
@@ -72,8 +121,6 @@ def main() -> None:
                            "mean_action_count": float(actions.sum(axis=(1, 2, 3, 4)).mean())})
     selected = min(validation, key=lambda item: (item["logical_errors"], item["mean_residual_weight"], item["mean_action_count"]))
     bias = float(selected["no_op_bias"])
-    test_dets_and_obs = np.asarray(dets_and_obs[test_rows], dtype=np.uint8)
-    test_dets, test_obs = test_dets_and_obs[:, :-1], test_dets_and_obs[:, -1:]
     test_actions = actions_for_rows(model, train_x, test_rows, device, batch_size, bias)
     test_failure, test_residual = endpoint_outcomes(pipeline, action_model, matcher,
                                                     test_dets, test_obs, test_actions,
