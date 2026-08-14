@@ -70,7 +70,7 @@ structured_evaluation:
   # Use warm_start_audit before retraining after a conversion change. It loads
   # no structured checkpoints. Change to full after new oracle/teacher models
   # have been trained with the fixed code.
-  mode: warm_start_audit
+  mode: full
   audit_output: my_file/end_to_end/L_logical/structured_model/models/warm_start_audit.json
   # All four paths below are tested on the same held-out split.
   checkpoint: my_file/end_to_end/L_logical/structured_model/models/teacher_round_1/best.pt

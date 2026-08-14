@@ -104,3 +104,5 @@ my_file/end_to_end/L_logical/packet_model/data
 my_file/end_to_end/L_logical/packet_model/models
 my_file/end_to_end/L_logical/group_model/data
 my_file/end_to_end/L_logical/group_model/models
+my_file/end_to_end/L_logical/structured_model/data
+my_file/end_to_end/L_logical/structured_model/models
