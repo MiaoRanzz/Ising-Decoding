@@ -127,7 +127,7 @@ def run_strict_evaluation(settings, model_cfg: dict[str, Any], cfg: dict[str, An
     original_fixed_stats = _empty_action_stats()
     original_errors = original_samples = original_residual_sum = 0
     baseline_errors = 0
-    mismatch_bits = mismatch_shots = endpoint_mismatch = 0
+    mismatch_bits = mismatch_shots = endpoint_mismatch = complete_fixed_mismatch = 0
     paired = {"teacher_helpful": 0, "teacher_harmful": 0, "oracle_helpful": 0, "oracle_harmful": 0}
     total_batches = math.ceil(test_samples / batch_size)
     for batch_index in range(total_batches):
@@ -162,15 +162,16 @@ def run_strict_evaluation(settings, model_cfg: dict[str, Any], cfg: dict[str, An
         original_errors += int(original_failure.sum())
         original_samples += int(original_failure.size)
         original_residual_sum += int(original_residual.sum())
+        complete_fixed_mismatch += int((original_failure != fixed_failure).sum())
         baseline_errors += int(baseline_failure.sum())
         mismatch = warm_actions != original_actions
         mismatch_bits += int(mismatch.sum())
         mismatch_shots += int(np.any(mismatch, axis=(1, 2, 3, 4)).sum())
         endpoint_mismatch += int((warm_failure != fixed_failure).sum())
-        paired["teacher_helpful"] += int((original_failure & ~teacher_failure).sum())
-        paired["teacher_harmful"] += int((~original_failure & teacher_failure).sum())
-        paired["oracle_helpful"] += int((original_failure & ~oracle_failure).sum())
-        paired["oracle_harmful"] += int((~original_failure & oracle_failure).sum())
+        paired["teacher_helpful"] += int((fixed_failure & ~teacher_failure).sum())
+        paired["teacher_harmful"] += int((~fixed_failure & teacher_failure).sum())
+        paired["oracle_helpful"] += int((fixed_failure & ~oracle_failure).sum())
+        paired["oracle_harmful"] += int((~fixed_failure & oracle_failure).sum())
         if (batch_index + 1) % max(1, int(cfg.get("log_every_batches", 25))) == 0 or batch_index + 1 == total_batches:
             print(
                 f"[strict evaluation test] {min((batch_index+1)*batch_size, test_samples)}/"
@@ -179,6 +180,7 @@ def run_strict_evaluation(settings, model_cfg: dict[str, Any], cfg: dict[str, An
 
     report = {
         "data_mode": "strict",
+        "comparison_path": "train_x_to_fixed_action_endpoint",
         "strict_session_seed": sampler.session_seed,
         "strict_reference_config": str(sampler.reference_path),
         "strict_noise_config": str(sampler.noise_config_path),
@@ -192,10 +194,12 @@ def run_strict_evaluation(settings, model_cfg: dict[str, Any], cfg: dict[str, An
                 "logical_errors": baseline_errors, "samples": test_samples,
                 "ler": baseline_errors / test_samples,
             },
-            "original_ising_fast": {
+            "original_ising_fast": _action_report(original_fixed_stats),
+            "original_ising_fast_complete_pipeline_reference": {
                 "logical_errors": original_errors, "samples": original_samples,
                 "ler": original_errors / original_samples,
                 "mean_residual_weight": original_residual_sum / original_samples,
+                "failure_mismatch_vs_fixed_actions": complete_fixed_mismatch,
             },
             "warm_start_audit": {
                 "structured_warm_start": _action_report(warm_stats),

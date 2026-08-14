@@ -112,6 +112,12 @@ PyMatching, the original Ising-fast checkpoint, the structured oracle model,
 and the structured teacher model. `oracle_checkpoint` and `checkpoint` in
 `structured_evaluation` select the latter two paths.
 
+All three learned-model comparisons use one common path: the same stored or
+freshly generated `trainX` produces fixed actions, and those actions enter the
+same endpoint pipeline. The original Ising-fast complete pipeline is reported
+separately as a preprocessing/precision reference and is never used for warm
+start mismatches or paired helpful/harmful counts.
+
 The evaluation JSON also contains `warm_start_audit`. It compares the original
 four-logit actions to an untrained structured model freshly converted from the
 same Ising-fast checkpoint. Zero action and endpoint mismatches prove that any

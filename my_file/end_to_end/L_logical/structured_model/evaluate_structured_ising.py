@@ -105,6 +105,7 @@ def main() -> None:
         report = {
             "mode": mode,
             "data_mode": "offline",
+            "comparison_path": "train_x_to_fixed_action_endpoint",
             "base_ising_fast_checkpoint": str(base_checkpoint),
             "held_out_test": {
                 "original_ising_fast_fixed_actions": action_report(
@@ -170,10 +171,13 @@ def main() -> None:
     )
     original_maps = _build_stab_maps(int(metadata["distance"]), str(metadata["code_rotation"]))
     original_pipeline = PreDecoderMemoryEvalModule(original_model, original_cfg, original_maps, device).to(device).eval()
-    original_failure, original_residual = final_failures(
+    original_complete_failure, original_complete_residual = final_failures(
         original_pipeline, matcher, test_dets_and_obs, 1, batch_size, device
     )
     original_actions = legacy_actions_for_rows(original_model, train_x, test_rows, device, batch_size)
+    original_failure, original_residual = endpoint_outcomes(
+        pipeline, action_model, matcher, test_dets, test_obs, original_actions, device, batch_size
+    )
     baseline_failure = baseline_failures(matcher, test_dets_and_obs, 1, batch_size)
 
     # This is the decisive heat-start audit.  It uses a freshly constructed
@@ -192,6 +196,7 @@ def main() -> None:
 
     report = {
         "data_mode": "offline",
+        "comparison_path": "train_x_to_fixed_action_endpoint",
         "teacher_checkpoint": str(checkpoint),
         "oracle_checkpoint": str(oracle_checkpoint),
         "base_ising_fast_checkpoint": str(base_checkpoint),
@@ -199,7 +204,14 @@ def main() -> None:
         "validation_candidates": validation,
         "held_out_test": {
             "pymatching": summarize(baseline_failure),
-            "original_ising_fast": {**summarize(original_failure), "mean_residual_weight": float(original_residual.mean())},
+            "original_ising_fast": action_report(original_failure, original_residual, original_actions),
+            "original_ising_fast_complete_pipeline_reference": {
+                **summarize(original_complete_failure),
+                "mean_residual_weight": float(original_complete_residual.mean()),
+                "failure_mismatch_vs_fixed_actions": int(
+                    (original_complete_failure != original_failure).sum()
+                ),
+            },
             "warm_start_audit": {
                 "structured_warm_start": action_report(warm_failure, warm_residual, warm_actions),
                 "original_actions_from_train_x": action_report(original_failure, original_residual, original_actions),
