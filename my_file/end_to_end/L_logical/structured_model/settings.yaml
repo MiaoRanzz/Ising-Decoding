@@ -41,8 +41,8 @@ structured_training:
   phase: oracle
 
 structured_oracle_training:
-  output_dir: my_file/end_to_end/L_logical/structured_model/models/oracle
-  strict_output_dir: my_file/end_to_end/L_logical/structured_model/models/strict_oracle
+  output_dir: my_file/end_to_end/L_logical/structured_model/models/oracle_exp2
+  strict_output_dir: my_file/end_to_end/L_logical/structured_model/models/strict_oracle_exp2
   epochs: 5
   batch_size: 128
   learning_rate: 0.0001
@@ -59,8 +59,8 @@ structured_teacher_generation:
   # checkpoint/output_dir/num_samples/proposal_batch_size/seed are offline
   # only. In strict mode teacher actions are generated inside each train/val
   # batch from structured_teacher_training.resume_checkpoint.
-  checkpoint: my_file/end_to_end/L_logical/structured_model/models/oracle/best.pt
-  output_dir: my_file/end_to_end/L_logical/structured_model/data/teacher_round_1
+  checkpoint: my_file/end_to_end/L_logical/structured_model/models/oracle_exp2/best.pt
+  output_dir: my_file/end_to_end/L_logical/structured_model/data/teacher_round_1_exp2
   # Start with 4096; null generates a teacher for the whole corpus.
   num_samples: null
   seed: 12345
@@ -81,12 +81,12 @@ structured_teacher_generation:
   device: null
 
 structured_teacher_training:
-  teacher_dataset_dir: my_file/end_to_end/L_logical/structured_model/data/teacher_round_1 # offline only
+  teacher_dataset_dir: my_file/end_to_end/L_logical/structured_model/data/teacher_round_1_exp2 # offline only
   # Usually the oracle (or prior teacher round) model selected on validation.
-  resume_checkpoint: my_file/end_to_end/L_logical/structured_model/models/oracle/best.pt
-  strict_resume_checkpoint: my_file/end_to_end/L_logical/structured_model/models/strict_oracle/best.pt
-  output_dir: my_file/end_to_end/L_logical/structured_model/models/teacher_round_1
-  strict_output_dir: my_file/end_to_end/L_logical/structured_model/models/strict_teacher_round_1
+  resume_checkpoint: my_file/end_to_end/L_logical/structured_model/models/oracle_exp2/best.pt
+  strict_resume_checkpoint: my_file/end_to_end/L_logical/structured_model/models/strict_oracle_exp2/best.pt
+  output_dir: my_file/end_to_end/L_logical/structured_model/models/teacher_round_1_exp2
+  strict_output_dir: my_file/end_to_end/L_logical/structured_model/models/strict_teacher_round_1_exp2
   epochs: 5
   batch_size: 128
   learning_rate: 0.00003
@@ -107,13 +107,13 @@ structured_evaluation:
   mode: full
   audit_output: my_file/end_to_end/L_logical/structured_model/models/warm_start_audit.json
   # All four paths below are tested on the same held-out split.
-  checkpoint: my_file/end_to_end/L_logical/structured_model/models/teacher_round_1/best.pt
-  oracle_checkpoint: my_file/end_to_end/L_logical/structured_model/models/oracle/best.pt
-  output: my_file/end_to_end/L_logical/structured_model/models/teacher_round_1/endpoint_selected_ler.json
+  checkpoint: my_file/end_to_end/L_logical/structured_model/models/teacher_round_1_exp2/best.pt
+  oracle_checkpoint: my_file/end_to_end/L_logical/structured_model/models/oracle_exp2/best.pt
+  output: my_file/end_to_end/L_logical/structured_model/models/teacher_round_1_exp2/endpoint_selected_ler.json
   # Strict-only counterparts keep strict and offline artifacts separate.
-  strict_checkpoint: my_file/end_to_end/L_logical/structured_model/models/strict_teacher_round_1/best.pt
-  strict_oracle_checkpoint: my_file/end_to_end/L_logical/structured_model/models/strict_oracle/best.pt
-  strict_output: my_file/end_to_end/L_logical/structured_model/models/strict_teacher_round_1/endpoint_selected_ler.json
+  strict_checkpoint: my_file/end_to_end/L_logical/structured_model/models/strict_teacher_round_1_exp2/best.pt
+  strict_oracle_checkpoint: my_file/end_to_end/L_logical/structured_model/models/strict_oracle_exp2/best.pt
+  strict_output: my_file/end_to_end/L_logical/structured_model/models/strict_teacher_round_1_exp2/endpoint_selected_ler.json
   batch_size: 256
   log_every_batches: 25
   train_fraction: 0.70       # offline only
