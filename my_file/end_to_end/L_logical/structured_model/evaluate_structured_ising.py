@@ -74,10 +74,17 @@ def main() -> None:
         original_pipeline = PreDecoderMemoryEvalModule(
             original_model, original_cfg, original_maps, device
         ).to(device).eval()
-        original_failure, original_residual = final_failures(
+        original_pipeline_failure, original_pipeline_residual = final_failures(
             original_pipeline, matcher, test_dets_and_obs, 1, batch_size, device
         )
         original_actions = legacy_actions_for_rows(original_model, train_x, test_rows, device, batch_size)
+        # Feed both action tensors through this same fixed-action pipeline.
+        # These are the only outcomes suitable for an action-equivalence audit;
+        # the complete original pipeline may reconstruct trainX and use a
+        # different autocast path, so it is retained as a reference only.
+        original_failure, original_residual = endpoint_outcomes(
+            pipeline, action_model, matcher, test_dets, test_obs, original_actions, device, batch_size
+        )
 
         warm_model, _ = build_structured_model(
             metadata, project_config, base_checkpoint, model_cfg.get("model_id"), device
@@ -92,11 +99,21 @@ def main() -> None:
             "mode": mode,
             "base_ising_fast_checkpoint": str(base_checkpoint),
             "held_out_test": {
-                "original_ising_fast": action_report(original_failure, original_residual, original_actions),
+                "original_ising_fast_fixed_actions": action_report(
+                    original_failure, original_residual, original_actions
+                ),
+                "original_ising_fast_complete_pipeline_reference": {
+                    **summarize(original_pipeline_failure),
+                    "mean_residual_weight": float(original_pipeline_residual.mean()),
+                },
                 "structured_warm_start": action_report(warm_failure, warm_residual, warm_actions),
                 "action_mismatch_bits": int(action_mismatch.sum()),
                 "action_mismatch_shots": int(np.any(action_mismatch, axis=(1, 2, 3, 4)).sum()),
-                "endpoint_failure_mismatch_shots": int((warm_failure != original_failure).sum()),
+                "fixed_action_endpoint_failure_mismatch_shots": int((warm_failure != original_failure).sum()),
+                "fixed_action_residual_weight_mismatch_shots": int((warm_residual != original_residual).sum()),
+                "complete_vs_fixed_original_failure_mismatch_shots": int(
+                    (original_pipeline_failure != original_failure).sum()
+                ),
             },
         }
         write_json(output, report)

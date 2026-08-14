@@ -68,5 +68,11 @@ the head conversion.
 
 After changing conversion code, first set `structured_evaluation.mode` to
 `warm_start_audit`. This mode deliberately ignores old structured checkpoints,
-which may have an incompatible trunk layout. Once all three mismatch counts are
-zero, retrain oracle and teacher from scratch and change the mode to `full`.
+which may have an incompatible trunk layout. Once the action, fixed-action
+failure, and fixed-action residual mismatch counts are zero (apart from any
+explicitly diagnosed exact-threshold ties), retrain oracle and teacher from
+scratch and change the mode to `full`.
+Both original and structured action tensors are evaluated through the same
+fixed-action endpoint. The original model's complete pipeline is reported only
+as a precision/preprocessing reference and is not used for the equivalence
+mismatch count.
