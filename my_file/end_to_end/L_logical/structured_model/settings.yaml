@@ -1,9 +1,33 @@
 # Standalone configuration for integrated structured-action safe no-op training.
 structured_model:
+  # offline: reuse one fixed labeled corpus (fast experiments).
+  # strict: sample fresh shots every epoch and a separate fresh inference set.
+  data_mode: offline
+  # Used only when data_mode: offline.
   dataset_dir: my_file/end_to_end/L_logical/data_generated/dataset_Xd9c9_1
   project_config: conf/config_public.yaml
   base_checkpoint: outputs/test1/models/PreDecoderModelMemory_v1.0.100.pt
   model_id: 1
+
+# Used only when structured_model.data_mode: strict. Generation parameters are
+# inherited from reference_config unless explicitly overridden below. The three
+# sample counts match the original NVIDIA d9 training configuration.
+structured_strict_data:
+  reference_config: conf/config_pre_decoder_memory_surface_model_1_d9.yaml
+  distance: 9
+  n_rounds: 9
+  measure_basis: both
+  code_rotation: XV
+  train_num_samples_per_epoch: 262144
+  validation_num_samples: 65536
+  inference_num_samples: 65536
+  # null gives every invocation a fresh random seed; the chosen seed is saved
+  # in checkpoints/reports so the run remains reproducible.
+  session_seed: null
+  # null builds the DEM bundle in memory and avoids machine-specific paths from
+  # the reference YAML. Set a valid directory to reuse precomputed frames.
+  precomputed_frames_dir: null
+  verbose_generator: true
 
 # Change only this section to advance the workflow. All scripts read this one
 # YAML file and deliberately accept no command-line configuration switches.
@@ -14,23 +38,27 @@ structured_training:
 
 structured_oracle_training:
   output_dir: my_file/end_to_end/L_logical/structured_model/models/oracle
+  strict_output_dir: my_file/end_to_end/L_logical/structured_model/models/strict_oracle
   epochs: 5
   batch_size: 128
   learning_rate: 0.0001
   # Print live training/validation progress every N batches.
   log_every_batches: 25
   weight_decay: 0.00001
-  train_fraction: 0.70
-  validation_fraction: 0.15
-  split_seed: 12345
-  num_workers: 0
+  train_fraction: 0.70       # offline only
+  validation_fraction: 0.15 # offline only
+  split_seed: 12345          # offline only
+  num_workers: 0             # offline only
   device: null
 
 structured_teacher_generation:
+  # checkpoint/output_dir/num_samples/proposal_batch_size/seed are offline
+  # only. In strict mode teacher actions are generated inside each train/val
+  # batch from structured_teacher_training.resume_checkpoint.
   checkpoint: my_file/end_to_end/L_logical/structured_model/models/oracle/best.pt
   output_dir: my_file/end_to_end/L_logical/structured_model/data/teacher_round_1
   # Start with 4096; null generates a teacher for the whole corpus.
-  num_samples: 4096
+  num_samples: null
   seed: 12345
   proposal_batch_size: 128
   endpoint_batch_size: 512
@@ -49,10 +77,12 @@ structured_teacher_generation:
   device: null
 
 structured_teacher_training:
-  teacher_dataset_dir: my_file/end_to_end/L_logical/structured_model/data/teacher_round_1
+  teacher_dataset_dir: my_file/end_to_end/L_logical/structured_model/data/teacher_round_1 # offline only
   # Usually the oracle (or prior teacher round) model selected on validation.
   resume_checkpoint: my_file/end_to_end/L_logical/structured_model/models/oracle/best.pt
+  strict_resume_checkpoint: my_file/end_to_end/L_logical/structured_model/models/strict_oracle/best.pt
   output_dir: my_file/end_to_end/L_logical/structured_model/models/teacher_round_1
+  strict_output_dir: my_file/end_to_end/L_logical/structured_model/models/strict_teacher_round_1
   epochs: 5
   batch_size: 128
   learning_rate: 0.00003
@@ -60,10 +90,10 @@ structured_teacher_training:
   log_every_batches: 25
   weight_decay: 0.00001
   endpoint_weight: 0.25
-  train_fraction: 0.70
-  validation_fraction: 0.15
-  split_seed: 12345
-  num_workers: 0
+  train_fraction: 0.70       # offline only
+  validation_fraction: 0.15 # offline only
+  split_seed: 12345          # offline only
+  num_workers: 0             # offline only
   device: null
 
 structured_evaluation:
@@ -76,10 +106,15 @@ structured_evaluation:
   checkpoint: my_file/end_to_end/L_logical/structured_model/models/teacher_round_1/best.pt
   oracle_checkpoint: my_file/end_to_end/L_logical/structured_model/models/oracle/best.pt
   output: my_file/end_to_end/L_logical/structured_model/models/teacher_round_1/endpoint_selected_ler.json
+  # Strict-only counterparts keep strict and offline artifacts separate.
+  strict_checkpoint: my_file/end_to_end/L_logical/structured_model/models/strict_teacher_round_1/best.pt
+  strict_oracle_checkpoint: my_file/end_to_end/L_logical/structured_model/models/strict_oracle/best.pt
+  strict_output: my_file/end_to_end/L_logical/structured_model/models/strict_teacher_round_1/endpoint_selected_ler.json
   batch_size: 256
-  train_fraction: 0.70
-  validation_fraction: 0.15
-  split_seed: 12345
+  log_every_batches: 25
+  train_fraction: 0.70       # offline only
+  validation_fraction: 0.15 # offline only
+  split_seed: 12345          # offline only
   # Positive values make no-op more likely. Select only on validation.
   no_op_biases: [-0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0]
   device: null

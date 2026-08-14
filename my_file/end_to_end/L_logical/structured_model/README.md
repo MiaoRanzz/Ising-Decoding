@@ -40,6 +40,38 @@ python my_file/end_to_end/L_logical/structured_model/train_structured_ising.py
 python my_file/end_to_end/L_logical/structured_model/evaluate_structured_ising.py
 ```
 
+## Offline and strict data modes
+
+Set `structured_model.data_mode` in `settings.yaml`:
+
+- `offline` keeps the original quick experiment. It reads `dataset_dir`, uses
+  the configured train/validation/test fractions, and requires the standalone
+  `generate_endpoint_teacher.py` step shown above.
+- `strict` uses the same Torch surface-code generator as the original
+  Ising-fast trainer. Every epoch receives 262144 new training shots and 65536
+  new validation shots; evaluation selects the no-op bias on 65536 newly
+  generated validation shots and reports a separate 65536-shot test stream.
+  These defaults come from the NVIDIA d9 reference config and are adjustable
+  under `structured_strict_data`.
+
+In strict mode, do not run `generate_endpoint_teacher.py`: endpoint teacher
+actions are generated and ranked online inside every teacher train/validation
+batch. The strict sequence is therefore only:
+
+```text
+phase: oracle  -> train_structured_ising.py
+phase: teacher -> train_structured_ising.py
+                  evaluate_structured_ising.py
+```
+
+`dataset_dir`, split fractions, `teacher_dataset_dir`, and the standalone
+teacher corpus paths are offline-only. Strict mode instead uses
+`reference_config`, strict sample counts, and the `strict_*checkpoint` /
+`strict_*output` paths. Separate output directories prevent an offline run
+from being silently mixed with a strict run. With `session_seed: null`, each
+invocation chooses a new seed and records it in its checkpoints/report; set an
+integer when an exactly repeatable run is needed.
+
 For a second teacher round, point `structured_teacher_generation.checkpoint`
 at the preceding teacher checkpoint, use a new output directory, update
 `structured_teacher_training.teacher_dataset_dir`, and resume from that same

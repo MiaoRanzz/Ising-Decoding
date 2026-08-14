@@ -2,23 +2,28 @@
 """Train the integrated structured-action Ising-fast model.
 
 Set ``structured_training.phase`` in ``settings.yaml`` to ``oracle`` first.
-After generating a teacher corpus, change it to ``teacher``; the configured
-``resume_checkpoint`` is then used to optimize the combined oracle and
-endpoint-teacher objective.  This script intentionally has no command-line
-configuration switches.
+In offline mode, generate a teacher corpus before changing it to ``teacher``.
+In strict mode, teacher actions are generated online from the frozen resume
+checkpoint.  Both modes optimize the same oracle/endpoint objective and this
+script intentionally has no command-line configuration switches.
 """
 from __future__ import annotations
 
 import random
 import time
+import copy
+import math
 from pathlib import Path
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from common import DEFAULT_SETTINGS, build_structured_model, repo_path, save_checkpoint, section
+from common import (DEFAULT_SETTINGS, build_base_model, build_structured_model, endpoint_pipeline,
+                    repo_path, save_checkpoint, section)
 from compare_three_paths import load_corpus
+from generate_endpoint_teacher import endpoint_teacher_batch
+from strict_data import StrictSurfaceSampler, strict_sample_counts
 from structured_actions import structured_cross_entropy
 
 
@@ -107,6 +112,189 @@ def run_epoch(model, loader, optimizer, device, endpoint_weight: float, *, epoch
     return {key: value / sums["count"] for key, value in sums.items() if key != "count"}
 
 
+def run_strict_epoch(
+    model,
+    sampler: StrictSurfaceSampler,
+    optimizer,
+    device: torch.device,
+    endpoint_weight: float,
+    *,
+    epoch: int,
+    total_epochs: int,
+    num_samples: int,
+    batch_size: int,
+    stream: str,
+    log_every_batches: int,
+    teacher_policy=None,
+    teacher_contexts: dict | None = None,
+    teacher_cfg: dict | None = None,
+) -> dict[str, float]:
+    """Run an epoch whose shots are generated once and never reused."""
+    training = optimizer is not None
+    model.train(training)
+    total_batches = math.ceil(num_samples / batch_size)
+    stage = "train" if training else "validation"
+    sums = {"loss": 0.0, "oracle": 0.0, "endpoint": 0.0, "count": 0, "changed": 0, "improved": 0}
+    window = {"loss": 0.0, "oracle": 0.0, "endpoint": 0.0, "count": 0}
+    started = time.perf_counter()
+    epoch_step_base = (epoch - 1) * total_batches
+    for batch_index in range(1, total_batches + 1):
+        count = min(batch_size, num_samples - (batch_index - 1) * batch_size)
+        fresh = sampler.generate(
+            stream=stream,
+            step=epoch_step_base + batch_index - 1,
+            batch_size=count,
+            with_endpoint=teacher_policy is not None,
+        )
+        train_x = fresh.train_x.to(device=device, dtype=torch.float32)
+        train_y = fresh.train_y.to(device=device, dtype=torch.uint8)
+        teacher_actions = teacher_mask = None
+        teacher_stats = {"changed": 0, "endpoint_improved": 0}
+        if teacher_policy is not None:
+            if fresh.dets_and_obs is None or teacher_contexts is None or teacher_cfg is None:
+                raise RuntimeError("strict teacher phase requires endpoint data and contexts")
+            with torch.no_grad():
+                proposal_logits = teacher_policy(train_x)
+            matcher, action_model, pipeline = teacher_contexts[fresh.basis]
+            teacher_actions, teacher_mask, teacher_stats = endpoint_teacher_batch(
+                proposal_logits,
+                fresh.dets_and_obs,
+                pipeline=pipeline,
+                action_model=action_model,
+                matcher=matcher,
+                device=device,
+                cfg=teacher_cfg,
+            )
+        with torch.set_grad_enabled(training):
+            logits = model(train_x)
+            oracle = structured_cross_entropy(logits, train_y).total
+            endpoint = logits.new_zeros(())
+            if teacher_actions is not None:
+                endpoint = structured_cross_entropy(logits, teacher_actions, teacher_mask).total
+            loss = oracle + endpoint_weight * endpoint
+            if training:
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+        sums["count"] += count
+        sums["changed"] += teacher_stats["changed"]
+        sums["improved"] += teacher_stats["endpoint_improved"]
+        for name, value in (("loss", loss), ("oracle", oracle), ("endpoint", endpoint)):
+            scalar = float(value.detach())
+            sums[name] += scalar * count
+            window[name] += scalar * count
+        window["count"] += count
+        if batch_index % log_every_batches == 0 or batch_index == total_batches:
+            elapsed = time.perf_counter() - started
+            remaining = (total_batches - batch_index) * elapsed / batch_index
+            lr = optimizer.param_groups[0]["lr"] if training else 0.0
+            print(
+                f"[{stage} strict epoch {epoch:03d}/{total_epochs:03d}] "
+                f"batch {batch_index}/{total_batches} basis={fresh.basis} "
+                f"loss={window['loss']/window['count']:.5f} "
+                f"oracle={window['oracle']/window['count']:.5f} "
+                f"endpoint={window['endpoint']/window['count']:.5f} "
+                f"teacher_changed={sums['changed']} teacher_improved={sums['improved']} "
+                f"lr={lr:.3e} throughput={sums['count']/elapsed:.1f} shots/s epoch_eta={remaining:.0f}s",
+                flush=True,
+            )
+            window = {"loss": 0.0, "oracle": 0.0, "endpoint": 0.0, "count": 0}
+    result = {name: sums[name] / sums["count"] for name in ("loss", "oracle", "endpoint")}
+    if teacher_policy is not None:
+        result.update({"teacher_changed": sums["changed"], "teacher_endpoint_improved": sums["improved"]})
+    return result
+
+
+def run_strict_training(
+    settings: Path,
+    model_cfg: dict,
+    cfg: dict,
+    teacher_generation_cfg: dict,
+    *,
+    phase: str,
+) -> None:
+    strict_cfg = section(settings, "structured_strict_data")
+    base_checkpoint = repo_path(model_cfg["base_checkpoint"])
+    project_config = repo_path(model_cfg["project_config"])
+    device = torch.device(cfg.get("device") or ("cuda" if torch.cuda.is_available() else "cpu"))
+    sampler = StrictSurfaceSampler(strict_cfg, device)
+    metadata = sampler.metadata()
+    resume_value = cfg.get("strict_resume_checkpoint", cfg.get("resume_checkpoint"))
+    if phase == "teacher" and resume_value is None:
+        raise ValueError("teacher phase requires structured_teacher_training.resume_checkpoint")
+    resume = repo_path(resume_value) if resume_value else None
+    model, _ = build_structured_model(
+        metadata, project_config, base_checkpoint, model_cfg.get("model_id"), device, resume
+    )
+    teacher_policy = copy.deepcopy(model).eval() if phase == "teacher" else None
+    if teacher_policy is not None:
+        teacher_policy.requires_grad_(False)
+    teacher_contexts = None
+    if phase == "teacher":
+        teacher_contexts = {}
+        for basis in sampler.bases:
+            basis_metadata = sampler.metadata(basis)
+            unused_model, endpoint_cfg = build_base_model(
+                basis_metadata, project_config, base_checkpoint, model_cfg.get("model_id"), device
+            )
+            del unused_model
+            teacher_contexts[basis] = endpoint_pipeline(endpoint_cfg, basis_metadata, device)
+
+    epochs, batch_size = int(cfg["epochs"]), int(cfg["batch_size"])
+    train_samples, validation_samples, _ = strict_sample_counts(strict_cfg)
+    endpoint_weight = float(cfg.get("endpoint_weight", 0.0))
+    log_every = int(cfg.get("log_every_batches", 25))
+    if min(epochs, batch_size, log_every) <= 0:
+        raise ValueError("epochs, batch_size, and log_every_batches must be positive")
+    random.seed(sampler.session_seed)
+    np.random.seed(sampler.session_seed % (2**32))
+    torch.manual_seed(sampler.session_seed)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=float(cfg["learning_rate"]), weight_decay=float(cfg.get("weight_decay", 1e-5))
+    )
+    output_dir = repo_path(cfg.get("strict_output_dir", cfg["output_dir"]))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    best = float("inf")
+    print(
+        f"[setup] phase={phase} data_mode=strict device={device} seed={sampler.session_seed} "
+        f"train_per_epoch={train_samples} validation_per_epoch={validation_samples} bases={sampler.bases}",
+        flush=True,
+    )
+    for epoch in range(1, epochs + 1):
+        started = time.perf_counter()
+        train_metrics = run_strict_epoch(
+            model, sampler, optimizer, device, endpoint_weight,
+            epoch=epoch, total_epochs=epochs, num_samples=train_samples, batch_size=batch_size,
+            stream="train", log_every_batches=log_every, teacher_policy=teacher_policy,
+            teacher_contexts=teacher_contexts, teacher_cfg=teacher_generation_cfg,
+        )
+        valid_metrics = run_strict_epoch(
+            model, sampler, None, device, endpoint_weight,
+            epoch=epoch, total_epochs=epochs, num_samples=validation_samples, batch_size=batch_size,
+            stream="validation", log_every_batches=log_every, teacher_policy=teacher_policy,
+            teacher_contexts=teacher_contexts, teacher_cfg=teacher_generation_cfg,
+        )
+        payload = {
+            "phase": phase, "data_mode": "strict", "epoch": epoch,
+            "base_checkpoint": str(base_checkpoint), "settings": str(settings),
+            "strict_reference_config": str(sampler.reference_path),
+            "strict_train_samples_per_epoch": train_samples,
+            "strict_validation_samples_per_epoch": validation_samples,
+            "strict_session_seed": sampler.session_seed, "train": train_metrics,
+            "validation": valid_metrics, "endpoint_weight": endpoint_weight,
+        }
+        save_checkpoint(output_dir / f"epoch_{epoch:03d}.pt", model, **payload)
+        if valid_metrics["loss"] < best:
+            best = valid_metrics["loss"]
+            save_checkpoint(output_dir / "best.pt", model, **payload)
+        print(
+            f"[epoch {epoch:03d}] train={train_metrics} validation={valid_metrics} "
+            f"elapsed={time.perf_counter()-started:.1f}s",
+            flush=True,
+        )
+
+
 def main() -> None:
     settings = DEFAULT_SETTINGS.resolve()
     model_cfg, workflow = section(settings, "structured_model"), section(settings, "structured_training")
@@ -114,6 +302,14 @@ def main() -> None:
     if phase not in {"oracle", "teacher"}:
         raise ValueError("structured_training.phase must be 'oracle' or 'teacher'")
     cfg = section(settings, "structured_oracle_training" if phase == "oracle" else "structured_teacher_training")
+    data_mode = str(model_cfg.get("data_mode", "offline")).lower()
+    if data_mode not in {"offline", "strict"}:
+        raise ValueError("structured_model.data_mode must be 'offline' or 'strict'")
+    if data_mode == "strict":
+        run_strict_training(
+            settings, model_cfg, cfg, section(settings, "structured_teacher_generation"), phase=phase
+        )
+        return
     get = lambda name, default=None: cfg.get(name, default)
     dataset_dir = repo_path(model_cfg["dataset_dir"])
     base_checkpoint = repo_path(model_cfg["base_checkpoint"])
@@ -156,7 +352,7 @@ def main() -> None:
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=float(cfg.get("weight_decay", 1e-5)))
     output_dir.mkdir(parents=True, exist_ok=True)
     best = float("inf")
-    print(f"[setup] phase={phase} device={device} train={len(train_set)} validation={len(valid_set)} test={len(test_rows)}")
+    print(f"[setup] phase={phase} data_mode=offline device={device} train={len(train_set)} validation={len(valid_set)} test={len(test_rows)}")
     for epoch in range(1, epochs + 1):
         started = time.perf_counter()
         train_metrics = run_epoch(
@@ -168,7 +364,8 @@ def main() -> None:
                 model, valid_loader, None, device, endpoint_weight,
                 epoch=epoch, total_epochs=epochs, log_every_batches=log_every_batches,
             )
-        payload = {"phase": phase, "epoch": epoch, "base_checkpoint": str(base_checkpoint), "settings": str(settings),
+        payload = {"phase": phase, "data_mode": "offline", "epoch": epoch,
+                   "base_checkpoint": str(base_checkpoint), "settings": str(settings),
                    "train": train_metrics, "validation": valid_metrics, "endpoint_weight": endpoint_weight}
         save_checkpoint(output_dir / f"epoch_{epoch:03d}.pt", model, **payload)
         if valid_metrics["loss"] < best:

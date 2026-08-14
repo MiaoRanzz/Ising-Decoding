@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate endpoint-selected structured teacher actions from a frozen policy.
+"""Generate an offline endpoint-selected teacher corpus from a frozen policy.
 
 For each shot, candidates retain the current structured action, remove one or
 two uncertain active groups, and optionally use all-no-op.  The exact
@@ -60,9 +60,82 @@ def candidates_for_shot(actions: np.ndarray, logits: np.ndarray, grouping: Group
     return candidates
 
 
+def endpoint_teacher_batch(
+    logits: torch.Tensor,
+    dets_and_obs: np.ndarray,
+    *,
+    pipeline,
+    action_model,
+    matcher,
+    device: torch.device,
+    cfg: dict,
+) -> tuple[torch.Tensor, torch.Tensor, dict[str, int]]:
+    """Select endpoint-ranked teacher actions for one freshly sampled batch."""
+    base_actions = actions_from_logits(logits).detach().cpu().numpy()
+    logits_np = logits.detach().float().cpu().numpy()
+    grouping = GroupingConfig(**dict(cfg.get("grouping", {})))
+    max_groups = int(cfg.get("max_groups_per_shot", 3))
+    candidate_actions: list[np.ndarray] = []
+    candidate_shots: list[int] = []
+    candidate_ranges: list[tuple[int, int]] = []
+    for local_row, (base, logit) in enumerate(zip(base_actions, logits_np)):
+        begin = len(candidate_actions)
+        options = candidates_for_shot(
+            base, logit, grouping, max_groups,
+            bool(cfg.get("include_pairs", True)), bool(cfg.get("include_all_no_op", True)),
+        )
+        candidate_actions.extend(options)
+        candidate_shots.extend([local_row] * len(options))
+        candidate_ranges.append((begin, len(candidate_actions)))
+    stacked = np.asarray(candidate_actions, dtype=np.uint8)
+    local_indices = np.asarray(candidate_shots, dtype=np.int64)
+    num_obs = int(dets_and_obs.shape[1] - matcher.num_detectors)
+    if num_obs <= 0:
+        raise ValueError("dets_and_obs does not contain appended observables")
+    dets = np.asarray(dets_and_obs[:, :-num_obs], dtype=np.uint8)
+    obs = np.asarray(dets_and_obs[:, -num_obs:], dtype=np.uint8)
+    failures, residuals = endpoint_outcomes(
+        pipeline, action_model, matcher, dets[local_indices], obs[local_indices], stacked, device,
+        int(cfg.get("endpoint_batch_size", 512)),
+    )
+    failure_weight = float(cfg.get("logical_failure_weight", 1000.0))
+    residual_weight = float(cfg.get("residual_weight", 1.0))
+    action_weight = float(cfg.get("action_weight", 0.01))
+    costs = (
+        failure_weight * failures.astype(np.float64)
+        + residual_weight * residuals
+        + action_weight * stacked.sum(axis=(1, 2, 3, 4))
+    )
+    teachers = np.empty_like(base_actions, dtype=np.uint8)
+    masks = np.empty((len(base_actions), 3, *base_actions.shape[2:]), dtype=np.bool_)
+    changed = improved = 0
+    for local_row, (begin, finish) in enumerate(candidate_ranges):
+        best = begin + int(np.argmin(costs[begin:finish]))
+        base, teacher = base_actions[local_row], stacked[best].astype(bool)
+        teachers[local_row] = teacher
+        masks[local_row] = packet_mask_from_action_difference(
+            torch.from_numpy(base[None]), torch.from_numpy(teacher[None])
+        ).squeeze(0).numpy()
+        changed += int(np.any(teacher != base))
+        improved += int(costs[best] < costs[begin])
+    return (
+        torch.as_tensor(teachers, dtype=torch.uint8, device=device),
+        torch.as_tensor(masks, dtype=torch.bool, device=device),
+        {"changed": changed, "endpoint_improved": improved},
+    )
+
+
 def main() -> None:
     settings = DEFAULT_SETTINGS.resolve()
     model_cfg, cfg = section(settings, "structured_model"), section(settings, "structured_teacher_generation")
+    data_mode = str(model_cfg.get("data_mode", "offline")).lower()
+    if data_mode == "strict":
+        raise RuntimeError(
+            "strict mode generates endpoint teachers online inside train_structured_ising.py; "
+            "set structured_training.phase=teacher and run that script directly"
+        )
+    if data_mode != "offline":
+        raise ValueError("structured_model.data_mode must be 'offline' or 'strict'")
     dataset_dir = repo_path(model_cfg["dataset_dir"])
     project_config, base_checkpoint = repo_path(model_cfg["project_config"]), repo_path(model_cfg["base_checkpoint"])
     checkpoint = repo_path(cfg["checkpoint"])

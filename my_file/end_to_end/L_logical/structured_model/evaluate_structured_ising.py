@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select a structured checkpoint no-op bias on validation and report held-out LER."""
+"""Select no-op bias on validation and report offline or fresh-shot held-out LER."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -12,6 +12,7 @@ from common import (DEFAULT_SETTINGS, build_base_model, build_structured_model, 
 from compare_three_paths import baseline_failures, final_failures, load_corpus
 from evaluation.logical_error_rate import PreDecoderMemoryEvalModule, _build_stab_maps
 from structured_actions import actions_from_logits
+from strict_evaluation import run_strict_evaluation
 from train_structured_ising import split_rows
 
 
@@ -51,6 +52,12 @@ def main() -> None:
     mode = str(cfg.get("mode", "full")).lower()
     if mode not in {"warm_start_audit", "full"}:
         raise ValueError("structured_evaluation.mode must be 'warm_start_audit' or 'full'")
+    data_mode = str(model_cfg.get("data_mode", "offline")).lower()
+    if data_mode not in {"offline", "strict"}:
+        raise ValueError("structured_model.data_mode must be 'offline' or 'strict'")
+    if data_mode == "strict":
+        run_strict_evaluation(settings, model_cfg, cfg)
+        return
     dataset_dir = repo_path(model_cfg["dataset_dir"])
     base_checkpoint, project_config = repo_path(model_cfg["base_checkpoint"]), repo_path(model_cfg["project_config"])
     output = repo_path(cfg["audit_output"] if mode == "warm_start_audit" else cfg["output"])
@@ -97,6 +104,7 @@ def main() -> None:
         action_mismatch = warm_actions != original_actions
         report = {
             "mode": mode,
+            "data_mode": "offline",
             "base_ising_fast_checkpoint": str(base_checkpoint),
             "held_out_test": {
                 "original_ising_fast_fixed_actions": action_report(
@@ -183,6 +191,7 @@ def main() -> None:
     action_mismatch = warm_actions != original_actions
 
     report = {
+        "data_mode": "offline",
         "teacher_checkpoint": str(checkpoint),
         "oracle_checkpoint": str(oracle_checkpoint),
         "base_ising_fast_checkpoint": str(base_checkpoint),
