@@ -13,7 +13,11 @@ structured_model:
 # inherited from reference_config unless explicitly overridden below. The three
 # sample counts match the original NVIDIA d9 training configuration.
 structured_strict_data:
+  # Supplies NVIDIA d9 sample counts and HE/generator settings only.
   reference_config: conf/config_pre_decoder_memory_surface_model_1_d9.yaml
+  # Supplies the actual circuit error probabilities. This must match the
+  # noise distribution used to train the configured Ising-fast checkpoint.
+  noise_config: conf/config_public.yaml
   distance: 9
   n_rounds: 9
   measure_basis: both

@@ -35,11 +35,11 @@ class StrictBatch:
     dets_and_obs: np.ndarray | None = None
 
 
-def _resolved_noise_model(reference: Any) -> tuple[NoiseModel | None, dict[str, Any]]:
-    raw = OmegaConf.select(reference, "data.noise_model")
+def _resolved_noise_model(noise_config: Any) -> tuple[NoiseModel | None, dict[str, Any]]:
+    raw = OmegaConf.select(noise_config, "data.noise_model")
     if raw is None:
-        p_error = OmegaConf.select(reference, "data.p_error")
-        p_max = OmegaConf.select(reference, "data.p_max")
+        p_error = OmegaConf.select(noise_config, "data.p_error")
+        p_max = OmegaConf.select(noise_config, "data.p_max")
         p = float(p_error if p_error is not None else p_max)
         return None, {"kind": "simple", "p_error": p}
     params = OmegaConf.to_container(raw, resolve=True)
@@ -65,6 +65,9 @@ class StrictSurfaceSampler:
         reference_path = repo_path(cfg["reference_config"])
         self.reference_path = reference_path
         reference = OmegaConf.load(reference_path)
+        noise_config_path = repo_path(cfg.get("noise_config", cfg["reference_config"]))
+        self.noise_config_path = noise_config_path
+        noise_config = OmegaConf.load(noise_config_path)
         self.device = device
         self.distance = int(_choose(cfg, "distance", OmegaConf.select(reference, "distance")))
         self.n_rounds = int(_choose(cfg, "n_rounds", OmegaConf.select(reference, "n_rounds")))
@@ -75,16 +78,23 @@ class StrictSurfaceSampler:
         if self.measure_basis not in {"x", "z", "both", "mixed"}:
             raise ValueError("strict measure_basis must be X, Z, or both")
         self.bases = ("X", "Z") if self.measure_basis in {"both", "mixed"} else (self.measure_basis.upper(),)
-        self.noise_model, self.noise_metadata = _resolved_noise_model(reference)
+        self.noise_model, self.noise_metadata = _resolved_noise_model(noise_config)
         if "p_error" in cfg:
             if self.noise_model is not None:
                 raise ValueError("strict p_error override cannot be combined with a reference noise_model")
             self.noise_metadata = {"kind": "simple", "p_error": float(cfg["p_error"])}
 
         data = reference.get("data", {})
-        p_error = cfg.get("p_error", data.get("p_error"))
-        p_min = _choose(cfg, "p_min", data.get("p_min"))
-        p_max = _choose(cfg, "p_max", data.get("p_max"))
+        if self.noise_model is None:
+            p_error = cfg.get("p_error", data.get("p_error"))
+            p_min = _choose(cfg, "p_min", data.get("p_min"))
+            p_max = _choose(cfg, "p_max", data.get("p_max"))
+        else:
+            # ``p_error`` is only a structural DEM placeholder in 25-parameter
+            # mode. The actual probability vector comes entirely from the
+            # NoiseModel, so do not leak p_max=0.006 from the count/HE reference.
+            p_error = float(self.noise_model.get_max_probability())
+            p_min = p_max = None
         precomputed = _choose(cfg, "precomputed_frames_dir", data.get("precomputed_frames_dir"))
         if precomputed is not None:
             precomputed = str(repo_path(precomputed)) if not Path(str(precomputed)).is_absolute() else str(precomputed)
@@ -158,6 +168,7 @@ class StrictSurfaceSampler:
             "seed": self.session_seed,
             "noise": self.noise_metadata,
             "reference_config": str(self.reference_path),
+            "noise_config": str(self.noise_config_path),
         }
 
     def _simulator(self, basis: str):

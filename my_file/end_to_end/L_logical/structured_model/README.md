@@ -40,6 +40,23 @@ python my_file/end_to_end/L_logical/structured_model/train_structured_ising.py
 python my_file/end_to_end/L_logical/structured_model/evaluate_structured_ising.py
 ```
 
+The complete workflow can also be run with one command. This entry point
+internally selects oracle and teacher phases without modifying `settings.yaml`
+and preserves all live batch/epoch output:
+
+```bash
+bash my_file/end_to_end/L_logical/structured_model/run_full_pipeline.sh
+```
+
+Equivalently:
+
+```bash
+python my_file/end_to_end/L_logical/structured_model/run_full_pipeline.py
+```
+
+Strict mode runs oracle -> online teacher -> evaluation. Offline mode also
+inserts `generate_endpoint_teacher.py` between oracle and teacher training.
+
 ## Offline and strict data modes
 
 Set `structured_model.data_mode` in `settings.yaml`:
@@ -52,7 +69,10 @@ Set `structured_model.data_mode` in `settings.yaml`:
   new validation shots; evaluation selects the no-op bias on 65536 newly
   generated validation shots and reports a separate 65536-shot test stream.
   These defaults come from the NVIDIA d9 reference config and are adjustable
-  under `structured_strict_data`.
+  under `structured_strict_data`. `reference_config` supplies sample counts and
+  HE settings, while `noise_config` independently supplies the circuit-noise
+  probabilities; the default uses the same 25-parameter `config_public.yaml`
+  noise model as the base checkpoint.
 
 In strict mode, do not run `generate_endpoint_teacher.py`: endpoint teacher
 actions are generated and ranked online inside every teacher train/validation

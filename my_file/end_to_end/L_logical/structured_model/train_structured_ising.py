@@ -279,6 +279,7 @@ def run_strict_training(
             "phase": phase, "data_mode": "strict", "epoch": epoch,
             "base_checkpoint": str(base_checkpoint), "settings": str(settings),
             "strict_reference_config": str(sampler.reference_path),
+            "strict_noise_config": str(sampler.noise_config_path),
             "strict_train_samples_per_epoch": train_samples,
             "strict_validation_samples_per_epoch": validation_samples,
             "strict_session_seed": sampler.session_seed, "train": train_metrics,
@@ -295,10 +296,10 @@ def run_strict_training(
         )
 
 
-def main() -> None:
+def main(phase_override: str | None = None) -> None:
     settings = DEFAULT_SETTINGS.resolve()
     model_cfg, workflow = section(settings, "structured_model"), section(settings, "structured_training")
-    phase = str(workflow.get("phase", "")).lower()
+    phase = str(phase_override if phase_override is not None else workflow.get("phase", "")).lower()
     if phase not in {"oracle", "teacher"}:
         raise ValueError("structured_training.phase must be 'oracle' or 'teacher'")
     cfg = section(settings, "structured_oracle_training" if phase == "oracle" else "structured_teacher_training")

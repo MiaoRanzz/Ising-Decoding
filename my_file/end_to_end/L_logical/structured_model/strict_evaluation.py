@@ -181,6 +181,7 @@ def run_strict_evaluation(settings, model_cfg: dict[str, Any], cfg: dict[str, An
         "data_mode": "strict",
         "strict_session_seed": sampler.session_seed,
         "strict_reference_config": str(sampler.reference_path),
+        "strict_noise_config": str(sampler.noise_config_path),
         "teacher_checkpoint": str(teacher_checkpoint),
         "oracle_checkpoint": str(oracle_checkpoint),
         "base_ising_fast_checkpoint": str(base_checkpoint),
