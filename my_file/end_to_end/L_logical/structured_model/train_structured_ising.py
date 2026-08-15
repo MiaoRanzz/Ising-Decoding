@@ -12,7 +12,6 @@ from __future__ import annotations
 import random
 import time
 import copy
-import math
 from pathlib import Path
 
 import numpy as np
@@ -23,7 +22,7 @@ from common import (DEFAULT_SETTINGS, build_base_model, build_structured_model, 
                     repo_path, save_checkpoint, section)
 from compare_three_paths import load_corpus
 from generate_endpoint_teacher import endpoint_teacher_batch
-from strict_data import StrictSurfaceSampler, strict_sample_counts
+from strict_data import StrictSurfaceSampler, strict_batch_plan
 from structured_actions import structured_cross_entropy
 
 
@@ -121,7 +120,7 @@ def run_strict_epoch(
     *,
     epoch: int,
     total_epochs: int,
-    num_samples: int,
+    num_batches: int,
     batch_size: int,
     stream: str,
     log_every_batches: int,
@@ -132,14 +131,14 @@ def run_strict_epoch(
     """Run an epoch whose shots are generated once and never reused."""
     training = optimizer is not None
     model.train(training)
-    total_batches = math.ceil(num_samples / batch_size)
+    total_batches = num_batches
     stage = "train" if training else "validation"
     sums = {"loss": 0.0, "oracle": 0.0, "endpoint": 0.0, "count": 0, "changed": 0, "improved": 0}
     window = {"loss": 0.0, "oracle": 0.0, "endpoint": 0.0, "count": 0}
     started = time.perf_counter()
     epoch_step_base = (epoch - 1) * total_batches
     for batch_index in range(1, total_batches + 1):
-        count = min(batch_size, num_samples - (batch_index - 1) * batch_size)
+        count = batch_size
         fresh = sampler.generate(
             stream=stream,
             step=epoch_step_base + batch_index - 1,
@@ -241,12 +240,13 @@ def run_strict_training(
             del unused_model
             teacher_contexts[basis] = endpoint_pipeline(endpoint_cfg, basis_metadata, device)
 
-    epochs, batch_size = int(cfg["epochs"]), int(cfg["batch_size"])
-    train_samples, validation_samples, _ = strict_sample_counts(strict_cfg)
+    epochs = int(cfg["epochs"])
+    train_plan = strict_batch_plan(strict_cfg, "train")
+    validation_plan = strict_batch_plan(strict_cfg, "validation")
     endpoint_weight = float(cfg.get("endpoint_weight", 0.0))
     log_every = int(cfg.get("log_every_batches", 25))
-    if min(epochs, batch_size, log_every) <= 0:
-        raise ValueError("epochs, batch_size, and log_every_batches must be positive")
+    if min(epochs, log_every) <= 0:
+        raise ValueError("epochs and log_every_batches must be positive")
     random.seed(sampler.session_seed)
     np.random.seed(sampler.session_seed % (2**32))
     torch.manual_seed(sampler.session_seed)
@@ -258,20 +258,24 @@ def run_strict_training(
     best = float("inf")
     print(
         f"[setup] phase={phase} data_mode=strict device={device} seed={sampler.session_seed} "
-        f"train_per_epoch={train_samples} validation_per_epoch={validation_samples} bases={sampler.bases}",
+        f"train={train_plan.num_batches}x{train_plan.batch_size}={train_plan.num_samples} "
+        f"validation={validation_plan.num_batches}x{validation_plan.batch_size}="
+        f"{validation_plan.num_samples} bases={sampler.bases}",
         flush=True,
     )
     for epoch in range(1, epochs + 1):
         started = time.perf_counter()
         train_metrics = run_strict_epoch(
             model, sampler, optimizer, device, endpoint_weight,
-            epoch=epoch, total_epochs=epochs, num_samples=train_samples, batch_size=batch_size,
+            epoch=epoch, total_epochs=epochs, num_batches=train_plan.num_batches,
+            batch_size=train_plan.batch_size,
             stream="train", log_every_batches=log_every, teacher_policy=teacher_policy,
             teacher_contexts=teacher_contexts, teacher_cfg=teacher_generation_cfg,
         )
         valid_metrics = run_strict_epoch(
             model, sampler, None, device, endpoint_weight,
-            epoch=epoch, total_epochs=epochs, num_samples=validation_samples, batch_size=batch_size,
+            epoch=epoch, total_epochs=epochs, num_batches=validation_plan.num_batches,
+            batch_size=validation_plan.batch_size,
             stream="validation", log_every_batches=log_every, teacher_policy=teacher_policy,
             teacher_contexts=teacher_contexts, teacher_cfg=teacher_generation_cfg,
         )
@@ -280,8 +284,12 @@ def run_strict_training(
             "base_checkpoint": str(base_checkpoint), "settings": str(settings),
             "strict_reference_config": str(sampler.reference_path),
             "strict_noise_config": str(sampler.noise_config_path),
-            "strict_train_samples_per_epoch": train_samples,
-            "strict_validation_samples_per_epoch": validation_samples,
+            "strict_train_num_batches": train_plan.num_batches,
+            "strict_train_batch_size": train_plan.batch_size,
+            "strict_train_samples_per_epoch": train_plan.num_samples,
+            "strict_validation_num_batches": validation_plan.num_batches,
+            "strict_validation_batch_size": validation_plan.batch_size,
+            "strict_validation_samples_per_epoch": validation_plan.num_samples,
             "strict_session_seed": sampler.session_seed, "train": train_metrics,
             "validation": valid_metrics, "endpoint_weight": endpoint_weight,
         }

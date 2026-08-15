@@ -1,7 +1,6 @@
 """Streaming evaluation on fresh shots for the strict structured workflow."""
 from __future__ import annotations
 
-import math
 from typing import Any
 
 import numpy as np
@@ -11,7 +10,7 @@ from common import (build_base_model, build_structured_model, endpoint_outcomes,
                     repo_path, section, write_json)
 from compare_three_paths import baseline_failures, final_failures
 from evaluation.logical_error_rate import PreDecoderMemoryEvalModule, _build_stab_maps
-from strict_data import StrictSurfaceSampler, strict_sample_counts
+from strict_data import StrictSurfaceSampler, strict_batch_plan
 from structured_actions import actions_from_logits
 
 
@@ -50,13 +49,12 @@ def run_strict_evaluation(settings, model_cfg: dict[str, Any], cfg: dict[str, An
     strict_cfg = section(settings, "structured_strict_data")
     device = torch.device(cfg.get("device") or ("cuda" if torch.cuda.is_available() else "cpu"))
     sampler = StrictSurfaceSampler(strict_cfg, device)
-    _, validation_samples, test_samples = strict_sample_counts(strict_cfg)
+    validation_plan = strict_batch_plan(strict_cfg, "validation")
+    test_plan = strict_batch_plan(strict_cfg, "test")
+    validation_samples, test_samples = validation_plan.num_samples, test_plan.num_samples
     base_checkpoint = repo_path(model_cfg["base_checkpoint"])
     project_config = repo_path(model_cfg["project_config"])
     model_id = model_cfg.get("model_id")
-    batch_size = int(cfg.get("batch_size", 256))
-    if batch_size <= 0:
-        raise ValueError("structured_evaluation.batch_size must be positive")
     metadata = sampler.metadata()
     teacher_checkpoint = repo_path(cfg.get("strict_checkpoint", cfg["checkpoint"]))
     oracle_checkpoint = repo_path(cfg.get("strict_oracle_checkpoint", cfg["oracle_checkpoint"]))
@@ -76,9 +74,10 @@ def run_strict_evaluation(settings, model_cfg: dict[str, Any], cfg: dict[str, An
 
     biases = [float(value) for value in cfg.get("no_op_biases", [0.0])]
     validation_stats = {bias: _empty_action_stats() for bias in biases}
-    total_batches = math.ceil(validation_samples / batch_size)
+    total_batches = validation_plan.num_batches
+    batch_size = validation_plan.batch_size
     for batch_index in range(total_batches):
-        count = min(batch_size, validation_samples - batch_index * batch_size)
+        count = batch_size
         fresh = sampler.generate(
             stream="validation", step=batch_index, batch_size=count, with_endpoint=True
         )
@@ -129,9 +128,10 @@ def run_strict_evaluation(settings, model_cfg: dict[str, Any], cfg: dict[str, An
     baseline_errors = 0
     mismatch_bits = mismatch_shots = endpoint_mismatch = complete_fixed_mismatch = 0
     paired = {"teacher_helpful": 0, "teacher_harmful": 0, "oracle_helpful": 0, "oracle_harmful": 0}
-    total_batches = math.ceil(test_samples / batch_size)
+    total_batches = test_plan.num_batches
+    batch_size = test_plan.batch_size
     for batch_index in range(total_batches):
-        count = min(batch_size, test_samples - batch_index * batch_size)
+        count = batch_size
         fresh = sampler.generate(stream="test", step=batch_index, batch_size=count, with_endpoint=True)
         basis_metadata = sampler.metadata(fresh.basis)
         num_obs = int(basis_metadata["num_observables"])
@@ -184,6 +184,10 @@ def run_strict_evaluation(settings, model_cfg: dict[str, Any], cfg: dict[str, An
         "strict_session_seed": sampler.session_seed,
         "strict_reference_config": str(sampler.reference_path),
         "strict_noise_config": str(sampler.noise_config_path),
+        "strict_validation_num_batches": validation_plan.num_batches,
+        "strict_validation_batch_size": validation_plan.batch_size,
+        "strict_test_num_batches": test_plan.num_batches,
+        "strict_test_batch_size": test_plan.batch_size,
         "teacher_checkpoint": str(teacher_checkpoint),
         "oracle_checkpoint": str(oracle_checkpoint),
         "base_ising_fast_checkpoint": str(base_checkpoint),

@@ -4,6 +4,11 @@ The sampler deliberately wraps the same ``QCDataGeneratorTorch`` used by the
 original Ising-fast trainer.  For endpoint supervision/evaluation it asks the
 wrapped ``MemoryCircuitTorch`` for auxiliary frames and converts those frames
 to Stim detectors from the *same physical shots*.
+
+As in the original trainer, train/validation/test own separate generator
+objects and use distinct seed offsets.  Individual batch calls do not pass an
+explicit seed: the underlying sampler is allowed to advance its RNG stream
+instead of being reconstructed for every batch.
 """
 from __future__ import annotations
 
@@ -35,6 +40,18 @@ class StrictBatch:
     dets_and_obs: np.ndarray | None = None
 
 
+@dataclass(frozen=True)
+class StrictBatchPlan:
+    """Fixed online-generation workload for one strict data stream."""
+
+    num_batches: int
+    batch_size: int
+
+    @property
+    def num_samples(self) -> int:
+        return self.num_batches * self.batch_size
+
+
 def _resolved_noise_model(noise_config: Any) -> tuple[NoiseModel | None, dict[str, Any]]:
     raw = OmegaConf.select(noise_config, "data.noise_model")
     if raw is None:
@@ -59,7 +76,7 @@ def _choose(override: dict[str, Any], name: str, fallback: Any) -> Any:
 
 
 class StrictSurfaceSampler:
-    """Generate reproducible, non-overlapping train/validation/test streams."""
+    """Generate separate online train/validation/test streams."""
 
     def __init__(self, cfg: dict[str, Any], device: torch.device, *, session_seed: int | None = None):
         reference_path = repo_path(cfg["reference_config"])
@@ -101,7 +118,7 @@ class StrictSurfaceSampler:
         seed_value = cfg.get("session_seed") if session_seed is None else session_seed
         self.session_seed = random.SystemRandom().randrange(1, 2**31) if seed_value is None else int(seed_value)
 
-        self.generator = QCDataGeneratorTorch(
+        self._generator_kwargs = dict(
             distance=self.distance,
             n_rounds=self.n_rounds,
             p_error=p_error,
@@ -110,8 +127,6 @@ class StrictSurfaceSampler:
             measure_basis=self.measure_basis,
             rank=0,
             global_rank=0,
-            mode="train",
-            verbose=bool(cfg.get("verbose_generator", True)),
             timelike_he=bool(_choose(cfg, "timelike_he", data.get("timelike_he", True))),
             num_he_cycles=int(_choose(cfg, "num_he_cycles", data.get("num_he_cycles", 1))),
             use_weight2=bool(_choose(cfg, "use_weight2", data.get("use_weight2", False))),
@@ -120,7 +135,6 @@ class StrictSurfaceSampler:
             precomputed_frames_dir=precomputed,
             code_rotation=self.code_rotation,
             noise_model=self.noise_model,
-            base_seed=self.session_seed,
             device=device,
             use_compile=bool(_choose(cfg, "use_compile", data.get("use_compile", False))),
             compile_chunk_size=int(_choose(cfg, "compile_chunk_size", data.get("compile_chunk_size", 2))),
@@ -131,6 +145,11 @@ class StrictSurfaceSampler:
                 cfg, "use_parallel_spacelike", data.get("use_parallel_spacelike", False)
             )),
         )
+        # Match the original Ising-fast setup: independent online generators
+        # for train/validation/test, constructed lazily so a training-only run
+        # does not pay to build the unused test generator.
+        self._verbose_generator = bool(cfg.get("verbose_generator", True))
+        self._generators: dict[str, QCDataGeneratorTorch] = {}
         p_placeholder = (
             float(self.noise_model.get_max_probability())
             if self.noise_model is not None else float(self.noise_metadata["p_error"])
@@ -171,23 +190,34 @@ class StrictSurfaceSampler:
             "noise_config": str(self.noise_config_path),
         }
 
-    def _simulator(self, basis: str):
-        if len(self.bases) == 2:
-            return self.generator.sim_X if basis == "X" else self.generator.sim_Z
-        return self.generator.sim
-
-    def generate(self, *, stream: str, step: int, batch_size: int, with_endpoint: bool) -> StrictBatch:
+    def _generator(self, stream: str) -> QCDataGeneratorTorch:
         if stream not in STREAM_OFFSETS:
             raise ValueError(f"unknown strict stream: {stream}")
+        if stream not in self._generators:
+            self._generators[stream] = QCDataGeneratorTorch(
+                mode="train" if stream == "train" else "test",
+                verbose=self._verbose_generator if stream == "train" else False,
+                base_seed=self.session_seed,
+                seed_offset=STREAM_OFFSETS[stream],
+                **self._generator_kwargs,
+            )
+        return self._generators[stream]
+
+    def _simulator(self, generator: QCDataGeneratorTorch, basis: str):
+        if len(self.bases) == 2:
+            return generator.sim_X if basis == "X" else generator.sim_Z
+        return generator.sim
+
+    def generate(self, *, stream: str, step: int, batch_size: int, with_endpoint: bool) -> StrictBatch:
+        generator = self._generator(stream)
         basis = self.bases[int(step) % len(self.bases)]
-        # Explicit seeds make the split disjoint and make every epoch auditable.
-        seed = self.session_seed + STREAM_OFFSETS[stream] + int(step)
-        simulator = self._simulator(basis)
+        simulator = self._simulator(generator, basis)
         if not with_endpoint:
-            train_x, train_y = simulator.generate_batch(batch_size=batch_size, seed=seed)
+            # This is exactly the original QCDataGeneratorTorch batch path.
+            train_x, train_y = generator.generate_batch(step=step, batch_size=batch_size)
             return StrictBatch(train_x=train_x, train_y=train_y, basis=basis)
         train_x, train_y, meas_old, x_cum, z_cum = simulator.generate_batch(
-            batch_size=batch_size, return_aux=True, seed=seed
+            batch_size=batch_size, return_aux=True
         )
         dets_and_obs = _measurements_to_dets_and_obs(
             self.stim_circuits[basis], simulator.code, meas_old, x_cum, z_cum
@@ -195,12 +225,45 @@ class StrictSurfaceSampler:
         return StrictBatch(train_x=train_x, train_y=train_y, basis=basis, dets_and_obs=dets_and_obs)
 
 
-def strict_sample_counts(cfg: dict[str, Any]) -> tuple[int, int, int]:
-    """Return train/validation/test counts, defaulting to the reference YAML."""
+def strict_batch_plan(cfg: dict[str, Any], stream: str) -> StrictBatchPlan:
+    """Resolve a strict stream's explicit batch count and batch size.
+
+    New configurations provide both values directly.  Legacy sample-count
+    fields remain supported and are divided by the NVIDIA reference batch size.
+    """
+    if stream not in STREAM_OFFSETS:
+        raise ValueError(f"unknown strict stream: {stream}")
     reference = OmegaConf.load(repo_path(cfg["reference_config"]))
-    train = int(cfg.get("train_num_samples_per_epoch", OmegaConf.select(reference, "train.num_samples")))
-    validation = int(cfg.get("validation_num_samples", OmegaConf.select(reference, "val.num_samples")))
-    test = int(cfg.get("inference_num_samples", OmegaConf.select(reference, "test.num_samples")))
-    if min(train, validation, test) <= 0:
-        raise ValueError("strict sample counts must be positive")
-    return train, validation, test
+    if stream == "train":
+        ref_samples = int(OmegaConf.select(reference, "train.num_samples"))
+        ref_batch_size = int(OmegaConf.select(reference, "batch_schedule.final"))
+        legacy_key = "train_num_samples_per_epoch"
+    elif stream == "validation":
+        ref_samples = int(OmegaConf.select(reference, "val.num_samples"))
+        # NVIDIA training validation uses the current training batch size.
+        ref_batch_size = int(OmegaConf.select(reference, "batch_schedule.final"))
+        legacy_key = "validation_num_samples"
+    else:
+        ref_samples = int(OmegaConf.select(reference, "test.num_samples"))
+        ref_batch_size = int(OmegaConf.select(reference, "test.dataloader.batch_size"))
+        legacy_key = "inference_num_samples"
+
+    batch_size = int(cfg.get(f"{stream}_batch_size", ref_batch_size))
+    if f"{stream}_num_batches" in cfg:
+        num_batches = int(cfg[f"{stream}_num_batches"])
+    else:
+        samples = int(cfg.get(legacy_key, ref_samples))
+        if samples % batch_size:
+            raise ValueError(
+                f"legacy {legacy_key}={samples} is not divisible by {stream}_batch_size={batch_size}; "
+                f"set {stream}_num_batches explicitly"
+            )
+        num_batches = samples // batch_size
+    if min(num_batches, batch_size) <= 0:
+        raise ValueError(f"strict {stream} num_batches and batch_size must be positive")
+    return StrictBatchPlan(num_batches=num_batches, batch_size=batch_size)
+
+
+def strict_sample_counts(cfg: dict[str, Any]) -> tuple[int, int, int]:
+    """Backward-compatible totals derived from the explicit batch plans."""
+    return tuple(strict_batch_plan(cfg, stream).num_samples for stream in STREAM_OFFSETS)

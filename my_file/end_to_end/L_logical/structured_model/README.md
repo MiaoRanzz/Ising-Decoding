@@ -64,13 +64,17 @@ Set `structured_model.data_mode` in `settings.yaml`:
 - `offline` keeps the original quick experiment. It reads `dataset_dir`, uses
   the configured train/validation/test fractions, and requires the standalone
   `generate_endpoint_teacher.py` step shown above.
-- `strict` uses the same Torch surface-code generator as the original
-  Ising-fast trainer. Every epoch receives 262144 new training shots and 65536
-  new validation shots; evaluation selects the no-op bias on 65536 newly
-  generated validation shots and reports a separate 65536-shot test stream.
-  These defaults come from the NVIDIA d9 reference config and are adjustable
-  under `structured_strict_data`. `reference_config` supplies sample counts and
-  HE settings, while `noise_config` independently supplies the circuit-noise
+- `strict` uses the same Torch surface-code generator pattern as the original
+  Ising-fast trainer: train/validation/test have separate generators and seed
+  offsets, and their RNG streams advance between batches without an explicit
+  per-batch seed. Every epoch receives 256 x 1024 = 262144 new training shots
+  and 64 x 1024 = 65536 new validation shots; evaluation selects the no-op bias
+  on that validation stream and reports a separate 256 x 256 = 65536-shot test
+  stream. Change `train_num_batches`/`train_batch_size`,
+  `validation_num_batches`/`validation_batch_size`, and
+  `test_num_batches`/`test_batch_size` under `structured_strict_data` to control
+  both the number of generator calls and shots per call. `reference_config`
+  supplies fallback HE settings, while `noise_config` independently supplies the circuit-noise
   probabilities; the default uses the same 25-parameter `config_public.yaml`
   noise model as the base checkpoint.
 
@@ -86,11 +90,11 @@ phase: teacher -> train_structured_ising.py
 
 `dataset_dir`, split fractions, `teacher_dataset_dir`, and the standalone
 teacher corpus paths are offline-only. Strict mode instead uses
-`reference_config`, strict sample counts, and the `strict_*checkpoint` /
+`reference_config`, strict batch plans, and the `strict_*checkpoint` /
 `strict_*output` paths. Separate output directories prevent an offline run
 from being silently mixed with a strict run. With `session_seed: null`, each
-invocation chooses a new seed and records it in its checkpoints/report; set an
-integer when an exactly repeatable run is needed.
+invocation chooses a new session seed and records it in its checkpoints/report;
+set an integer to reuse the same session-level Torch seeds and stream offsets.
 
 For a second teacher round, point `structured_teacher_generation.checkpoint`
 at the preceding teacher checkpoint, use a new output directory, update

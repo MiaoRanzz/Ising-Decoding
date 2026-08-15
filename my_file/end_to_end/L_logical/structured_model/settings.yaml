@@ -11,7 +11,8 @@ structured_model:
 
 # Used only when structured_model.data_mode: strict. Generation parameters are
 # inherited from reference_config unless explicitly overridden below. The three
-# sample counts match the original NVIDIA d9 training configuration.
+# batch plans match the original NVIDIA d9 configuration. Strict mode uses
+# exactly num_batches * batch_size fresh shots for each stream.
 structured_strict_data:
   # Supplies NVIDIA d9 sample counts and HE/generator settings only.
   reference_config: conf/config_pre_decoder_memory_surface_model_1_d9.yaml
@@ -22,11 +23,17 @@ structured_strict_data:
   n_rounds: 9
   measure_basis: both
   code_rotation: XV
-  train_num_samples_per_epoch: 262144
-  validation_num_samples: 65536
-  inference_num_samples: 65536
-  # null gives every invocation a fresh random seed; the chosen seed is saved
-  # in checkpoints/reports so the run remains reproducible.
+  # These are the strict train/evaluation workload controls. Change both the
+  # number of generator calls and the number of shots returned by each call.
+  train_num_batches: 256
+  train_batch_size: 1024
+  validation_num_batches: 64
+  validation_batch_size: 1024
+  test_num_batches: 256
+  test_batch_size: 256
+  # null gives every invocation a fresh session seed. As in the original
+  # trainer, stream-specific offsets are applied once and batches do not reseed.
+  # The selected session seed is saved in checkpoints/reports.
   session_seed: null
   # null builds the DEM bundle in memory and avoids machine-specific paths from
   # the reference YAML. Set a valid directory to reuse precomputed frames.
@@ -44,7 +51,7 @@ structured_oracle_training:
   output_dir: my_file/end_to_end/L_logical/structured_model/models/oracle_exp2
   strict_output_dir: my_file/end_to_end/L_logical/structured_model/models/strict_oracle_exp2
   epochs: 5
-  batch_size: 128
+  batch_size: 128             # offline only; strict uses structured_strict_data
   learning_rate: 0.0001
   # Print live training/validation progress every N batches.
   log_every_batches: 25
@@ -88,7 +95,7 @@ structured_teacher_training:
   output_dir: my_file/end_to_end/L_logical/structured_model/models/teacher_round_1_exp2
   strict_output_dir: my_file/end_to_end/L_logical/structured_model/models/strict_teacher_round_1_exp2
   epochs: 5
-  batch_size: 128
+  batch_size: 128             # offline only; strict uses structured_strict_data
   learning_rate: 0.00003
   # Print live training/validation progress every N batches.
   log_every_batches: 25
@@ -114,7 +121,7 @@ structured_evaluation:
   strict_checkpoint: my_file/end_to_end/L_logical/structured_model/models/strict_teacher_round_1_exp2/best.pt
   strict_oracle_checkpoint: my_file/end_to_end/L_logical/structured_model/models/strict_oracle_exp2/best.pt
   strict_output: my_file/end_to_end/L_logical/structured_model/models/strict_teacher_round_1_exp2/endpoint_selected_ler.json
-  batch_size: 256
+  batch_size: 256             # offline only; strict uses structured_strict_data
   log_every_batches: 25
   train_fraction: 0.70       # offline only
   validation_fraction: 0.15 # offline only
