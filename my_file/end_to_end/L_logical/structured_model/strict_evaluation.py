@@ -49,7 +49,12 @@ def run_strict_evaluation(settings, model_cfg: dict[str, Any], cfg: dict[str, An
         raise ValueError("strict data mode supports structured_evaluation.mode=full; use offline for warm_start_audit")
     strict_cfg = section(settings, "structured_strict_data")
     device = torch.device(cfg.get("device") or ("cuda" if torch.cuda.is_available() else "cpu"))
-    sampler = StrictSurfaceSampler(strict_cfg, device)
+    sampler = StrictSurfaceSampler(strict_cfg, device, seed_namespace="evaluation")
+    print(
+        f"[strict evaluation setup] session_seed={sampler.session_seed} "
+        f"cuST_stream_seeds={sampler.stream_sampler_seeds()}",
+        flush=True,
+    )
     validation_plan = strict_batch_plan(strict_cfg, "validation")
     test_plan = strict_batch_plan(strict_cfg, "test")
     validation_samples, test_samples = validation_plan.num_samples, test_plan.num_samples
@@ -191,6 +196,8 @@ def run_strict_evaluation(settings, model_cfg: dict[str, Any], cfg: dict[str, An
         "data_mode": "strict",
         "comparison_path": "train_x_to_fixed_action_endpoint",
         "strict_session_seed": sampler.session_seed,
+        "strict_seed_namespace": sampler.seed_namespace,
+        "strict_stream_sampler_seeds": sampler.stream_sampler_seeds(),
         "strict_reference_config": str(sampler.reference_path),
         "strict_noise_config": str(sampler.noise_config_path),
         "strict_validation_num_batches": validation_plan.num_batches,

@@ -90,6 +90,7 @@ class MemoryCircuitTorch:
         p: torch.Tensor | None = None,  # (num_errors,) float32
         A: torch.Tensor | None = None,  # (n_rounds*num_meas, 2*num_detectors) uint8
         p_override: torch.Tensor | np.ndarray | None = None,
+        sampler_seed: int | None = None,
     ):
         self.distance = int(distance)
         self.n_rounds = int(n_rounds)
@@ -110,6 +111,12 @@ class MemoryCircuitTorch:
         self.device = device if device is not None else torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
         )
+        # Inject this seed exactly once, on the first physical sampling call.
+        # Subsequent calls reuse the persistent BitMatrixSampler and advance its
+        # internal RNG state.  This covers callers that invoke the simulator
+        # directly for return_aux=True as well as QCDataGeneratorTorch.
+        self.sampler_seed = None if sampler_seed is None else int(sampler_seed)
+        self._sampler_seed_pending = self.sampler_seed is not None
 
         import threading
         self._compile_thread: threading.Thread | None = None
@@ -282,13 +289,21 @@ class MemoryCircuitTorch:
         if self.device.type == "cuda":
             device_index = self.device.index
             device_id = int(torch.cuda.current_device() if device_index is None else device_index)
+        consume_pending_seed = self._sampler_seed_pending
+        use_configured_seed = seed is None and consume_pending_seed
+        effective_seed = self.sampler_seed if use_configured_seed else seed
         frames_xz = dem_sampling(
             self.H,
             self.p,
             int(batch_size),
             device_id=device_id,
-            seed=seed,
+            seed=effective_seed,
         )  # (B, 2*num_detectors)
+        if consume_pending_seed:
+            # An explicit per-call seed overrides the configured initial seed.
+            # In either case, only consume the pending seed after a successful
+            # cuST call so a failed first attempt remains retryable.
+            self._sampler_seed_pending = False
         meas_old = measure_from_stacked_frames(
             frames_xz, self.meas_qubits, self.meas_bases, nq=self.nq
         )  # (B, R, m)

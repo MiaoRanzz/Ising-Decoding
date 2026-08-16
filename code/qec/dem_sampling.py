@@ -25,7 +25,9 @@ to generate training batches from precomputed DEM matrices (H, p, A).
 from __future__ import annotations
 
 import time
-from collections import deque
+from collections import OrderedDict, deque
+from dataclasses import dataclass
+import threading
 
 import torch
 import numpy as np
@@ -54,6 +56,30 @@ def _custab_available() -> bool:
     return _CUSTAB_AVAILABLE
 
 
+@dataclass
+class _SamplerCacheEntry:
+    """One persistent cuST RNG stream for one exact H/p tensor pair."""
+
+    H: torch.Tensor
+    p: torch.Tensor
+    HT: torch.Tensor
+    sampler: object
+    max_shots: int
+    device_id: int
+    initial_seed: int | None
+    rebuild_count: int = 0
+
+
+# cuST keeps RNG state inside BitMatrixSampler.  A single global sampler is not
+# sufficient: constructing validation/test generators replaces the training H
+# tensor and used to discard the training RNG state.  Keep one sampler per
+# exact H/p object pair so independent generators own independent, persistent
+# streams while retaining the fast no-rebuild path within every stream.
+_sampler_cache: "OrderedDict[tuple[int, int, int], _SamplerCacheEntry]" = OrderedDict()
+_sampler_cache_lock = threading.RLock()
+
+# Backward-compatible aliases for diagnostics/tests that inspect the most
+# recently used sampler.  They are not used to choose a cached stream.
 _cached_sampler = None
 _cached_H: "torch.Tensor | None" = None
 _cached_HT: "torch.Tensor | None" = None
@@ -75,14 +101,21 @@ def get_dem_sampling_avg_ms() -> float:
 
 
 def _reset_sampler_cache() -> None:
-    """Reset the module-level sampler cache."""
+    """Reset every module-level sampler stream and legacy diagnostic alias."""
     global _cached_sampler, _cached_H, _cached_HT, _cached_max_shots, _cached_device_id, _cached_seed
-    _cached_sampler = None
-    _cached_H = None
-    _cached_HT = None
-    _cached_max_shots = 0
-    _cached_device_id = None
-    _cached_seed = None
+    with _sampler_cache_lock:
+        _sampler_cache.clear()
+        _cached_sampler = None
+        _cached_H = None
+        _cached_HT = None
+        _cached_max_shots = 0
+        _cached_device_id = None
+        _cached_seed = None
+
+
+def _resize_seed(initial_seed: int, rebuild_count: int) -> int:
+    """Derive a deterministic non-overlapping stream when max_shots must grow."""
+    return (int(initial_seed) + int(rebuild_count) * 1_000_000_007) & 0x7FFF_FFFF
 
 
 def dem_sampling(
@@ -109,11 +142,11 @@ def dem_sampling(
     Returns:
         frames_xz: (batch_size, 2*num_detectors) uint8 - Detector outcomes
     """
-    from cuquantum.stabilizer.dem_sampling import BitMatrixSampler
-    from cuquantum.stabilizer.simulator import Options
-
     global _cached_sampler, _cached_H, _cached_HT, _cached_max_shots
     global _cached_device_id, _cached_seed, _custab_path_logged
+
+    if BitMatrixSampler is None or Options is None:
+        raise RuntimeError("dem_sampling requires cuquantum>=26.3.0 (stabilizer)")
 
     if H.ndim != 2:
         raise ValueError(f"H must be 2-D, got ndim={H.ndim}")
@@ -130,55 +163,84 @@ def dem_sampling(
             device_id = 0
 
     gpu_native = _CUPY_AVAILABLE and H.is_cuda
+    cache_key = (id(H), id(p), int(device_id))
 
-    if _cached_H is not H:
-        _cached_HT = H.T
-        _cached_H = H
-        _cached_sampler = None
-        _cached_device_id = None
-        _cached_seed = None
+    # Sampling and cache mutation share a lock.  The normal trainer has one
+    # producer thread, but this also prevents two prefetch users from advancing
+    # the same cuST RNG stream concurrently.
+    with _sampler_cache_lock:
+        entry = _sampler_cache.get(cache_key)
+        # Retaining strong tensor references in the entry prevents Python id
+        # reuse from ever selecting a sampler belonging to a destroyed tensor.
+        if entry is not None and (entry.H is not H or entry.p is not p):
+            del _sampler_cache[cache_key]
+            entry = None
 
-    # When a seed is given always create a fresh sampler so its internal RNG is
-    # reset to that seed, giving identical outputs on repeated calls with the
-    # same seed value (per the BitMatrixSampler constructor contract).
-    need_new = (
-        _cached_sampler is None or batch_size > _cached_max_shots or
-        _cached_device_id != device_id or seed is not None
-    )
+        explicit_reset = seed is not None
+        needs_resize = entry is not None and batch_size > entry.max_shots
+        if entry is None or explicit_reset or needs_resize:
+            max_shots = max(batch_size, _MIN_MAX_SHOTS)
+            rebuild_count = 0 if entry is None or explicit_reset else entry.rebuild_count + 1
+            initial_seed = int(seed) if explicit_reset else (entry.initial_seed if entry is not None else None)
+            build_seed = int(seed) if explicit_reset else None
+            if needs_resize and initial_seed is not None:
+                # cuST cannot grow an existing sampler.  Starting a derived
+                # deterministic stream avoids replaying the beginning of the
+                # original seeded sequence.
+                build_seed = _resize_seed(initial_seed, rebuild_count)
 
-    if need_new:
-        max_shots = max(batch_size, _MIN_MAX_SHOTS)
+            HT = H.T
+            if gpu_native:
+                import cupy as cp
+                with cp.cuda.Device(device_id):
+                    H_in = cp.from_dlpack(HT.detach())
+                    p_in = cp.from_dlpack(p.detach().to(torch.float64))
+                pkg = "cupy"
+            else:
+                H_in = HT.detach().cpu().numpy().astype(np.uint8)
+                p_in = p.detach().cpu().numpy().astype(np.float64)
+                pkg = "numpy"
+            bms_kwargs: dict = {"package": pkg, "options": Options(device_id=device_id)}
+            if build_seed is not None:
+                bms_kwargs["seed"] = int(build_seed)
+            sampler = BitMatrixSampler(H_in, p_in, max_shots, **bms_kwargs)
+            entry = _SamplerCacheEntry(
+                H=H,
+                p=p,
+                HT=HT,
+                sampler=sampler,
+                max_shots=max_shots,
+                device_id=int(device_id),
+                initial_seed=initial_seed,
+                rebuild_count=rebuild_count,
+            )
+            _sampler_cache[cache_key] = entry
+        else:
+            _sampler_cache.move_to_end(cache_key)
+
+        _cached_sampler = entry.sampler
+        _cached_H = entry.H
+        _cached_HT = entry.HT
+        _cached_max_shots = entry.max_shots
+        _cached_device_id = entry.device_id
+        _cached_seed = entry.initial_seed
+
+        t0 = time.perf_counter()
         if gpu_native:
             import cupy as cp
             with cp.cuda.Device(device_id):
-                H_in = cp.from_dlpack(_cached_HT.detach())
-                p_in = cp.from_dlpack(p.detach().to(torch.float64))
-            pkg = "cupy"
+                entry.sampler.sample(batch_size)
+                out = entry.sampler.get_outcomes(bit_packed=False)
         else:
-            H_in = _cached_HT.detach().cpu().numpy().astype(np.uint8)
-            p_in = p.detach().cpu().numpy().astype(np.float64)
-            pkg = "numpy"
-        bms_kwargs: dict = {"package": pkg, "options": Options(device_id=device_id)}
-        if seed is not None:
-            bms_kwargs["seed"] = seed
-        _cached_sampler = BitMatrixSampler(H_in, p_in, max_shots, **bms_kwargs)
-        _cached_max_shots = max_shots
-        _cached_device_id = device_id
-        _cached_seed = seed
-
-    t0 = time.perf_counter()
-    if gpu_native:
-        import cupy as cp
-        with cp.cuda.Device(device_id):
-            _cached_sampler.sample(batch_size)
-            out = _cached_sampler.get_outcomes(bit_packed=False)
-    else:
-        _cached_sampler.sample(batch_size)
-        out = _cached_sampler.get_outcomes(bit_packed=False)
-    if isinstance(out, np.ndarray):
-        out = torch.as_tensor(out, device=H.device).to(dtype=torch.uint8)
-    else:
-        out = torch.from_dlpack(out).to(dtype=torch.uint8)
+            entry.sampler.sample(batch_size)
+            out = entry.sampler.get_outcomes(bit_packed=False)
+        # Detach from cuST's reusable outcome buffer before releasing the lock;
+        # otherwise a subsequent sample could overwrite a tensor still being
+        # formatted by MemoryCircuitTorch.
+        if isinstance(out, np.ndarray):
+            out = torch.as_tensor(out, device=H.device).to(dtype=torch.uint8).clone()
+        else:
+            out = torch.from_dlpack(out).to(dtype=torch.uint8).clone()
     _DEM_TIMINGS_S.append(time.perf_counter() - t0)
 
     if not _custab_path_logged:

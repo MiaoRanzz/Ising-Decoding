@@ -5,10 +5,10 @@ original Ising-fast trainer.  For endpoint supervision/evaluation it asks the
 wrapped ``MemoryCircuitTorch`` for auxiliary frames and converts those frames
 to Stim detectors from the *same physical shots*.
 
-As in the original trainer, train/validation/test own separate generator
-objects and use distinct seed offsets.  Individual batch calls do not pass an
-explicit seed: the underlying sampler is allowed to advance its RNG stream
-instead of being reconstructed for every batch.
+Train/validation/test own separate generator objects and use distinct seed
+offsets.  Each exact seed is injected into its cuST sampler on first use;
+subsequent batch calls advance that sampler's persistent RNG stream instead of
+reconstructing it for every batch.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ import torch
 from omegaconf import OmegaConf
 
 from common import repo_path
-from data.generator_torch import QCDataGeneratorTorch
+from data.generator_torch import QCDataGeneratorTorch, _normalized_sampler_seed
 from generate_labeled_dataset import _measurements_to_dets_and_obs
 from qec.noise_model import NoiseModel
 from qec.surface_code.memory_circuit import MemoryCircuit
@@ -30,6 +30,7 @@ from qec.surface_code.stim_sample_io import normalize_code_rotation
 
 
 STREAM_OFFSETS = {"train": 0, "validation": 100_000_000, "test": 200_000_000}
+STAGE_OFFSETS = {"oracle": 0, "teacher": 400_000_000, "evaluation": 800_000_000}
 
 
 @dataclass
@@ -78,7 +79,14 @@ def _choose(override: dict[str, Any], name: str, fallback: Any) -> Any:
 class StrictSurfaceSampler:
     """Generate separate online train/validation/test streams."""
 
-    def __init__(self, cfg: dict[str, Any], device: torch.device, *, session_seed: int | None = None):
+    def __init__(
+        self,
+        cfg: dict[str, Any],
+        device: torch.device,
+        *,
+        session_seed: int | None = None,
+        seed_namespace: str = "oracle",
+    ):
         reference_path = repo_path(cfg["reference_config"])
         self.reference_path = reference_path
         reference = OmegaConf.load(reference_path)
@@ -117,6 +125,13 @@ class StrictSurfaceSampler:
             precomputed = str(repo_path(precomputed)) if not Path(str(precomputed)).is_absolute() else str(precomputed)
         seed_value = cfg.get("session_seed") if session_seed is None else session_seed
         self.session_seed = random.SystemRandom().randrange(1, 2**31) if seed_value is None else int(seed_value)
+        self.seed_namespace = str(seed_namespace).lower()
+        if self.seed_namespace not in STAGE_OFFSETS:
+            raise ValueError(
+                f"unknown strict seed namespace {seed_namespace!r}; "
+                f"expected one of {tuple(STAGE_OFFSETS)}"
+            )
+        self.stage_seed_offset = STAGE_OFFSETS[self.seed_namespace]
 
         self._generator_kwargs = dict(
             distance=self.distance,
@@ -185,9 +200,26 @@ class StrictSurfaceSampler:
             "num_detectors": int(circuit.num_detectors),
             "num_observables": int(circuit.num_observables),
             "seed": self.session_seed,
+            "seed_namespace": self.seed_namespace,
+            "stream_sampler_seeds": self.stream_sampler_seeds(),
             "noise": self.noise_metadata,
             "reference_config": str(self.reference_path),
             "noise_config": str(self.noise_config_path),
+        }
+
+    def stream_sampler_seeds(self) -> dict[str, dict[str, int]]:
+        """Exact seeds injected once into each strict cuST RNG stream."""
+        return {
+            stream: {
+                basis: _normalized_sampler_seed(
+                    self.session_seed,
+                    global_rank=0,
+                    seed_offset=self.stage_seed_offset + offset,
+                    basis=basis,
+                )
+                for basis in self.bases
+            }
+            for stream, offset in STREAM_OFFSETS.items()
         }
 
     def _generator(self, stream: str) -> QCDataGeneratorTorch:
@@ -198,7 +230,7 @@ class StrictSurfaceSampler:
                 mode="train" if stream == "train" else "test",
                 verbose=self._verbose_generator if stream == "train" else False,
                 base_seed=self.session_seed,
-                seed_offset=STREAM_OFFSETS[stream],
+                seed_offset=self.stage_seed_offset + STREAM_OFFSETS[stream],
                 **self._generator_kwargs,
             )
         return self._generators[stream]

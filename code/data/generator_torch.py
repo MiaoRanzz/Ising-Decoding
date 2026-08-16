@@ -19,6 +19,18 @@ import torch
 from pathlib import Path
 
 
+_SAMPLER_SEED_MASK = 0x7FFF_FFFF
+_Z_BASIS_SEED_OFFSET = 10_000_019
+
+
+def _normalized_sampler_seed(base_seed, global_rank=0, seed_offset=0, basis="X"):
+    """Return the exact cuST seed for one rank/stream/basis combination."""
+    value = int(base_seed) + int(global_rank) * 1_000_000 + int(seed_offset)
+    if str(basis).upper() == "Z":
+        value += _Z_BASIS_SEED_OFFSET
+    return value & _SAMPLER_SEED_MASK
+
+
 class QCDataGeneratorTorch:
     """Torch-only on-the-fly generator using precomputed H/p/A."""
 
@@ -70,6 +82,10 @@ class QCDataGeneratorTorch:
 
         self._mixed = str(measure_basis).lower() in ("both", "mixed")
         self._single_basis = None if self._mixed else str(measure_basis).upper()
+        self.sampler_seeds = {
+            basis: _normalized_sampler_seed(base_seed, self.global_rank, seed_offset, basis)
+            for basis in (("X", "Z") if self._mixed else (self._single_basis,))
+        }
 
         if device is None:
             device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
@@ -230,6 +246,7 @@ class QCDataGeneratorTorch:
                 p=(dem_cache.get("X", {}).get("p") if dem_cache else None),
                 A=(dem_cache.get("X", {}).get("A") if dem_cache else None),
                 p_override=p_overrides.get("X"),
+                sampler_seed=self.sampler_seeds["X"],
                 **_he_kwargs,
             )
             self.sim_Z = MemoryCircuitTorch(
@@ -243,6 +260,7 @@ class QCDataGeneratorTorch:
                 p=(dem_cache.get("Z", {}).get("p") if dem_cache else None),
                 A=(dem_cache.get("Z", {}).get("A") if dem_cache else None),
                 p_override=p_overrides.get("Z"),
+                sampler_seed=self.sampler_seeds["Z"],
                 **_he_kwargs,
             )
         else:
@@ -257,13 +275,14 @@ class QCDataGeneratorTorch:
                 p=(dem_cache.get(self._single_basis, {}).get("p") if dem_cache else None),
                 A=(dem_cache.get(self._single_basis, {}).get("A") if dem_cache else None),
                 p_override=p_overrides.get(self._single_basis),
+                sampler_seed=self.sampler_seeds[self._single_basis],
                 **_he_kwargs,
             )
 
-        seed = int(base_seed) + int(self.global_rank) * 1_000_000 + int(seed_offset)
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
+        # Do not mutate PyTorch's process-global RNG here.  In particular, lazy
+        # construction of the validation generator must not change dropout or
+        # any other model-side RNG state before the next training epoch.  This
+        # generator's physical randomness is owned by the seeded cuST samplers.
 
         if self.verbose:
             b = "both" if self._mixed else self._single_basis

@@ -10,9 +10,10 @@ structured_model:
   model_id: 1
 
 # Used only when structured_model.data_mode: strict. Generation parameters are
-# inherited from reference_config unless explicitly overridden below. The three
-# batch plans match the original NVIDIA d9 configuration. Strict mode uses
-# exactly num_batches * batch_size fresh shots for each stream.
+# inherited from reference_config unless explicitly overridden below. Train and
+# validation match the NVIDIA d9 training config; test matches the current
+# public inference count per basis. Strict mode always uses exactly
+# num_batches * batch_size fresh shots for each stream.
 structured_strict_data:
   # Supplies NVIDIA d9 sample counts and HE/generator settings only.
   reference_config: conf/config_pre_decoder_memory_surface_model_1_d9.yaml
@@ -29,11 +30,15 @@ structured_strict_data:
   train_batch_size: 1024
   validation_num_batches: 64
   validation_batch_size: 1024
-  test_num_batches: 256
+  # NVIDIA's current Stim inference uses 262144 shots per basis. With X-only
+  # strict evaluation, 1024 x 256 matches that per-basis statistical power.
+  test_num_batches: 1024
   test_batch_size: 256
-  # null gives every invocation a fresh session seed. As in the original
-  # trainer, stream-specific offsets are applied once and batches do not reseed.
-  # The selected session seed is saved in checkpoints/reports.
+  # null gives every invocation a fresh session seed. Stream- and basis-specific
+  # seeds are injected once into independent persistent cuST samplers; batches
+  # then advance those RNG streams without rebuilding. Set an integer to replay
+  # the exact sampled data with the same batch plan. Oracle, teacher, and
+  # evaluation still receive disjoint seed namespaces. Seeds are saved in reports.
   session_seed: null
   # null builds the DEM bundle in memory and avoids machine-specific paths from
   # the reference YAML. Set a valid directory to reuse precomputed frames.
@@ -118,9 +123,9 @@ structured_evaluation:
   oracle_checkpoint: my_file/end_to_end/L_logical/structured_model/models/oracle_exp2/best.pt
   output: my_file/end_to_end/L_logical/structured_model/models/teacher_round_1_exp2/endpoint_selected_ler.json
   # Strict-only counterparts keep strict and offline artifacts separate.
-  strict_checkpoint: my_file/end_to_end/L_logical/structured_model/models/teacher_round_1_exp2/best.pt
-  strict_oracle_checkpoint: my_file/end_to_end/L_logical/structured_model/models/oracle_exp2/best.pt
-  strict_output: my_file/end_to_end/L_logical/structured_model/models/teacher_round_1_exp2/endpoint_selected_ler_strict_X_5.json
+  strict_checkpoint: my_file/end_to_end/L_logical/structured_model/models/strict_teacher_round_1_exp2/best.pt
+  strict_oracle_checkpoint: my_file/end_to_end/L_logical/structured_model/models/strict_oracle_exp2/best.pt
+  strict_output: my_file/end_to_end/L_logical/structured_model/models/strict_teacher_round_1_exp2/endpoint_selected_ler_strict_X.json
   batch_size: 256             # offline only; strict uses structured_strict_data
   log_every_batches: 25
   train_fraction: 0.70       # offline only

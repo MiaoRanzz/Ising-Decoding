@@ -217,7 +217,7 @@ def run_strict_training(
     base_checkpoint = repo_path(model_cfg["base_checkpoint"])
     project_config = repo_path(model_cfg["project_config"])
     device = torch.device(cfg.get("device") or ("cuda" if torch.cuda.is_available() else "cpu"))
-    sampler = StrictSurfaceSampler(strict_cfg, device)
+    sampler = StrictSurfaceSampler(strict_cfg, device, seed_namespace=phase)
     metadata = sampler.metadata()
     resume_value = cfg.get("strict_resume_checkpoint", cfg.get("resume_checkpoint"))
     if phase == "teacher" and resume_value is None:
@@ -263,6 +263,7 @@ def run_strict_training(
         f"{validation_plan.num_samples} bases={sampler.bases}",
         flush=True,
     )
+    print(f"[setup] cuST stream seeds={sampler.stream_sampler_seeds()}", flush=True)
     for epoch in range(1, epochs + 1):
         started = time.perf_counter()
         train_metrics = run_strict_epoch(
@@ -290,7 +291,10 @@ def run_strict_training(
             "strict_validation_num_batches": validation_plan.num_batches,
             "strict_validation_batch_size": validation_plan.batch_size,
             "strict_validation_samples_per_epoch": validation_plan.num_samples,
-            "strict_session_seed": sampler.session_seed, "train": train_metrics,
+            "strict_session_seed": sampler.session_seed,
+            "strict_seed_namespace": sampler.seed_namespace,
+            "strict_stream_sampler_seeds": sampler.stream_sampler_seeds(),
+            "train": train_metrics,
             "validation": valid_metrics, "endpoint_weight": endpoint_weight,
         }
         save_checkpoint(output_dir / f"epoch_{epoch:03d}.pt", model, **payload)

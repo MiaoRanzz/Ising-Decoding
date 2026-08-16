@@ -65,12 +65,14 @@ Set `structured_model.data_mode` in `settings.yaml`:
   the configured train/validation/test fractions, and requires the standalone
   `generate_endpoint_teacher.py` step shown above.
 - `strict` uses the same Torch surface-code generator pattern as the original
-  Ising-fast trainer: train/validation/test have separate generators and seed
-  offsets, and their RNG streams advance between batches without an explicit
-  per-batch seed. Every epoch receives 256 x 1024 = 262144 new training shots
+  Ising-fast trainer: train/validation/test have separate generators. Their
+  stream- and basis-specific seeds are injected once into independent cached
+  cuST samplers, whose RNG states then advance without per-batch reconstruction.
+  Every epoch receives 256 x 1024 = 262144 new training shots
   and 64 x 1024 = 65536 new validation shots; evaluation selects the no-op bias
-  on that validation stream and reports a separate 256 x 256 = 65536-shot test
-  stream. Change `train_num_batches`/`train_batch_size`,
+  on that validation stream and reports a separate 1024 x 256 = 262144-shot
+  X-basis test stream, matching NVIDIA inference's per-basis shot count. Change
+  `train_num_batches`/`train_batch_size`,
   `validation_num_batches`/`validation_batch_size`, and
   `test_num_batches`/`test_batch_size` under `structured_strict_data` to control
   both the number of generator calls and shots per call. `reference_config`
@@ -92,9 +94,13 @@ phase: teacher -> train_structured_ising.py
 teacher corpus paths are offline-only. Strict mode instead uses
 `reference_config`, strict batch plans, and the `strict_*checkpoint` /
 `strict_*output` paths. Separate output directories prevent an offline run
-from being silently mixed with a strict run. With `session_seed: null`, each
-invocation chooses a new session seed and records it in its checkpoints/report;
-set an integer to reuse the same session-level Torch seeds and stream offsets.
+from being silently mixed with a strict run. The full pipeline now validates
+that training outputs, teacher resume, and evaluation checkpoints agree before
+starting. With `session_seed: null`, each invocation chooses a new session seed
+and records the exact cuST stream seeds in its checkpoints/report; set an
+integer to reproduce the sampled data with the same batch plan.
+Oracle training, teacher training, and evaluation use disjoint deterministic
+seed namespaces, so fixing `session_seed` does not make stages reuse shots.
 
 For a second teacher round, point `structured_teacher_generation.checkpoint`
 at the preceding teacher checkpoint, use a new output directory, update
