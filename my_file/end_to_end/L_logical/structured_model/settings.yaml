@@ -126,6 +126,10 @@ structured_evaluation:
   train_fraction: 0.70       # offline only
   validation_fraction: 0.15 # offline only
   split_seed: 12345          # offline only
-  # Positive values make no-op more likely. Select only on validation.
+  # true: scan no_op_biases on validation and select the lowest validation LER.
+  # false: skip validation scanning and test directly with fixed_no_op_bias.
+  scan_no_op_biases: true
+  fixed_no_op_bias: -0.5
+  # Positive values make no-op more likely. Used only when scanning is true.
   no_op_biases: [-0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0]
   device: null

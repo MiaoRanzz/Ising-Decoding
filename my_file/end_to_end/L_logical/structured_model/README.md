@@ -111,6 +111,12 @@ Both training phases report progress during execution. Set
 reporting interval; each line includes current loss, oracle/endpoint loss,
 learning rate, throughput, and estimated time remaining in the epoch.
 
+Evaluation threshold handling is configured under `structured_evaluation`.
+With `scan_no_op_biases: true`, validation scans every value in
+`no_op_biases`. With `scan_no_op_biases: false`, validation scanning is skipped
+and test uses `fixed_no_op_bias` directly. The JSON report records the mode and
+the bias actually used under `no_op_bias_selection`.
+
 Evaluation reports four paths on exactly the same held-out shots: raw
 PyMatching, the original Ising-fast checkpoint, the structured oracle model,
 and the structured teacher model. `oracle_checkpoint` and `checkpoint` in

@@ -6,8 +6,9 @@ from typing import Any
 import numpy as np
 import torch
 
-from common import (build_base_model, build_structured_model, endpoint_outcomes, endpoint_pipeline,
-                    repo_path, section, write_json)
+from common import (build_base_model, build_structured_model, endpoint_outcomes,
+                    endpoint_pipeline, evaluation_no_op_bias_config, repo_path,
+                    section, write_json)
 from compare_three_paths import baseline_failures, final_failures
 from evaluation.logical_error_rate import PreDecoderMemoryEvalModule, _build_stab_maps
 from strict_data import StrictSurfaceSampler, strict_batch_plan
@@ -72,36 +73,44 @@ def run_strict_evaluation(settings, model_cfg: dict[str, Any], cfg: dict[str, An
         del unused
         endpoint_contexts[basis] = endpoint_pipeline(endpoint_cfg, basis_metadata, device)
 
-    biases = [float(value) for value in cfg.get("no_op_biases", [0.0])]
+    scan_biases, biases, fixed_bias = evaluation_no_op_bias_config(cfg)
     validation_stats = {bias: _empty_action_stats() for bias in biases}
-    total_batches = validation_plan.num_batches
-    batch_size = validation_plan.batch_size
-    for batch_index in range(total_batches):
-        count = batch_size
-        fresh = sampler.generate(
-            stream="validation", step=batch_index, batch_size=count, with_endpoint=True
+    validation = []
+    selected = None
+    if scan_biases:
+        total_batches = validation_plan.num_batches
+        batch_size = validation_plan.batch_size
+        for batch_index in range(total_batches):
+            count = batch_size
+            fresh = sampler.generate(
+                stream="validation", step=batch_index, batch_size=count, with_endpoint=True
+            )
+            with torch.no_grad():
+                logits = teacher(fresh.train_x.to(device=device, dtype=torch.float32))
+            matcher, action_model, pipeline = endpoint_contexts[fresh.basis]
+            num_obs = int(sampler.metadata(fresh.basis)["num_observables"])
+            dets, obs = fresh.dets_and_obs[:, :-num_obs], fresh.dets_and_obs[:, -num_obs:]
+            for bias in biases:
+                actions = actions_from_logits(logits, bias).detach().cpu().numpy().astype(np.uint8)
+                failure, residual = endpoint_outcomes(
+                    pipeline, action_model, matcher, dets, obs, actions, device, batch_size
+                )
+                _add_action_stats(validation_stats[bias], failure, residual, actions)
+            if ((batch_index + 1) % max(1, int(cfg.get("log_every_batches", 25))) == 0
+                    or batch_index + 1 == total_batches):
+                print(
+                    f"[strict evaluation validation] {min((batch_index+1)*batch_size, validation_samples)}/"
+                    f"{validation_samples} shots basis={fresh.basis}", flush=True
+                )
+        validation = [{"no_op_bias": bias, **_action_report(validation_stats[bias])} for bias in biases]
+        selected = min(
+            validation,
+            key=lambda item: (item["logical_errors"], item["mean_residual_weight"], item["mean_action_count"]),
         )
-        with torch.no_grad():
-            logits = teacher(fresh.train_x.to(device=device, dtype=torch.float32))
-        matcher, action_model, pipeline = endpoint_contexts[fresh.basis]
-        num_obs = int(sampler.metadata(fresh.basis)["num_observables"])
-        dets, obs = fresh.dets_and_obs[:, :-num_obs], fresh.dets_and_obs[:, -num_obs:]
-        for bias in biases:
-            actions = actions_from_logits(logits, bias).detach().cpu().numpy().astype(np.uint8)
-            failure, residual = endpoint_outcomes(
-                pipeline, action_model, matcher, dets, obs, actions, device, batch_size
-            )
-            _add_action_stats(validation_stats[bias], failure, residual, actions)
-        if (batch_index + 1) % max(1, int(cfg.get("log_every_batches", 25))) == 0 or batch_index + 1 == total_batches:
-            print(
-                f"[strict evaluation validation] {min((batch_index+1)*batch_size, validation_samples)}/"
-                f"{validation_samples} shots basis={fresh.basis}", flush=True
-            )
-    validation = [{"no_op_bias": bias, **_action_report(validation_stats[bias])} for bias in biases]
-    selected = min(
-        validation, key=lambda item: (item["logical_errors"], item["mean_residual_weight"], item["mean_action_count"])
-    )
-    selected_bias = float(selected["no_op_bias"])
+        selected_bias = float(selected["no_op_bias"])
+    else:
+        selected_bias = float(fixed_bias)
+        print(f"[strict evaluation] fixed no_op_bias={selected_bias}; validation scan skipped", flush=True)
 
     oracle, _ = build_structured_model(
         metadata, project_config, base_checkpoint, model_id, device, oracle_checkpoint
@@ -191,6 +200,10 @@ def run_strict_evaluation(settings, model_cfg: dict[str, Any], cfg: dict[str, An
         "teacher_checkpoint": str(teacher_checkpoint),
         "oracle_checkpoint": str(oracle_checkpoint),
         "base_ising_fast_checkpoint": str(base_checkpoint),
+        "no_op_bias_selection": {
+            "mode": "scan" if scan_biases else "fixed",
+            "selected_no_op_bias": selected_bias,
+        },
         "selected_on_validation": selected,
         "validation_candidates": validation,
         "held_out_test": {

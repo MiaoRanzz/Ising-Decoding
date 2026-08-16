@@ -112,6 +112,21 @@ def summarize(failure: np.ndarray) -> dict[str, int | float]:
     return {"logical_errors": errors, "samples": samples, "ler": errors / samples if samples else float("nan")}
 
 
+def evaluation_no_op_bias_config(cfg: dict[str, Any]) -> tuple[bool, list[float], float | None]:
+    """Resolve scanned or fixed deployment no-op bias from evaluation config."""
+    scan = cfg.get("scan_no_op_biases", True)
+    if not isinstance(scan, bool):
+        raise ValueError("structured_evaluation.scan_no_op_biases must be true or false")
+    if scan:
+        biases = [float(value) for value in cfg.get("no_op_biases", [])]
+        if not biases:
+            raise ValueError("structured_evaluation.no_op_biases must not be empty when scanning")
+        return True, biases, None
+    if "fixed_no_op_bias" not in cfg:
+        raise ValueError("structured_evaluation.fixed_no_op_bias is required when scanning is disabled")
+    return False, [], float(cfg["fixed_no_op_bias"])
+
+
 def write_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2), encoding="utf-8")

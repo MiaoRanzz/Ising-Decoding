@@ -7,8 +7,10 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from common import (DEFAULT_SETTINGS, build_base_model, build_structured_model, endpoint_outcomes, endpoint_pipeline,
-                    repo_path, section, summarize, write_json)
+from common import (DEFAULT_SETTINGS, build_base_model, build_structured_model,
+                    endpoint_outcomes, endpoint_pipeline,
+                    evaluation_no_op_bias_config, repo_path, section, summarize,
+                    write_json)
 from compare_three_paths import baseline_failures, final_failures, load_corpus
 from evaluation.logical_error_rate import PreDecoderMemoryEvalModule, _build_stab_maps
 from structured_actions import actions_from_logits
@@ -135,18 +137,30 @@ def main() -> None:
     )
     model.eval()
     matcher, action_model, pipeline = endpoint_pipeline(endpoint_cfg, metadata, device)
-    candidates = [float(value) for value in cfg.get("no_op_biases", [0.0])]
+    scan_biases, candidates, fixed_bias = evaluation_no_op_bias_config(cfg)
     validation = []
-    for bias in candidates:
-        actions = actions_for_rows(model, train_x, validation_rows, device, batch_size, bias)
-        failed, residual = endpoint_outcomes(pipeline, action_model, matcher,
-                                             np.asarray(dets_and_obs[validation_rows, :-1], dtype=np.uint8),
-                                             np.asarray(dets_and_obs[validation_rows, -1:], dtype=np.uint8), actions,
-                                             device, batch_size)
-        validation.append({"no_op_bias": bias, **summarize(failed), "mean_residual_weight": float(residual.mean()),
-                           "mean_action_count": float(actions.sum(axis=(1, 2, 3, 4)).mean())})
-    selected = min(validation, key=lambda item: (item["logical_errors"], item["mean_residual_weight"], item["mean_action_count"]))
-    bias = float(selected["no_op_bias"])
+    selected = None
+    if scan_biases:
+        for bias in candidates:
+            actions = actions_for_rows(model, train_x, validation_rows, device, batch_size, bias)
+            failed, residual = endpoint_outcomes(
+                pipeline, action_model, matcher,
+                np.asarray(dets_and_obs[validation_rows, :-1], dtype=np.uint8),
+                np.asarray(dets_and_obs[validation_rows, -1:], dtype=np.uint8),
+                actions, device, batch_size,
+            )
+            validation.append({
+                "no_op_bias": bias, **summarize(failed),
+                "mean_residual_weight": float(residual.mean()),
+                "mean_action_count": float(actions.sum(axis=(1, 2, 3, 4)).mean()),
+            })
+        selected = min(
+            validation,
+            key=lambda item: (item["logical_errors"], item["mean_residual_weight"], item["mean_action_count"]),
+        )
+        bias = float(selected["no_op_bias"])
+    else:
+        bias = float(fixed_bias)
     test_actions = actions_for_rows(model, train_x, test_rows, device, batch_size, bias)
     test_failure, test_residual = endpoint_outcomes(pipeline, action_model, matcher,
                                                     test_dets, test_obs, test_actions,
@@ -200,6 +214,10 @@ def main() -> None:
         "teacher_checkpoint": str(checkpoint),
         "oracle_checkpoint": str(oracle_checkpoint),
         "base_ising_fast_checkpoint": str(base_checkpoint),
+        "no_op_bias_selection": {
+            "mode": "scan" if scan_biases else "fixed",
+            "selected_no_op_bias": bias,
+        },
         "selected_on_validation": selected,
         "validation_candidates": validation,
         "held_out_test": {
