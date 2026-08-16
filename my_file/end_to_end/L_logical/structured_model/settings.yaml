@@ -2,7 +2,7 @@
 structured_model:
   # offline: reuse one fixed labeled corpus (fast experiments).
   # strict: sample fresh shots every epoch and a separate fresh inference set.
-  data_mode: offline
+  data_mode: strict
   # Used only when data_mode: offline.
   dataset_dir: my_file/end_to_end/L_logical/data_generated/dataset_Xd9c9_1
   project_config: conf/config_public.yaml
@@ -21,7 +21,7 @@ structured_strict_data:
   noise_config: conf/config_public.yaml
   distance: 9
   n_rounds: 9
-  measure_basis: both
+  measure_basis: X
   code_rotation: XV
   # These are the strict train/evaluation workload controls. Change both the
   # number of generator calls and the number of shots returned by each call.
@@ -50,7 +50,7 @@ structured_training:
 structured_oracle_training:
   output_dir: my_file/end_to_end/L_logical/structured_model/models/oracle_exp2
   strict_output_dir: my_file/end_to_end/L_logical/structured_model/models/strict_oracle_exp2
-  epochs: 5
+  epochs: 3
   batch_size: 128             # offline only; strict uses structured_strict_data
   learning_rate: 0.0001
   # Print live training/validation progress every N batches.
@@ -94,7 +94,7 @@ structured_teacher_training:
   strict_resume_checkpoint: my_file/end_to_end/L_logical/structured_model/models/strict_oracle_exp2/best.pt
   output_dir: my_file/end_to_end/L_logical/structured_model/models/teacher_round_1_exp2
   strict_output_dir: my_file/end_to_end/L_logical/structured_model/models/strict_teacher_round_1_exp2
-  epochs: 5
+  epochs: 3
   batch_size: 128             # offline only; strict uses structured_strict_data
   learning_rate: 0.00003
   # Print live training/validation progress every N batches.
@@ -118,9 +118,9 @@ structured_evaluation:
   oracle_checkpoint: my_file/end_to_end/L_logical/structured_model/models/oracle_exp2/best.pt
   output: my_file/end_to_end/L_logical/structured_model/models/teacher_round_1_exp2/endpoint_selected_ler.json
   # Strict-only counterparts keep strict and offline artifacts separate.
-  strict_checkpoint: my_file/end_to_end/L_logical/structured_model/models/strict_teacher_round_1_exp2/best.pt
-  strict_oracle_checkpoint: my_file/end_to_end/L_logical/structured_model/models/strict_oracle_exp2/best.pt
-  strict_output: my_file/end_to_end/L_logical/structured_model/models/strict_teacher_round_1_exp2/endpoint_selected_ler.json
+  strict_checkpoint: my_file/end_to_end/L_logical/structured_model/models/teacher_round_1_exp2/best.pt
+  strict_oracle_checkpoint: my_file/end_to_end/L_logical/structured_model/models/oracle_exp2/best.pt
+  strict_output: my_file/end_to_end/L_logical/structured_model/models/teacher_round_1_exp2/endpoint_selected_ler_strict_X_5.json
   batch_size: 256             # offline only; strict uses structured_strict_data
   log_every_batches: 25
   train_fraction: 0.70       # offline only

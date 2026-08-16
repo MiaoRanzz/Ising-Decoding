@@ -31,7 +31,7 @@ model_id: 1  # Surface: choose 1, 2, 3, 4, or 5. Color: choose 1, 2, 4, 5, or B 
 code: surface  # surface or color
 
 # === Values for evaluation. Training window is hardcoded to model receptive field. ===
-distance: 3
+distance: 9
 n_rounds: 9
 
 # === Workflow ===
@@ -46,7 +46,7 @@ validation_decoder: pymatching  # pymatching, ldpc_unionfind, or nbi_hyq_unionfi
 # slow backend without affecting training validation.
 backend:
   pymatching: true
-  ldpc_unionfind: true
+  ldpc_unionfind: false
   nbi_hyq_unionfind: false
 
 # === Data ===
