@@ -3,7 +3,7 @@ patent_evaluation:
   # train_x and detector/observable rows are read; train_y is not used.
   dataset_dir: my_file/end_to_end/L_logical/data_generated/dataset_Xd9c9_1
   project_config: conf/config_public.yaml
-  checkpoint: models/ising_domestic_fast/models/PreDecoderModelMemory_v1.0.71.pt
+  checkpoint: outputs/test1/models/PreDecoderModelMemory_v1.0.100.pt
   model_id: 1
   output: my_file/patent/results/patent_gate_evaluation.json
   device: null

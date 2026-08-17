@@ -98,11 +98,13 @@ lqcloud_simulations/
 third_party/uf_decoder/
 
 # my_file/end_to_end files
-my_file/end_to_end/L_logical/comparison_results
-my_file/end_to_end/L_logical/data_generated
-my_file/end_to_end/L_logical/packet_model/data
-my_file/end_to_end/L_logical/packet_model/models
-my_file/end_to_end/L_logical/group_model/data
-my_file/end_to_end/L_logical/group_model/models
-my_file/end_to_end/L_logical/structured_model/data
-my_file/end_to_end/L_logical/structured_model/models
+my_file/end_to_end/L_logical/comparison_results/
+my_file/end_to_end/L_logical/data_generated/
+my_file/end_to_end/L_logical/packet_model/data/
+my_file/end_to_end/L_logical/packet_model/models/
+my_file/end_to_end/L_logical/group_model/data/
+my_file/end_to_end/L_logical/group_model/models/
+my_file/end_to_end/L_logical/structured_model/data/
+my_file/end_to_end/L_logical/structured_model/models/
+
+my_file/patent/results/
