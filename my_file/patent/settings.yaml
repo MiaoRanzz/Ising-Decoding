@@ -5,7 +5,7 @@ patent_evaluation:
   project_config: conf/config_public.yaml
   checkpoint: outputs/test1/models/PreDecoderModelMemory_v1.0.100.pt
   model_id: 1
-  output: my_file/patent/results/patent_gate_evaluation.json
+  output: my_file/patent/results/patent_gate_evaluation_4.json
   device: null
   batch_size: 128
   # The Python reference search is intentionally transparent rather than
@@ -24,12 +24,12 @@ patent_evaluation:
     measurement_probability_threshold: 0.5
     # Candidate edges are induced by detector overlap and this many graph hops.
     interaction_radius: 1
-    max_candidates: 256
-    max_cluster_size: 8
-    max_combination_actions: 4
-    max_combinations_per_cluster: 128
-    max_accepted_actions: 128
-    max_iterations: 128
+    max_candidates: 48
+    max_cluster_size: 4
+    max_combination_actions: 2
+    max_combinations_per_cluster: 8
+    max_accepted_actions: 24
+    max_iterations: 12
 
     utility_threshold: 0.0
     workload_increase_tolerance: 0.0
