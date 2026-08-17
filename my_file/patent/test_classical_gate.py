@@ -128,6 +128,46 @@ class ClassicalGateTests(unittest.TestCase):
         )
         self.assertEqual(result.accepted_count, 0)
 
+    def test_cluster_budget_prioritizes_uncertain_logical_cluster(self):
+        space = _synthetic_space(
+            np.eye(2, dtype=np.uint8),
+            np.asarray([[0, 1]], dtype=np.uint8),
+            [[], []],
+        )
+        config = _simple_config(
+            max_iterations=1,
+            max_clusters_per_iteration=1,
+            cluster_priority_risk_weight=1.0,
+            cluster_priority_workload_weight=0.0,
+        )
+        result = TopologyResidualGate(space, config).run(
+            np.asarray([1, 1], dtype=np.uint8), np.asarray([0.9, 0.5])
+        )
+        np.testing.assert_array_equal(result.accepted_mask, [False, True])
+        self.assertEqual(result.available_cluster_evaluations, 2)
+        self.assertEqual(result.processed_cluster_evaluations, 1)
+        self.assertGreater(result.decisions[0].cluster_risk, 0.0)
+
+    def test_cluster_budget_can_prioritize_backend_workload(self):
+        space = _synthetic_space(
+            np.eye(2, dtype=np.uint8),
+            np.zeros((1, 2), dtype=np.uint8),
+            [[], []],
+        )
+        config = _simple_config(
+            max_iterations=1,
+            max_clusters_per_iteration=1,
+            cluster_priority_risk_weight=0.0,
+            cluster_priority_workload_weight=1.0,
+        )
+        result = TopologyResidualGate(space, config).run(
+            np.asarray([0, 1], dtype=np.uint8), np.asarray([0.9, 0.9])
+        )
+        np.testing.assert_array_equal(result.accepted_mask, [False, True])
+        self.assertEqual(result.available_cluster_evaluations, 2)
+        self.assertEqual(result.processed_cluster_evaluations, 1)
+        self.assertEqual(result.decisions[0].cluster_workload_share, 1.0)
+
 
 @unittest.skipUnless(SURFACE_DEPENDENCIES_AVAILABLE, SURFACE_SKIP_REASON)
 class SurfaceMappingTests(unittest.TestCase):

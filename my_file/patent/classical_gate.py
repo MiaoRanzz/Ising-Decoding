@@ -177,6 +177,9 @@ class GateConfig:
     max_combinations_per_cluster: int = 128
     max_accepted_actions: int = 128
     max_iterations: int = 128
+    max_clusters_per_iteration: int | None = None
+    cluster_priority_risk_weight: float = 1.0
+    cluster_priority_workload_weight: float = 0.25
     utility_threshold: float = 0.0
     workload_increase_tolerance: float = 0.0
     max_logical_risk: float = 1.0
@@ -208,6 +211,20 @@ class GateConfig:
         ):
             if value <= 0:
                 raise ValueError(f"{name} must be positive")
+        if self.max_clusters_per_iteration is not None and self.max_clusters_per_iteration <= 0:
+            raise ValueError("max_clusters_per_iteration must be positive or null")
+        for value, name in (
+            (self.cluster_priority_risk_weight, "cluster_priority_risk_weight"),
+            (self.cluster_priority_workload_weight, "cluster_priority_workload_weight"),
+        ):
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(f"{name} must be finite and non-negative")
+        if (
+            self.max_clusters_per_iteration is not None
+            and self.cluster_priority_risk_weight == 0.0
+            and self.cluster_priority_workload_weight == 0.0
+        ):
+            raise ValueError("at least one cluster-priority weight must be positive")
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, object] | None) -> "GateConfig":
@@ -228,6 +245,9 @@ class GateDecision:
     logical_effect: tuple[int, ...]
     logical_risk: float
     gate_cost: float
+    cluster_priority: float | None = None
+    cluster_risk: float | None = None
+    cluster_workload_share: float | None = None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -244,6 +264,8 @@ class GateResult:
     final_workload: WorkloadFeatures
     evaluated_combinations: int
     elapsed_seconds: float
+    available_cluster_evaluations: int = 0
+    processed_cluster_evaluations: int = 0
 
     @property
     def accepted_count(self) -> int:
@@ -258,6 +280,8 @@ class GateResult:
             "candidate_count": self.candidate_count,
             "accepted_count": self.accepted_count,
             "evaluated_combinations": self.evaluated_combinations,
+            "available_cluster_evaluations": self.available_cluster_evaluations,
+            "processed_cluster_evaluations": self.processed_cluster_evaluations,
             "elapsed_seconds": self.elapsed_seconds,
             "initial_workload": self.initial_workload.to_dict(),
             "final_workload": self.final_workload.to_dict(),
@@ -276,8 +300,19 @@ class _Proposal:
     logical_effect: tuple[int, ...]
     logical_risk: float
     gate_cost: float
+    cluster_priority: float | None
+    cluster_risk: float | None
+    cluster_workload_share: float | None
     residual: np.ndarray
     evaluated: int
+
+
+@dataclass(frozen=True)
+class _ClusterPriority:
+    action_indices: tuple[int, ...]
+    priority: float | None = None
+    risk: float | None = None
+    workload_share: float | None = None
 
 
 class TopologyResidualGate:
@@ -465,13 +500,92 @@ class TopologyResidualGate:
             + self.config.risk_nontrivial * nontrivial
         )
 
-    def _best_proposal(
+    def _cluster_workload_share(
         self,
         cluster: Sequence[int],
         syndrome: np.ndarray,
         before: WorkloadFeatures,
+    ) -> float:
+        """Fraction of current backend workload touched by a candidate cluster.
+
+        This is intentionally a pre-enumeration proxy: it keeps only the active
+        detector events lying in the union of the cluster's detector supports,
+        then evaluates them with the same topology workload used by the gate.
+        It does not assume that applying every action in the cluster is correct.
+        """
+
+        if before.normalized_score <= self.config.probability_epsilon:
+            return 0.0
+        support = {
+            detector
+            for action_index in cluster
+            for detector in self.space.actions[int(action_index)].detector_support
+        }
+        if not support:
+            return 0.0
+        local_syndrome = np.zeros(self.space.num_detectors, dtype=np.uint8)
+        support_indices = np.fromiter(sorted(support), dtype=np.int32)
+        local_syndrome[support_indices] = syndrome[support_indices]
+        local_score = self.workload(local_syndrome).normalized_score
+        return float(np.clip(local_score / before.normalized_score, 0.0, 1.0))
+
+    def _prioritized_clusters(
+        self,
+        clusters: Sequence[tuple[int, ...]],
+        syndrome: np.ndarray,
+        before: WorkloadFeatures,
+        probabilities: np.ndarray,
+    ) -> list[_ClusterPriority]:
+        """Rank clusters cheaply and enforce the optional per-iteration budget."""
+
+        limit = self.config.max_clusters_per_iteration
+        if limit is None:
+            return [_ClusterPriority(action_indices=tuple(cluster)) for cluster in clusters]
+
+        ranked: list[_ClusterPriority] = []
+        for cluster in clusters:
+            cluster = tuple(int(index) for index in cluster)
+            uncertainty = self._uncertainty(cluster, probabilities)
+            # A cluster has logical potential if any member can touch a tracked
+            # logical frame.  OR is used rather than XOR because no concrete
+            # action combination has been selected at this ranking stage.
+            logical_potential = np.any(
+                self.space.l[:, list(cluster)].astype(bool), axis=1
+            ).astype(np.uint8)
+            risk = self._risk(cluster, uncertainty, logical_potential)
+            workload_share = self._cluster_workload_share(cluster, syndrome, before)
+            priority = (
+                self.config.cluster_priority_risk_weight * risk
+                + self.config.cluster_priority_workload_weight * workload_share
+            )
+            ranked.append(
+                _ClusterPriority(
+                    action_indices=cluster,
+                    priority=float(priority),
+                    risk=float(risk),
+                    workload_share=float(workload_share),
+                )
+            )
+
+        ranked.sort(
+            key=lambda item: (
+                -float(item.priority),
+                -float(item.risk),
+                -float(item.workload_share),
+                -max(probabilities[list(item.action_indices)]),
+                item.action_indices,
+            )
+        )
+        return ranked[:limit]
+
+    def _best_proposal(
+        self,
+        cluster_priority: _ClusterPriority,
+        syndrome: np.ndarray,
+        before: WorkloadFeatures,
         probabilities: np.ndarray,
     ) -> _Proposal | None:
+        cluster = cluster_priority.action_indices
         best: _Proposal | None = None
         evaluated = 0
         for chosen in self._ranked_combinations(cluster, probabilities):
@@ -507,6 +621,9 @@ class TopologyResidualGate:
                 logical_effect=tuple(int(v) for v in logical),
                 logical_risk=risk,
                 gate_cost=float(gate_cost),
+                cluster_priority=cluster_priority.priority,
+                cluster_risk=cluster_priority.risk,
+                cluster_workload_share=cluster_priority.workload_share,
                 residual=trial,
                 evaluated=evaluated,
             )
@@ -535,6 +652,8 @@ class TopologyResidualGate:
         initial_workload = self.workload(residual)
         decisions: list[GateDecision] = []
         evaluated_total = 0
+        available_cluster_total = 0
+        processed_cluster_total = 0
 
         for iteration in range(self.config.max_iterations):
             remaining = np.flatnonzero(candidate_mask & ~accepted)
@@ -542,11 +661,20 @@ class TopologyResidualGate:
                 break
             before = self.workload(residual)
             proposals: list[_Proposal] = []
-            for cluster in self._clusters(remaining, probabilities):
+            clusters = self._clusters(remaining, probabilities)
+            available_cluster_total += len(clusters)
+            prioritized_clusters = self._prioritized_clusters(
+                clusters, residual, before, probabilities
+            )
+            processed_cluster_total += len(prioritized_clusters)
+            for cluster_priority in prioritized_clusters:
+                cluster = cluster_priority.action_indices
                 remaining_budget = self.config.max_accepted_actions - int(accepted.sum())
                 if remaining_budget <= 0:
                     break
-                proposal = self._best_proposal(cluster, residual, before, probabilities)
+                proposal = self._best_proposal(
+                    cluster_priority, residual, before, probabilities
+                )
                 if proposal is not None and len(proposal.action_indices) <= remaining_budget:
                     proposals.append(proposal)
                 evaluated_total += (
@@ -591,6 +719,9 @@ class TopologyResidualGate:
                     logical_effect=chosen.logical_effect,
                     logical_risk=chosen.logical_risk,
                     gate_cost=chosen.gate_cost,
+                    cluster_priority=chosen.cluster_priority,
+                    cluster_risk=chosen.cluster_risk,
+                    cluster_workload_share=chosen.cluster_workload_share,
                 )
             )
 
@@ -604,6 +735,8 @@ class TopologyResidualGate:
             final_workload=self.workload(residual),
             evaluated_combinations=evaluated_total,
             elapsed_seconds=time.perf_counter() - started,
+            available_cluster_evaluations=available_cluster_total,
+            processed_cluster_evaluations=processed_cluster_total,
         )
 
 

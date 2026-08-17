@@ -159,6 +159,7 @@ def run(settings_path: Path, *, max_samples: int | None = None, device_name: str
     original_residual_sum = gated_residual_sum = 0
     original_action_sum = gated_action_sum = 0
     candidate_sum = evaluated_sum = decision_sum = 0
+    available_cluster_sum = processed_cluster_sum = 0
     gate_time = model_time = decoder_time = 0.0
     paired = {"gate_helpful": 0, "gate_harmful": 0, "both_fail": 0, "both_succeed": 0}
     traces: list[dict[str, Any]] = []
@@ -202,6 +203,8 @@ def run(settings_path: Path, *, max_samples: int | None = None, device_name: str
             candidate_sum += result.candidate_count
             evaluated_sum += result.evaluated_combinations
             decision_sum += len(result.decisions)
+            available_cluster_sum += result.available_cluster_evaluations
+            processed_cluster_sum += result.processed_cluster_evaluations
             if len(traces) < trace_limit:
                 traces.append({"shot": start + local_index, **result.summary()})
         gate_time += time.perf_counter() - t0
@@ -262,6 +265,13 @@ def run(settings_path: Path, *, max_samples: int | None = None, device_name: str
             "mean_candidates_per_shot": candidate_sum / total,
             "mean_accepted_decisions_per_shot": decision_sum / total,
             "mean_evaluated_combinations_per_shot": evaluated_sum / total,
+            "mean_available_clusters_per_shot": available_cluster_sum / total,
+            "mean_processed_clusters_per_shot": processed_cluster_sum / total,
+            "processed_cluster_fraction": (
+                processed_cluster_sum / available_cluster_sum
+                if available_cluster_sum
+                else 0.0
+            ),
         },
         "timing_seconds": {
             "model": model_time,

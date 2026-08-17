@@ -30,6 +30,11 @@ patent_evaluation:
     max_combinations_per_cluster: 8
     max_accepted_actions: 24
     max_iterations: 12
+    # Per iteration, enumerate only the highest-priority clusters. Set to null
+    # to recover the legacy behavior that processes every cluster.
+    max_clusters_per_iteration: 4
+    cluster_priority_risk_weight: 1.0
+    cluster_priority_workload_weight: 0.25
 
     utility_threshold: 0.0
     workload_increase_tolerance: 0.0
