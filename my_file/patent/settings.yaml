@@ -1,0 +1,52 @@
+patent_evaluation:
+  # Paired synthetic corpus produced by generate_labeled_dataset.py.  Only
+  # train_x and detector/observable rows are read; train_y is not used.
+  dataset_dir: my_file/end_to_end/L_logical/data_generated/dataset_Xd9c9_1
+  project_config: conf/config_public.yaml
+  checkpoint: models/ising_domestic_fast/models/PreDecoderModelMemory_v1.0.71.pt
+  model_id: 1
+  output: my_file/patent/results/patent_gate_evaluation.json
+  device: null
+  batch_size: 128
+  # The Python reference search is intentionally transparent rather than
+  # latency-optimized. Start small, then raise this for a statistical run.
+  max_samples: 4096
+  mapping_probe_batch_size: 256
+  log_every_batches: 10
+  trace_first_n: 8
+
+  # Reproduce the current Ising-fast accept-all path at sigmoid(logit) >= 0.5.
+  original_data_probability_threshold: 0.5
+  original_measurement_probability_threshold: 0.5
+
+  gate:
+    data_probability_threshold: 0.5
+    measurement_probability_threshold: 0.5
+    # Candidate edges are induced by detector overlap and this many graph hops.
+    interaction_radius: 1
+    max_candidates: 256
+    max_cluster_size: 8
+    max_combination_actions: 4
+    max_combinations_per_cluster: 128
+    max_accepted_actions: 128
+    max_iterations: 128
+
+    utility_threshold: 0.0
+    workload_increase_tolerance: 0.0
+    max_logical_risk: 1.0
+    uncertainty_weight: 0.10
+    logical_risk_weight: 0.25
+    gate_cost_weight: 0.0
+    risk_uncertain_logical: 1.0
+    risk_boundary: 0.10
+    risk_nontrivial: 0.10
+    gate_cost_per_action: 1.0
+    gate_cost_per_evaluation: 0.01
+
+    workload:
+      active_count: 1.0
+      component_count: 0.10
+      largest_component: 0.25
+      squared_component_sum: 0.50
+      local_pair_count: 0.10
+      boundary_active_count: 0.10
