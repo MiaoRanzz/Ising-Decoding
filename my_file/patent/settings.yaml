@@ -30,7 +30,7 @@ patent_evaluation:
     max_candidates: 48
     max_cluster_size: 4
     max_combination_actions: 4
-    max_combinations_per_cluster: 8
+    max_combinations_per_cluster: 32
     max_accepted_actions: 24
     max_vetoed_actions: 24
     max_iterations: 12
@@ -65,15 +65,15 @@ patent_evaluation:
 # derives model trainX from detector rows only.  X and Z use independent RNG
 # streams deterministically derived from seed.
 patent_strict_evaluation:
-  output: my_file/patent/results/patent_gate_strict_online_1.json
+  output: my_file/patent/results/patent_gate_strict_online_9.json
   noise_config: conf/config_public.yaml
   distance: 9
   n_rounds: 9
   code_rotation: XV
   bases: [X, Z]
-  seed: 36459
+  seed: 88642
   # This count applies independently to each basis (total = count * 2 here).
-  samples_per_basis: 4096
+  samples_per_basis: 65536
   batch_size: 128
   device: null
   log_every_batches: 10
