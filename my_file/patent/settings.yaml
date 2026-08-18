@@ -5,12 +5,12 @@ patent_evaluation:
   project_config: conf/config_public.yaml
   checkpoint: outputs/test1/models/PreDecoderModelMemory_v1.0.100.pt
   model_id: 1
-  output: my_file/patent/results/patent_gate_evaluation_4.json
+  output: my_file/patent/results/patent_gate_evaluation_10.json
   device: null
   batch_size: 128
   # The Python reference search is intentionally transparent rather than
   # latency-optimized. Start small, then raise this for a statistical run.
-  max_samples: 4096
+  max_samples: 65536
   mapping_probe_batch_size: 256
   log_every_batches: 10
   trace_first_n: 8
@@ -29,7 +29,7 @@ patent_evaluation:
     interaction_radius: 1
     max_candidates: 48
     max_cluster_size: 4
-    max_combination_actions: 2
+    max_combination_actions: 4
     max_combinations_per_cluster: 8
     max_accepted_actions: 24
     max_vetoed_actions: 24
@@ -59,3 +59,22 @@ patent_evaluation:
       squared_component_sum: 0.50
       local_pair_count: 0.10
       boundary_active_count: 0.10
+
+# Strict held-out evaluation.  This path does not read dataset_dir: it samples
+# fresh detector/observable rows online from the configured Stim circuit and
+# derives model trainX from detector rows only.  X and Z use independent RNG
+# streams deterministically derived from seed.
+patent_strict_evaluation:
+  output: my_file/patent/results/patent_gate_strict_online_1.json
+  noise_config: conf/config_public.yaml
+  distance: 9
+  n_rounds: 9
+  code_rotation: XV
+  bases: [X, Z]
+  seed: 36459
+  # This count applies independently to each basis (total = count * 2 here).
+  samples_per_basis: 4096
+  batch_size: 128
+  device: null
+  log_every_batches: 10
+  trace_first_n_per_basis: 4

@@ -11,6 +11,7 @@ from .classical_gate import Action, ActionSpace, GateConfig, TopologyResidualGat
 try:
     import torch
     from .surface_code import FixedActionModel, apply_dense_actions, build_surface_action_space
+    from .strict_evaluate import _basis_seed, _parse_bases
     from evaluation.logical_error_rate import PreDecoderMemoryEvalModule, _build_stab_maps
     SURFACE_DEPENDENCIES_AVAILABLE = True
     SURFACE_SKIP_REASON = ""
@@ -273,6 +274,18 @@ class SurfaceMappingTests(unittest.TestCase):
             actual = endpoint(torch.as_tensor(detectors, dtype=torch.uint8)).cpu().numpy()
         np.testing.assert_array_equal(actual[:, 0:1], expected_l)
         np.testing.assert_array_equal(actual[:, 1:], expected_residual)
+
+
+@unittest.skipUnless(SURFACE_DEPENDENCIES_AVAILABLE, SURFACE_SKIP_REASON)
+class StrictOnlineConfigurationTests(unittest.TestCase):
+    def test_both_basis_interface_and_seeds_are_reproducible(self):
+        self.assertEqual(_parse_bases("both"), ("X", "Z"))
+        self.assertEqual(_parse_bases(["Z", "X", "Z"]), ("Z", "X"))
+        x_seed = _basis_seed(20260818, "X")
+        z_seed = _basis_seed(20260818, "Z")
+        self.assertEqual(x_seed, _basis_seed(20260818, "X"))
+        self.assertEqual(z_seed, _basis_seed(20260818, "Z"))
+        self.assertNotEqual(x_seed, z_seed)
 
 
 if __name__ == "__main__":
