@@ -159,6 +159,7 @@ def run(settings_path: Path, *, max_samples: int | None = None, device_name: str
     original_residual_sum = gated_residual_sum = 0
     original_action_sum = gated_action_sum = 0
     candidate_sum = evaluated_sum = decision_sum = 0
+    vetoed_action_sum = 0
     available_cluster_sum = processed_cluster_sum = 0
     gate_time = model_time = decoder_time = 0.0
     paired = {"gate_helpful": 0, "gate_harmful": 0, "both_fail": 0, "both_succeed": 0}
@@ -203,6 +204,7 @@ def run(settings_path: Path, *, max_samples: int | None = None, device_name: str
             candidate_sum += result.candidate_count
             evaluated_sum += result.evaluated_combinations
             decision_sum += len(result.decisions)
+            vetoed_action_sum += result.vetoed_count
             available_cluster_sum += result.available_cluster_evaluations
             processed_cluster_sum += result.processed_cluster_evaluations
             if len(traces) < trace_limit:
@@ -237,7 +239,7 @@ def run(settings_path: Path, *, max_samples: int | None = None, device_name: str
             )
 
     report = {
-        "artifact": "topology_residual_patent_gate_evaluation_v1",
+        "artifact": "topology_residual_patent_gate_evaluation_v2",
         "dataset_dir": str(dataset_dir),
         "checkpoint": str(checkpoint),
         "basis": str(metadata["basis"]),
@@ -262,8 +264,18 @@ def run(settings_path: Path, *, max_samples: int | None = None, device_name: str
         },
         "paired_gate_vs_ising_accept_all": paired,
         "gate_search": {
+            "selection_mode": gate_config.selection_mode,
             "mean_candidates_per_shot": candidate_sum / total,
-            "mean_accepted_decisions_per_shot": decision_sum / total,
+            "mean_gate_decisions_per_shot": decision_sum / total,
+            "mean_accepted_decisions_per_shot": (
+                decision_sum / total if gate_config.selection_mode == "accept" else 0.0
+            ),
+            "mean_vetoed_decisions_per_shot": (
+                decision_sum / total
+                if gate_config.selection_mode == "harmful_veto"
+                else 0.0
+            ),
+            "mean_vetoed_actions_per_shot": vetoed_action_sum / total,
             "mean_evaluated_combinations_per_shot": evaluated_sum / total,
             "mean_available_clusters_per_shot": available_cluster_sum / total,
             "mean_processed_clusters_per_shot": processed_cluster_sum / total,

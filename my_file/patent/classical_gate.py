@@ -169,6 +169,7 @@ class WorkloadFeatures:
 class GateConfig:
     """Search, risk, and acceptance parameters for the online gate."""
 
+    selection_mode: str = "accept"
     data_probability_threshold: float = 0.50
     measurement_probability_threshold: float = 0.50
     max_candidates: int = 256
@@ -176,6 +177,7 @@ class GateConfig:
     max_combination_actions: int = 4
     max_combinations_per_cluster: int = 128
     max_accepted_actions: int = 128
+    max_vetoed_actions: int = 128
     max_iterations: int = 128
     max_clusters_per_iteration: int | None = None
     cluster_priority_risk_weight: float = 1.0
@@ -195,6 +197,8 @@ class GateConfig:
     workload: WorkloadWeights = field(default_factory=WorkloadWeights)
 
     def __post_init__(self) -> None:
+        if self.selection_mode not in ("accept", "harmful_veto"):
+            raise ValueError("selection_mode must be 'accept' or 'harmful_veto'")
         for value, name in (
             (self.data_probability_threshold, "data_probability_threshold"),
             (self.measurement_probability_threshold, "measurement_probability_threshold"),
@@ -207,6 +211,7 @@ class GateConfig:
             (self.max_combination_actions, "max_combination_actions"),
             (self.max_combinations_per_cluster, "max_combinations_per_cluster"),
             (self.max_accepted_actions, "max_accepted_actions"),
+            (self.max_vetoed_actions, "max_vetoed_actions"),
             (self.max_iterations, "max_iterations"),
         ):
             if value <= 0:
@@ -248,6 +253,7 @@ class GateDecision:
     cluster_priority: float | None = None
     cluster_risk: float | None = None
     cluster_workload_share: float | None = None
+    decision_kind: str = "accept"
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -266,6 +272,8 @@ class GateResult:
     elapsed_seconds: float
     available_cluster_evaluations: int = 0
     processed_cluster_evaluations: int = 0
+    gate_mode: str = "accept"
+    vetoed_mask: np.ndarray | None = None
 
     @property
     def accepted_count(self) -> int:
@@ -275,10 +283,16 @@ class GateResult:
     def candidate_count(self) -> int:
         return int(self.candidate_mask.sum())
 
+    @property
+    def vetoed_count(self) -> int:
+        return 0 if self.vetoed_mask is None else int(self.vetoed_mask.sum())
+
     def summary(self) -> dict[str, object]:
         return {
             "candidate_count": self.candidate_count,
             "accepted_count": self.accepted_count,
+            "vetoed_count": self.vetoed_count,
+            "gate_mode": self.gate_mode,
             "evaluated_combinations": self.evaluated_combinations,
             "available_cluster_evaluations": self.available_cluster_evaluations,
             "processed_cluster_evaluations": self.processed_cluster_evaluations,
@@ -453,18 +467,29 @@ class TopologyResidualGate:
         return result
 
     def _ranked_combinations(
-        self, cluster: Sequence[int], probabilities: np.ndarray
+        self,
+        cluster: Sequence[int],
+        probabilities: np.ndarray,
+        *,
+        veto: bool = False,
     ) -> list[tuple[int, ...]]:
         eps = self.config.probability_epsilon
         cluster = tuple(int(i) for i in cluster)
         p = np.clip(probabilities[list(cluster)], eps, 1.0 - eps)
+        # In harmful-veto mode, ``chosen`` means rejected rather than accepted.
+        # Therefore 1-p is the model-derived suspicion that an action should not
+        # have been applied, while unchosen actions retain probability p.
+        chosen_probability = 1.0 - p if veto else p
+        unchosen_probability = p if veto else 1.0 - p
         entries: list[tuple[float, tuple[int, ...]]] = []
         max_size = min(len(cluster), self.config.max_combination_actions)
         for size in range(1, max_size + 1):
             for chosen in combinations(range(len(cluster)), size):
                 chosen_set = set(chosen)
                 log_likelihood = sum(
-                    math.log(p[pos]) if pos in chosen_set else math.log1p(-p[pos])
+                    math.log(chosen_probability[pos])
+                    if pos in chosen_set
+                    else math.log(unchosen_probability[pos])
                     for pos in range(len(cluster))
                 )
                 entries.append((log_likelihood, tuple(cluster[pos] for pos in chosen)))
@@ -586,9 +611,12 @@ class TopologyResidualGate:
         probabilities: np.ndarray,
     ) -> _Proposal | None:
         cluster = cluster_priority.action_indices
+        veto_mode = self.config.selection_mode == "harmful_veto"
         best: _Proposal | None = None
         evaluated = 0
-        for chosen in self._ranked_combinations(cluster, probabilities):
+        for chosen in self._ranked_combinations(
+            cluster, probabilities, veto=veto_mode
+        ):
             evaluated += 1
             mask = np.zeros(self.space.num_actions, dtype=np.uint8)
             mask[list(chosen)] = 1
@@ -600,16 +628,27 @@ class TopologyResidualGate:
                 self.config.gate_cost_per_action * len(chosen)
                 + self.config.gate_cost_per_evaluation * evaluated
             )
-            utility = (
-                before.normalized_score
-                - after.normalized_score
-                - self.config.uncertainty_weight * uncertainty
-                - self.config.logical_risk_weight * risk
-                - self.config.gate_cost_weight * gate_cost
-            )
+            workload_gain = before.normalized_score - after.normalized_score
+            if veto_mode:
+                # High uncertainty/risk is evidence in favor of vetoing an
+                # already-applied action, hence the reversed signs.  Workload
+                # still anchors the decision to backend decoding difficulty.
+                utility = (
+                    workload_gain
+                    + self.config.uncertainty_weight * uncertainty
+                    + self.config.logical_risk_weight * risk
+                    - self.config.gate_cost_weight * gate_cost
+                )
+            else:
+                utility = (
+                    workload_gain
+                    - self.config.uncertainty_weight * uncertainty
+                    - self.config.logical_risk_weight * risk
+                    - self.config.gate_cost_weight * gate_cost
+                )
             if after.normalized_score > before.normalized_score + self.config.workload_increase_tolerance:
                 continue
-            if risk > self.config.max_logical_risk:
+            if not veto_mode and risk > self.config.max_logical_risk:
                 continue
             proposal = _Proposal(
                 cluster_size=len(cluster),
@@ -646,9 +685,16 @@ class TopologyResidualGate:
         if syndrome.shape != (self.space.num_detectors,):
             raise ValueError("syndrome has the wrong width")
         candidate_mask = self._candidate_mask(probabilities)
-        accepted = np.zeros(self.space.num_actions, dtype=bool)
-        residual = syndrome.copy()
-        local_frame = np.zeros(self.space.num_logicals, dtype=np.uint8)
+        veto_mode = self.config.selection_mode == "harmful_veto"
+        vetoed = np.zeros(self.space.num_actions, dtype=bool)
+        if veto_mode:
+            # Harmful-veto starts from the complete thresholded Ising frame.
+            accepted = candidate_mask.copy()
+            residual, local_frame = self.space.apply_mask(syndrome, candidate_mask)
+        else:
+            accepted = np.zeros(self.space.num_actions, dtype=bool)
+            residual = syndrome.copy()
+            local_frame = np.zeros(self.space.num_logicals, dtype=np.uint8)
         initial_workload = self.workload(residual)
         decisions: list[GateDecision] = []
         evaluated_total = 0
@@ -656,8 +702,16 @@ class TopologyResidualGate:
         processed_cluster_total = 0
 
         for iteration in range(self.config.max_iterations):
-            remaining = np.flatnonzero(candidate_mask & ~accepted)
-            if remaining.size == 0 or int(accepted.sum()) >= self.config.max_accepted_actions:
+            remaining = np.flatnonzero(
+                candidate_mask & (accepted if veto_mode else ~accepted)
+            )
+            action_count = int(vetoed.sum()) if veto_mode else int(accepted.sum())
+            action_limit = (
+                self.config.max_vetoed_actions
+                if veto_mode
+                else self.config.max_accepted_actions
+            )
+            if remaining.size == 0 or action_count >= action_limit:
                 break
             before = self.workload(residual)
             proposals: list[_Proposal] = []
@@ -669,7 +723,7 @@ class TopologyResidualGate:
             processed_cluster_total += len(prioritized_clusters)
             for cluster_priority in prioritized_clusters:
                 cluster = cluster_priority.action_indices
-                remaining_budget = self.config.max_accepted_actions - int(accepted.sum())
+                remaining_budget = action_limit - action_count
                 if remaining_budget <= 0:
                     break
                 proposal = self._best_proposal(
@@ -702,9 +756,18 @@ class TopologyResidualGate:
                 break
             chosen = max(
                 acceptable,
-                key=lambda p: (p.utility, -p.logical_risk, -len(p.action_indices), tuple(-i for i in p.action_indices)),
+                key=lambda p: (
+                    p.utility,
+                    p.logical_risk if veto_mode else -p.logical_risk,
+                    -len(p.action_indices),
+                    tuple(-i for i in p.action_indices),
+                ),
             )
-            accepted[list(chosen.action_indices)] = True
+            if veto_mode:
+                vetoed[list(chosen.action_indices)] = True
+                accepted[list(chosen.action_indices)] = False
+            else:
+                accepted[list(chosen.action_indices)] = True
             residual = chosen.residual
             local_frame ^= np.asarray(chosen.logical_effect, dtype=np.uint8)
             decisions.append(
@@ -722,6 +785,7 @@ class TopologyResidualGate:
                     cluster_priority=chosen.cluster_priority,
                     cluster_risk=chosen.cluster_risk,
                     cluster_workload_share=chosen.cluster_workload_share,
+                    decision_kind="veto" if veto_mode else "accept",
                 )
             )
 
@@ -737,6 +801,8 @@ class TopologyResidualGate:
             elapsed_seconds=time.perf_counter() - started,
             available_cluster_evaluations=available_cluster_total,
             processed_cluster_evaluations=processed_cluster_total,
+            gate_mode=self.config.selection_mode,
+            vetoed_mask=vetoed,
         )
 
 

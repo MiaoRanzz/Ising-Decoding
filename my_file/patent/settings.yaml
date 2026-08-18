@@ -20,6 +20,9 @@ patent_evaluation:
   original_measurement_probability_threshold: 0.5
 
   gate:
+    # Start from all thresholded Ising actions, then veto only combinations
+    # whose removal does not increase residual backend workload.
+    selection_mode: harmful_veto  # accept or harmful_veto
     data_probability_threshold: 0.5
     measurement_probability_threshold: 0.5
     # Candidate edges are induced by detector overlap and this many graph hops.
@@ -29,6 +32,7 @@ patent_evaluation:
     max_combination_actions: 2
     max_combinations_per_cluster: 8
     max_accepted_actions: 24
+    max_vetoed_actions: 24
     max_iterations: 12
     # Per iteration, enumerate only the highest-priority clusters. Set to null
     # to recover the legacy behavior that processes every cluster.

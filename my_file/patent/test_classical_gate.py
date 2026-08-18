@@ -168,6 +168,51 @@ class ClassicalGateTests(unittest.TestCase):
         self.assertEqual(result.processed_cluster_evaluations, 1)
         self.assertEqual(result.decisions[0].cluster_workload_share, 1.0)
 
+    def test_harmful_veto_starts_from_accept_all_and_removes_harmful_action(self):
+        space = _synthetic_space(
+            np.eye(2, dtype=np.uint8),
+            np.zeros((1, 2), dtype=np.uint8),
+            [[], []],
+        )
+        config = _simple_config(selection_mode="harmful_veto")
+        result = TopologyResidualGate(space, config).run(
+            np.asarray([0, 1], dtype=np.uint8), np.asarray([0.9, 0.9])
+        )
+        np.testing.assert_array_equal(result.accepted_mask, [False, True])
+        np.testing.assert_array_equal(result.vetoed_mask, [True, False])
+        np.testing.assert_array_equal(result.residual_syndrome, [0, 0])
+        self.assertEqual(result.decisions[0].decision_kind, "veto")
+
+    def test_harmful_veto_does_not_remove_useful_action_only_for_risk(self):
+        space = _synthetic_space(
+            np.asarray([[1]], dtype=np.uint8),
+            np.asarray([[1]], dtype=np.uint8),
+            [[]],
+        )
+        config = _simple_config(
+            selection_mode="harmful_veto",
+            uncertainty_weight=1.0,
+            logical_risk_weight=1.0,
+        )
+        result = TopologyResidualGate(space, config).run(
+            np.asarray([1], dtype=np.uint8), np.asarray([0.5])
+        )
+        np.testing.assert_array_equal(result.accepted_mask, [True])
+        np.testing.assert_array_equal(result.vetoed_mask, [False])
+        np.testing.assert_array_equal(result.residual_syndrome, [0])
+
+    def test_harmful_veto_ranks_lower_confidence_action_for_removal(self):
+        space = _synthetic_space(
+            np.eye(2, dtype=np.uint8),
+            np.zeros((1, 2), dtype=np.uint8),
+            [[1], [0]],
+        )
+        gate = TopologyResidualGate(space, _simple_config(selection_mode="harmful_veto"))
+        ranked = gate._ranked_combinations(
+            (0, 1), np.asarray([0.51, 0.99]), veto=True
+        )
+        self.assertEqual(ranked[0], (0,))
+
 
 @unittest.skipUnless(SURFACE_DEPENDENCIES_AVAILABLE, SURFACE_SKIP_REASON)
 class SurfaceMappingTests(unittest.TestCase):
