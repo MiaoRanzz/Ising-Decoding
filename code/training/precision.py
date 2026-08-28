@@ -120,6 +120,8 @@ def match_input_to_model_memory_format(tensor: torch.Tensor, model) -> torch.Ten
     forces the slow Conv3D kernel; converting the input keeps eval on the fast
     Tensor-Core path and consistent with training. No-op for contiguous models.
     """
+    if getattr(torch.onnx, "is_in_onnx_export", lambda: False)():
+        return tensor
     if tensor.dim() == 5 and model_is_channels_last_3d(model):
         return tensor.contiguous(memory_format=torch.channels_last_3d)
     return tensor

@@ -393,6 +393,24 @@ def validate_public_config(cfg: DictConfig) -> PublicModelSpec:
 
     code = _normalize_code(getattr(cfg, "code", "surface"))
     model_spec = get_model_spec(cfg.model_id)
+    if "htnet_ablation" in cfg:
+        if model_spec.model_version != "htnet":
+            raise ValueError("Config field 'htnet_ablation' requires model_id=111.")
+        allowed_ablation_keys = {
+            "branch_mixer",
+            "axis_channel_gate",
+            "input_skip_head",
+        }
+        for key in cfg.htnet_ablation.keys():
+            if key not in allowed_ablation_keys:
+                raise ValueError(
+                    f"Unsupported htnet_ablation field: {key!r}. "
+                    f"Allowed fields are: {sorted(allowed_ablation_keys)}"
+                )
+            if not isinstance(cfg.htnet_ablation[key], bool):
+                raise ValueError(
+                    f"Config field 'htnet_ablation.{key}' must be a boolean."
+                )
     if code == "color" and int(model_spec.receptive_field) > 13:
         raise ValueError(
             "code='color' currently supports public model_ids with receptive field <= 13 "

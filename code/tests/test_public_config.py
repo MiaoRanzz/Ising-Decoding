@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import unittest
+from hydra import compose, initialize_config_dir
 from pathlib import Path
 import sys
 from unittest.mock import patch
@@ -637,6 +638,7 @@ class TestQAdaptExampleLayout(unittest.TestCase):
     def test_exact_qadapt_example_configs_are_shipped(self):
         config_root = self.repo_root / "conf" / "examples" / "qadapt"
         expected = {
+            "config_ising_fast_t0_a100.yaml",
             "config_qadapt_t0_base.yaml",
             "config_qadapt_t1_meas_1p5.yaml",
             "config_qadapt_t2_cnot_1p5.yaml",
@@ -648,9 +650,24 @@ class TestQAdaptExampleLayout(unittest.TestCase):
         for path in config_root.glob("*.yaml"):
             with self.subTest(config=path.name):
                 cfg = OmegaConf.load(path)
-                self.assertEqual(int(cfg.model_id), 111)
+                expected_model_id = (
+                    1 if path.name == "config_ising_fast_t0_a100.yaml" else 111
+                )
+                self.assertEqual(int(cfg.model_id), expected_model_id)
                 self.assertEqual(str(cfg.workflow.task), "train")
                 self.assertNotIn("ewc", cfg)
+                if path.name == "config_ising_fast_t0_a100.yaml":
+                    self.assertTrue(cfg.data.skip_noise_upscaling)
+
+    def test_ising_fast_config_composes_at_hydra_root(self):
+        config_dir = self.repo_root / "conf"
+        with initialize_config_dir(config_dir=str(config_dir), version_base="1.3"):
+            cfg = compose(
+                config_name="examples/qadapt/config_ising_fast_t0_a100"
+            )
+        self.assertEqual(int(cfg.model_id), 1)
+        self.assertEqual(str(cfg.workflow.task), "train")
+        self.assertTrue(cfg.data.skip_noise_upscaling)
 
     def test_public_example_model_name_is_qadapt(self):
         public_paths = [

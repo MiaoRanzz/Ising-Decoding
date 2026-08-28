@@ -57,6 +57,7 @@ class ModelSpec:
     name: str
     model_id: int
     checkpoint: Path
+    config_file: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -194,12 +195,13 @@ def model_density_statistics(
 
 
 def parse_model_spec(value: str) -> ModelSpec:
-    parts = value.split(":", 2)
-    if len(parts) != 3:
+    parts = value.split(":", 3)
+    if len(parts) not in (3, 4):
         raise argparse.ArgumentTypeError(
-            "--model must be formatted as name:model_id:/path/to/checkpoint"
+            "--model must be formatted as "
+            "name:model_id:/path/to/checkpoint[:/path/to/config.yaml]"
         )
-    name, model_id_raw, checkpoint_raw = parts
+    name, model_id_raw, checkpoint_raw = parts[:3]
     if not name:
         raise argparse.ArgumentTypeError("model name must not be empty")
     try:
@@ -209,7 +211,17 @@ def parse_model_spec(value: str) -> ModelSpec:
     checkpoint = Path(checkpoint_raw).expanduser()
     if not checkpoint.is_absolute():
         checkpoint = REPO_ROOT / checkpoint
-    return ModelSpec(name=name, model_id=model_id, checkpoint=checkpoint)
+    config_file = None
+    if len(parts) == 4:
+        config_file = Path(parts[3]).expanduser()
+        if not config_file.is_absolute():
+            config_file = REPO_ROOT / config_file
+    return ModelSpec(
+        name=name,
+        model_id=model_id,
+        checkpoint=checkpoint,
+        config_file=config_file,
+    )
 
 
 def parse_comparison_spec(value: str) -> ComparisonSpec:
@@ -235,6 +247,20 @@ def parse_factorial_contrast_spec(value: str) -> FactorialContrastSpec:
     if len({cell_11, cell_10, cell_01, cell_00}) != 4:
         raise argparse.ArgumentTypeError("factorial contrast cells must be four distinct methods")
     return FactorialContrastSpec(name, cell_11, cell_10, cell_01, cell_00)
+
+def parse_three_factor_cells(value: str) -> tuple[str, ...]:
+    cells = tuple(part.strip() for part in value.split(","))
+    if len(cells) != 8 or not all(cells):
+        raise argparse.ArgumentTypeError(
+            "--three-factor-cells requires eight comma-separated methods "
+            "ordered as A000,A001,A010,A011,A100,A101,A110,A111"
+        )
+    if len(set(cells)) != 8:
+        raise argparse.ArgumentTypeError(
+            "--three-factor-cells methods must be distinct"
+        )
+    return cells
+
 
 
 def factorial_contrast_statistics(
@@ -358,6 +384,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--num-samples", type=int, default=262144)
     parser.add_argument("--latency-num-samples", type=int, default=10000)
     parser.add_argument("--batch-size", type=int, default=2048)
+    parser.add_argument("--latency-repeats", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--device", default=None)
@@ -382,7 +409,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         required=True,
         help=(
             "Repeatable model spec: name:model_id:/path/to/checkpoint "
-            "(.pt or .safetensors)."
+            "(.pt or .safetensors), optionally followed by :/path/to/config.yaml."
         ),
     )
     parser.add_argument(
@@ -398,6 +425,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=parse_factorial_contrast_spec,
         default=[],
         help="Repeatable contrast: name:cell_11:cell_10:cell_01:cell_00.",
+    )
+    parser.add_argument(
+        "--three-factor-cells",
+        type=parse_three_factor_cells,
+        default=None,
+        help=(
+            "Eight comma-separated methods ordered as "
+            "A000,A001,A010,A011,A100,A101,A110,A111."
+        ),
     )
     parser.add_argument(
         "--output",
@@ -434,7 +470,7 @@ def resolve_stim_samples_dir(args: argparse.Namespace) -> Path | None:
 
 
 def build_cfg(args: argparse.Namespace, model: ModelSpec, basis: str) -> Any:
-    explicit_path = getattr(args, "config_file", None)
+    explicit_path = model.config_file or getattr(args, "config_file", None)
     cfg_path = (
         Path(explicit_path).expanduser()
         if explicit_path is not None
@@ -494,6 +530,30 @@ def time_single_shot(matcher: pymatching.Matching, syndromes: np.ndarray, n_roun
     return float(np.mean(times) / n_rounds * 1e6)
 
 
+def measure_single_shot_latency(
+    matcher: pymatching.Matching,
+    syndromes: np.ndarray,
+    n_rounds: int,
+    repeats: int,
+) -> dict[str, Any]:
+    if repeats <= 0:
+        raise ValueError("latency repeats must be positive")
+    values = [
+        time_single_shot(matcher, syndromes, n_rounds)
+        for _ in range(int(repeats))
+    ]
+    measured = np.asarray(values, dtype=np.float64)
+    q25, q75 = np.percentile(measured, (25, 75))
+    return {
+        "latency_us_per_round": float(np.median(measured)),
+        "latency_repeats": int(repeats),
+        "latency_us_per_round_values": values,
+        "latency_us_per_round_min": float(np.min(measured)),
+        "latency_us_per_round_max": float(np.max(measured)),
+        "latency_us_per_round_iqr": float(q75 - q25),
+    }
+
+
 def build_matcher(dataset) -> tuple[pymatching.Matching, int]:
     circuit = dataset.circ.stim_circuit
     det_model = circuit.detector_error_model(decompose_errors=True, approximate_disjoint_errors=True)
@@ -506,6 +566,7 @@ def evaluate_pymatching(
     num_obs: int,
     latency_samples: int,
     n_rounds: int,
+    latency_repeats: int,
 ) -> tuple[dict[str, float | int], np.ndarray]:
     dets = np.ascontiguousarray(dets_and_obs[:, :-num_obs], dtype=np.uint8)
     obs = np.ascontiguousarray(dets_and_obs[:, -num_obs:], dtype=np.uint8)
@@ -520,7 +581,7 @@ def evaluate_pymatching(
         "logical_errors": errors,
         "samples": total,
         "ler": float(errors / total) if total else float("nan"),
-        "latency_us_per_round": time_single_shot(matcher, latency_rows, n_rounds),
+        **measure_single_shot_latency(matcher, latency_rows, n_rounds, latency_repeats),
         **input_density.statistics("input"),
     }, error_mask
 
@@ -534,6 +595,7 @@ def evaluate_model(
     device: torch.device,
     latency_samples: int,
     n_rounds: int,
+    latency_repeats: int,
     residual_tensor_path: Path | None = None,
 ) -> tuple[dict[str, Any], np.ndarray]:
     maps = _build_stab_maps(int(cfg.distance), getattr(cfg, "rotation", "XV"))
@@ -598,7 +660,7 @@ def evaluate_model(
         "logical_errors": logical_errors,
         "samples": total,
         "ler": float(logical_errors / total) if total else float("nan"),
-        "latency_us_per_round": time_single_shot(matcher, residual_rows, n_rounds),
+        **measure_single_shot_latency(matcher, residual_rows, n_rounds, latency_repeats),
         "active_correction_shots": active_correction_shots,
         "active_correction_fraction": (
             float(active_correction_shots / total) if total else float("nan")
@@ -712,6 +774,214 @@ def build_factorial_contrast_rows(
     return rows
 
 
+_THREE_FACTOR_NAMES = ("branch_mixer", "axis_channel_gate", "input_skip_head")
+_THREE_FACTOR_BITS = np.asarray(
+    [
+        (0, 0, 0),
+        (0, 0, 1),
+        (0, 1, 0),
+        (0, 1, 1),
+        (1, 0, 0),
+        (1, 0, 1),
+        (1, 1, 0),
+        (1, 1, 1),
+    ],
+    dtype=np.int8,
+)
+
+
+def contrast_statistics(contrast: np.ndarray) -> dict[str, float | int]:
+    values = np.asarray(contrast, dtype=np.float64).reshape(-1)
+    samples = int(values.size)
+    if samples == 0:
+        raise ValueError("contrast must not be empty")
+    estimate = float(values.mean())
+    standard_error = (
+        float(values.std(ddof=1) / np.sqrt(samples)) if samples > 1 else 0.0
+    )
+    if standard_error > 0:
+        p_value = float(
+            math.erfc(abs(estimate / standard_error) / math.sqrt(2.0))
+        )
+    else:
+        p_value = 1.0 if estimate == 0 else 0.0
+    margin = 1.96 * standard_error
+    return {
+        "samples": samples,
+        "effect_ler": estimate,
+        "standard_error": standard_error,
+        "ci95_low": estimate - margin,
+        "ci95_high": estimate + margin,
+        "p_value": p_value,
+    }
+
+
+def _apply_holm_to_main_effects(rows: list[dict[str, Any]]) -> None:
+    bases = {str(row["basis"]) for row in rows}
+    for basis in bases:
+        main_indices = [
+            index
+            for index, row in enumerate(rows)
+            if row["basis"] == basis and row["effect_kind"] == "main"
+        ]
+        ordered = sorted(main_indices, key=lambda index: float(rows[index]["p_value"]))
+        running_adjusted = 0.0
+        total = len(ordered)
+        for rank, index in enumerate(ordered):
+            adjusted = min(
+                1.0,
+                max(
+                    running_adjusted,
+                    (total - rank) * float(rows[index]["p_value"]),
+                ),
+            )
+            running_adjusted = adjusted
+            rows[index]["holm_adjusted_p"] = adjusted
+            rows[index]["holm_significant_0p05"] = adjusted < 0.05
+
+
+def _three_factor_definitions() -> list[tuple[str, tuple[str, ...], np.ndarray]]:
+    signs = 2 * _THREE_FACTOR_BITS - 1
+    definitions: list[tuple[str, tuple[str, ...], np.ndarray]] = []
+    for index, name in enumerate(_THREE_FACTOR_NAMES):
+        definitions.append(("main", (name,), signs[:, index] / 4.0))
+    for first, second in ((0, 1), (0, 2), (1, 2)):
+        definitions.append(
+            (
+                "two_way_interaction",
+                (_THREE_FACTOR_NAMES[first], _THREE_FACTOR_NAMES[second]),
+                signs[:, first] * signs[:, second] / 2.0,
+            )
+        )
+    definitions.append(
+        (
+            "three_way_interaction",
+            _THREE_FACTOR_NAMES,
+            np.prod(signs, axis=1),
+        )
+    )
+    return definitions
+
+
+def build_three_factor_effect_rows(
+    error_masks_by_basis: dict[str, dict[str, np.ndarray]],
+    cells: tuple[str, ...] | None,
+) -> list[dict[str, Any]]:
+    if cells is None:
+        return []
+    basis_order = [basis for basis in ("X", "Z") if basis in error_masks_by_basis]
+    mask_sets: list[tuple[str, dict[str, np.ndarray]]] = [
+        (basis, error_masks_by_basis[basis]) for basis in basis_order
+    ]
+    if len(basis_order) > 1:
+        mask_sets.append(
+            (
+                "both",
+                {
+                    cell: np.concatenate(
+                        [error_masks_by_basis[basis][cell] for basis in basis_order]
+                    )
+                    for cell in cells
+                },
+            )
+        )
+
+    definitions = _three_factor_definitions()
+
+    rows: list[dict[str, Any]] = []
+    for basis, masks in mask_sets:
+        missing = set(cells) - set(masks)
+        if missing:
+            raise KeyError(
+                f"three-factor cells missing for {basis}: {sorted(missing)}"
+            )
+        stacked = np.stack(
+            [np.asarray(masks[cell], dtype=np.float64).reshape(-1) for cell in cells]
+        )
+        if len({row.shape for row in stacked}) != 1:
+            raise ValueError(f"three-factor cells have mismatched shapes for {basis}")
+        for effect_kind, factors, weights in definitions:
+            contrast = np.tensordot(weights, stacked, axes=(0, 0))
+            rows.append(
+                {
+                    "basis": basis,
+                    "effect_kind": effect_kind,
+                    "factors": list(factors),
+                    **contrast_statistics(contrast),
+                    "holm_adjusted_p": None,
+                    "holm_significant_0p05": None,
+                }
+            )
+    _apply_holm_to_main_effects(rows)
+    return rows
+
+
+def build_three_factor_latency_effect_rows(
+    metric_rows: list[dict[str, Any]],
+    cells: tuple[str, ...] | None,
+) -> list[dict[str, Any]]:
+    if cells is None:
+        return []
+    basis_order = [
+        basis
+        for basis in ("X", "Z")
+        if any(row["basis"] == basis and row["method"] in cells for row in metric_rows)
+    ]
+    series_by_basis: dict[str, dict[str, np.ndarray]] = {}
+    for basis in basis_order:
+        cell_rows = {
+            str(row["method"]): row
+            for row in metric_rows
+            if row["basis"] == basis and row["method"] in cells
+        }
+        missing = set(cells) - set(cell_rows)
+        if missing:
+            raise KeyError(
+                f"three-factor latency cells missing for {basis}: {sorted(missing)}"
+            )
+        series_by_basis[basis] = {
+            cell: np.asarray(
+                cell_rows[cell].get(
+                    "latency_us_per_round_values",
+                    [cell_rows[cell]["latency_us_per_round"]],
+                ),
+                dtype=np.float64,
+            )
+            for cell in cells
+        }
+    if len(basis_order) > 1:
+        series_by_basis["both"] = {
+            cell: np.mean(
+                np.stack([series_by_basis[basis][cell] for basis in basis_order]),
+                axis=0,
+            )
+            for cell in cells
+        }
+        basis_order.append("both")
+
+    effect_rows: list[dict[str, Any]] = []
+    definitions = _three_factor_definitions()
+    for basis in basis_order:
+        stacked = np.stack([series_by_basis[basis][cell] for cell in cells])
+        for effect_kind, factors, weights in definitions:
+            contrast = np.tensordot(weights, stacked, axes=(0, 0))
+            q25, q75 = np.percentile(contrast, (25, 75))
+            effect_rows.append(
+                {
+                    "basis": basis,
+                    "effect_kind": effect_kind,
+                    "factors": list(factors),
+                    "repeats": int(contrast.size),
+                    "effect_latency_us_per_round": float(np.median(contrast)),
+                    "effect_latency_us_per_round_values": contrast.tolist(),
+                    "effect_latency_us_per_round_min": float(np.min(contrast)),
+                    "effect_latency_us_per_round_max": float(np.max(contrast)),
+                    "effect_latency_us_per_round_iqr": float(q75 - q25),
+                }
+            )
+    return effect_rows
+
+
 def mean_metric(rows: list[dict[str, Any]], name: str) -> float:
     values = [float(row[name]) for row in rows if row.get(name) is not None]
     return float(np.mean(values)) if values else float("nan")
@@ -719,6 +989,8 @@ def mean_metric(rows: list[dict[str, Any]], name: str) -> float:
 
 def main() -> None:
     args = parse_args()
+    if args.latency_repeats <= 0:
+        raise ValueError("--latency-repeats must be positive")
     stim_samples_dir = resolve_stim_samples_dir(args)
     if stim_samples_dir is not None:
         # DatapipeFactory historically gives the environment variable priority.
@@ -737,6 +1009,10 @@ def main() -> None:
     for spec in args.model:
         if not spec.checkpoint.exists():
             raise FileNotFoundError(f"Checkpoint not found for {spec.name}: {spec.checkpoint}")
+        if spec.config_file is not None and not spec.config_file.exists():
+            raise FileNotFoundError(
+                f"Config not found for {spec.name}: {spec.config_file}"
+            )
     available_methods = {"pymatching", *(spec.name for spec in args.model)}
     for comparison in args.paired_comparison:
         missing = {comparison.candidate, comparison.baseline} - available_methods
@@ -752,6 +1028,10 @@ def main() -> None:
         if missing:
             raise ValueError(f"Unknown factorial contrast methods: {sorted(missing)}")
 
+    if args.three_factor_cells:
+        missing = set(args.three_factor_cells) - available_methods
+        if missing:
+            raise ValueError(f"Unknown three-factor cells: {sorted(missing)}")
     device = torch.device(args.device or ("cuda:0" if torch.cuda.is_available() else "cpu"))
     dist = SimpleNamespace(rank=0, world_size=1, device=device)
     bases = ["X", "Z"] if args.basis == "both" else [args.basis]
@@ -789,6 +1069,7 @@ def main() -> None:
             num_obs,
             int(args.latency_num_samples),
             int(args.n_rounds),
+            int(args.latency_repeats),
         )
         error_masks_by_basis[basis] = {"pymatching": baseline_errors}
         baseline_row = {
@@ -822,6 +1103,7 @@ def main() -> None:
                 device,
                 int(args.latency_num_samples),
                 int(args.n_rounds),
+                int(args.latency_repeats),
                 residual_tensor_path,
             )
             error_masks_by_basis[basis][spec.name] = model_errors
@@ -833,6 +1115,7 @@ def main() -> None:
                 "checkpoint": str(spec.checkpoint),
                 **result,
                 "speedup_vs_pymatching": speedup,
+                "config_file": str(spec.config_file) if spec.config_file else "",
             }
             rows.append(row)
             basis_errors[spec.name] = model_errors
@@ -862,6 +1145,14 @@ def main() -> None:
     )
     methods = sorted({row["method"] for row in rows})
     summary = []
+    three_factor_effects = build_three_factor_effect_rows(
+        error_masks_by_basis,
+        args.three_factor_cells,
+    )
+    three_factor_latency_effects = build_three_factor_latency_effect_rows(
+        rows,
+        args.three_factor_cells,
+    )
     for method in methods:
         method_rows = [row for row in rows if row["method"] == method]
         summary_row: dict[str, Any] = {
@@ -902,6 +1193,7 @@ def main() -> None:
         "latency_num_samples": args.latency_num_samples,
         "seed": args.seed,
         "device": str(device),
+        "latency_repeats": args.latency_repeats,
         "sample_source": "stim_files" if stim_samples_dir else "generated",
         "stim_samples_dir": str(stim_samples_dir) if stim_samples_dir else None,
         "sample_metadata": sample_metadata,
@@ -909,6 +1201,9 @@ def main() -> None:
         "summary": summary,
         "paired_comparisons": paired_comparisons,
         "factorial_contrasts": factorial_contrasts,
+        "three_factor_cells": list(args.three_factor_cells or ()),
+        "three_factor_effects": three_factor_effects,
+        "three_factor_latency_effects": three_factor_latency_effects,
     }
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -924,6 +1219,11 @@ def main() -> None:
         "speedup_vs_pymatching",
         "active_correction_shots",
         "active_correction_fraction",
+        "latency_repeats",
+        "latency_us_per_round_min",
+        "latency_us_per_round_max",
+        "latency_us_per_round_iqr",
+        "latency_us_per_round_values",
         "input_density_shots",
         "input_syndrome_ones",
         "input_syndrome_elements",
@@ -949,6 +1249,7 @@ def main() -> None:
         "residual_tensor_rows",
         "residual_tensor_detectors",
         "residual_tensor_dtype",
+        "config_file",
         "checkpoint",
     ]
     with csv_path.open("w", newline="", encoding="utf-8") as f:
@@ -956,9 +1257,62 @@ def main() -> None:
         writer.writeheader()
         for row in rows:
             writer.writerow({field: row.get(field, "") for field in fieldnames})
+    effects_csv_path = output_path.with_name(f"{output_path.stem}_effects.csv")
+    if three_factor_effects:
+        effect_fields = [
+            "basis",
+            "effect_kind",
+            "factors",
+            "samples",
+            "effect_ler",
+            "standard_error",
+            "ci95_low",
+            "ci95_high",
+            "p_value",
+            "holm_adjusted_p",
+            "holm_significant_0p05",
+        ]
+        with effects_csv_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=effect_fields)
+            writer.writeheader()
+            for row in three_factor_effects:
+                writer.writerow(
+                    {field: row.get(field, "") for field in effect_fields}
+                )
+
+    latency_effects_csv_path = output_path.with_name(
+        f"{output_path.stem}_latency_effects.csv"
+    )
+    if three_factor_latency_effects:
+        latency_effect_fields = [
+            "basis",
+            "effect_kind",
+            "factors",
+            "repeats",
+            "effect_latency_us_per_round",
+            "effect_latency_us_per_round_min",
+            "effect_latency_us_per_round_max",
+            "effect_latency_us_per_round_iqr",
+            "effect_latency_us_per_round_values",
+        ]
+        with latency_effects_csv_path.open(
+            "w", newline="", encoding="utf-8"
+        ) as f:
+            writer = csv.DictWriter(f, fieldnames=latency_effect_fields)
+            writer.writeheader()
+            for row in three_factor_latency_effects:
+                writer.writerow(
+                    {
+                        field: row.get(field, "")
+                        for field in latency_effect_fields
+                    }
+                )
 
     print(f"[write] {output_path}")
     print(f"[write] {csv_path}")
+    if three_factor_effects:
+        print(f"[write] {effects_csv_path}")
+        print(f"[write] {latency_effects_csv_path}")
 
 
 if __name__ == "__main__":
