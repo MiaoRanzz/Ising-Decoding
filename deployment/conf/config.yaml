@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+defaults:
+  - basis: X
+  - _self_
+
+distance: 9
+n_rounds: 9
+rotation: XV
+device: cuda
+checkpoint_path: artifacts/HTnet.0.82.pt
+geometry_path: artifacts/geometry_d9_xv.npz
+return_residual: false
+input_num_observables: 1
+replay_samples: 100
+output_path: null
+
+benchmark:
+  warmup: 20
+  samples: 100
