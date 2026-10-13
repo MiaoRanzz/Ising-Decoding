@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 noise_model:
   p_cnot_IX: 0.0014215079172355924
   p_cnot_IY: 1.0000000152038773e-05
