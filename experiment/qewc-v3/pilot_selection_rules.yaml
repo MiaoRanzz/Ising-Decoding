@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+version: 1
+frozen_utc: 2026-09-07T11:05:00Z
+scope: pilot_only
+common:
+  track: realistic_first_switch_T0_to_T1
+  train_seed: 20260907
+  paired_test_seed: 20260908
+  test_samples_per_basis: 65536
+  task_columns: [T0, T1, T2, T3, T4]
+
+optimizer_steps:
+  candidates: [1000, 5000, 20000]
+  rule:
+    - Select the lowest candidate whose training and current-task validation losses have plateaued.
+    - Require any claimed current-task LER gain from more steps to exceed its paired 95 percent interval.
+    - Require measurable historical-task change and a projected four-stage run below 2.4 GPU-days.
+    - If no larger candidate improves current-task LER, select the lowest plateaued candidate.
+
+ewc_lambda:
+  calibrated_probe_ratio_targets: [0.001, 0.01, 0.10, 1.0]
+  lambdas:
+    - 0.04387539484535376
+    - 0.4387539484535376
+    - 4.387539484535376
+    - 43.87539484535376
+  eligibility: T1 LER must not be more than 5 percent worse than the matched SEQ pilot.
+  primary: Among eligible candidates, minimize the equally weighted mean LER on historical T0 and current T1.
+  diagnostics:
+    - Report five-task macro LER, each task LER, actual penalty-to-data ratio, and Fisher-weighted drift.
+    - A candidate dominated on both T0 and T1 by another candidate cannot be selected.
+  tie_break: If the primary-score difference is within the larger paired 95 percent interval, select the smaller lambda.
+
+replay_ratio:
+  candidates: [0.10, 0.25, 0.50]
+  capacity_samples: 594
+  eligibility: T1 LER must not be more than 5 percent worse than the matched SEQ pilot.
+  primary: Among eligible candidates, minimize five-task macro LER.
+  diagnostics:
+    - Report T0 retention and T1 acquisition separately.
+    - Report actual current/replay sample counts and serialized buffer bytes.
+  tie_break: If the macro difference is within the larger paired 95 percent interval, select the smaller replay ratio.

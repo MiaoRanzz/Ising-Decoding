@@ -38,7 +38,7 @@ echo "=============================================="
 
 CMD=(
   python3 -u code/workflows/run.py
-  --config-name=config_pre_decoder_memory_surface_model_1_d9
+  --config-name=presets/surface/config_pre_decoder_memory_surface_model_1_d9
   workflow.task=train
   exp_tag=one_epoch
   train.epochs=1

@@ -11,6 +11,8 @@ from typing import Dict, Iterable, List, Mapping, Union
 import torch
 import torch.nn as nn
 from torch.amp import autocast
+import torch.nn.functional as F
+from torch.func import functional_call, grad, vmap
 
 
 TensorDict = Dict[str, torch.Tensor]
@@ -148,14 +150,55 @@ def estimate_diagonal_fisher(
     device: Union[str, torch.device],
     enable_fp16: bool = False,
     enable_bf16: bool = False,
+    positive_weight: float = 1.0,
+    per_sample_chunk_size: int = 16,
 ) -> EWCState:
+    """Estimate the empirical diagonal Fisher from per-sample BCE gradients.
+
+    batch_size controls data generation, while per_sample_chunk_size
+    bounds the memory used by vectorized per-sample gradients. Squaring a
+    batch-mean gradient is not equivalent to the empirical Fisher because
+    cross-sample gradient products do not cancel at finite batch size.
+    """
     model.eval()
     device = torch.device(device)
-    loss_fn = torch.nn.BCEWithLogitsLoss(reduction="sum")
-    fisher = {
-        name: torch.zeros_like(param.detach(), device=device, dtype=torch.float32)
-        for name, param in iter_trainable_named_parameters(model)
+    if int(num_samples) <= 0 or int(batch_size) <= 0:
+        raise ValueError("num_samples and batch_size must be positive")
+    if int(per_sample_chunk_size) <= 0:
+        raise ValueError("per_sample_chunk_size must be positive")
+    if float(positive_weight) <= 0:
+        raise ValueError("positive_weight must be positive")
+
+    raw_params = {
+        name: param
+        for name, param in model.named_parameters()
+        if param.requires_grad and param.dtype.is_floating_point
     }
+    buffers = dict(model.named_buffers())
+    fisher = {
+        canonical_param_name(name): torch.zeros_like(
+            param.detach(), device=device, dtype=torch.float32
+        )
+        for name, param in raw_params.items()
+    }
+    positive_weight_tensor = torch.tensor(float(positive_weight), device=device)
+
+    def single_sample_loss(params, model_buffers, sample_x, sample_y):
+        outputs = functional_call(
+            model, (params, model_buffers), (sample_x.unsqueeze(0),)
+        )
+        return F.binary_cross_entropy_with_logits(
+            outputs,
+            sample_y.unsqueeze(0),
+            reduction="sum",
+            pos_weight=positive_weight_tensor,
+        )
+
+    per_sample_grad = vmap(
+        grad(single_sample_loss),
+        in_dims=(None, None, 0, 0),
+        randomness="different",
+    )
     total_samples = 0
     steps = int(math.ceil(float(num_samples) / float(batch_size)))
     if enable_fp16:
@@ -172,19 +215,22 @@ def estimate_diagonal_fisher(
         train_x, train_y = generator.generate_batch(step=step, batch_size=current_batch)
         train_x = train_x.to(device, non_blocking=True)
         train_y = train_y.to(device, non_blocking=True)
-        model.zero_grad(set_to_none=True)
         use_autocast = device.type == "cuda" and (enable_fp16 or enable_bf16)
-        with autocast(device_type=device.type, dtype=autocast_dtype, enabled=use_autocast):
-            outputs = model(train_x)
-            loss = loss_fn(outputs, train_y) / max(1, current_batch)
-        loss.backward()
-        for name, param in iter_trainable_named_parameters(model):
-            if param.grad is not None:
-                fisher[name] += param.grad.detach().float().pow(2) * current_batch
+        for start in range(0, current_batch, int(per_sample_chunk_size)):
+            stop = min(current_batch, start + int(per_sample_chunk_size))
+            with autocast(device_type=device.type, dtype=autocast_dtype, enabled=use_autocast):
+                sample_grads = per_sample_grad(
+                    raw_params, buffers, train_x[start:stop], train_y[start:stop]
+                )
+            for raw_name, sample_gradient in sample_grads.items():
+                fisher[canonical_param_name(raw_name)] += (
+                    sample_gradient.detach().float().pow(2).sum(dim=0)
+                )
         total_samples += current_batch
 
-    scale = max(1, total_samples)
-    fisher = {name: value.detach().cpu() / scale for name, value in fisher.items()}
+    fisher = {
+        name: value.detach().cpu() / total_samples for name, value in fisher.items()
+    }
     mean = capture_parameter_snapshot(model)
     model.zero_grad(set_to_none=True)
     return EWCState(task_name=task_name, mean=mean, fisher=fisher)

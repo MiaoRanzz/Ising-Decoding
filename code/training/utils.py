@@ -468,3 +468,33 @@ def load_checkpoint(
         metadata_dict[key] = value
 
     return epoch, global_step
+
+def load_model_weights_only(
+    model: torch.nn.Module,
+    checkpoint_path: Union[str, Path],
+    *,
+    device: Union[str, torch.device] = "cpu",
+) -> None:
+    """Load a raw model state dict without restoring any training state."""
+    path = Path(checkpoint_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Initial model checkpoint not found: {path}")
+    state_dict = torch.load(path, map_location=device, weights_only=True)
+    if not isinstance(state_dict, dict) or not state_dict:
+        raise ValueError(f"Initial model checkpoint is not a non-empty state dict: {path}")
+    if any(
+        key in state_dict
+        for key in (
+            "optimizer_state_dict",
+            "scheduler_state_dict",
+            "scaler_state_dict",
+            "model_state_dict",
+        )
+    ):
+        raise ValueError(
+            f"Initial model checkpoint must contain a raw model state dict, not training state: {path}"
+        )
+    if not all(isinstance(key, str) and isinstance(value, torch.Tensor)
+               for key, value in state_dict.items()):
+        raise ValueError(f"Initial model checkpoint is not a raw model state dict: {path}")
+    model.load_state_dict(state_dict)

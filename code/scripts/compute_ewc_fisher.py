@@ -166,11 +166,15 @@ def _build_training_generator(cfg, *, device: torch.device, seed: int, verbose: 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config-name", required=True, help="conf/<name>.yaml without extension")
+    parser.add_argument("--distance", type=int, default=None)
+    parser.add_argument("--n-rounds", type=int, default=None)
     parser.add_argument("--checkpoint", required=True, help="model .pt file or models directory")
     parser.add_argument("--output", required=True, help="output EWC .pt path")
     parser.add_argument("--task-name", required=True, help="task label stored in the EWC state")
     parser.add_argument("--num-samples", type=int, default=65536)
     parser.add_argument("--batch-size", type=int, default=2048)
+    parser.add_argument("--per-sample-chunk-size", type=int, default=16)
+    parser.add_argument("--positive-weight", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--fp16", action="store_true")
@@ -182,6 +186,10 @@ def main() -> None:
     args = parse_args()
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     cfg = _load_public_config(args.config_name)
+    if args.distance is not None:
+        cfg.distance = int(args.distance)
+    if args.n_rounds is not None:
+        cfg.n_rounds = int(args.n_rounds)
 
     if torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_tf32 = bool(getattr(cfg, "enable_matmul_tf32", True))
@@ -200,7 +208,8 @@ def main() -> None:
     params = sum(p.numel() for p in model.parameters())
     print(
         f"[EWC Fisher] task={args.task_name} config={args.config_name} "
-        f"checkpoint={checkpoint} params={params:,} samples={args.num_samples} batch={args.batch_size}"
+        f"checkpoint={checkpoint} params={params:,} samples={args.num_samples} batch={args.batch_size} "
+        f"per_sample_chunk={args.per_sample_chunk_size}"
     )
     ewc_state = estimate_diagonal_fisher(
         model,
@@ -211,6 +220,8 @@ def main() -> None:
         device=device,
         enable_fp16=bool(args.fp16),
         enable_bf16=bool(args.bf16),
+        positive_weight=float(args.positive_weight),
+        per_sample_chunk_size=int(args.per_sample_chunk_size),
     )
     save_ewc_state(ewc_state, args.output)
     print(f"[EWC Fisher] saved {args.output}")

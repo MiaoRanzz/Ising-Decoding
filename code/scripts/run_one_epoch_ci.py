@@ -48,7 +48,7 @@ def main():
         sys.executable,
         "-u",
         str(CODE_DIR / "workflows" / "run.py"),
-        "--config-name=config_pre_decoder_memory_surface_model_1_d9",
+        "--config-name=presets/surface/config_pre_decoder_memory_surface_model_1_d9",
         "workflow.task=train",
         f"exp_tag=ci_one_epoch",
         "train.epochs=1",

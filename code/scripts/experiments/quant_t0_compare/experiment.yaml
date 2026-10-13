@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+config_name: examples/qadapt/config_qadapt_t0_base
+distance: 9
+n_rounds: 9
+bases: [X, Z]
+
+models:
+  htnet:
+    model_id: 111
+    epoch: 82
+    checkpoint: outputs/htnet_qadapt_t0_s4m_e100_seed12345_a100_skipup_v1/models/best_model/HTnet.0.82.pt
+    reference_checkpoint: outputs/deployment_validation_htnet_e82_20260827/safetensors/htnet_e82_fp32.safetensors
+  ising_fast:
+    model_id: 1
+    epoch: 87
+    checkpoint: outputs/ising_fast_qadapt_t0_s4m_e100_seed12345_a100_skipup_v1/models/best_model/PreDecoderModelMemory_v1.0.87.pt
+    reference_checkpoint: null
+
+precisions: [fp32, fp16, int8]
+calibration_samples: [256, 1024, 4096]
+calibration_seed: 12345
+evaluation_seed: 45678
+screening_shots: 65536
+confirmation_shots: 1048576
+absolute_ler_margin: 0.001
+relative_ler_margin: 0.03
+alpha: 0.05
+batch_sizes: [1, 8, 32, 128, 512, 2048, 8192]
+warmup_iterations: 200
+latency_iterations: 1000
+schedule_seed: 20260827

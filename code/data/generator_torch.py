@@ -261,6 +261,7 @@ class QCDataGeneratorTorch:
             )
 
         seed = int(base_seed) + int(self.global_rank) * 1_000_000 + int(seed_offset)
+        self.stream_seed = seed
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
@@ -293,12 +294,25 @@ class QCDataGeneratorTorch:
             sim = self.sim_X if (int(step) % 2 == 0) else self.sim_Z
         else:
             sim = self.sim
-        trainX, trainY = sim.generate_batch(batch_size=int(batch_size))
+        # cuStabilizer owns its own RNG. Passing an explicit, step-derived seed
+        # is required for paired continual-learning trajectories: methods with
+        # the same experiment seed must see identical current-task samples.
+        # The simulator recreates its sampler for an explicit seed, so repeated
+        # calls with the same step are reproducible even across processes.
+        trainX, trainY = sim.generate_batch(
+            batch_size=int(batch_size),
+            seed=self.stream_seed + int(step),
+        )
 
         if return_timing:
             timing = {"generator_total_s": time.perf_counter() - t0}
             return trainX, trainY, timing
         return trainX, trainY
+
+    def get_current_basis(self, step: int) -> str:
+        if self._mixed:
+            return "X" if int(step) % 2 == 0 else "Z"
+        return str(self._single_basis).upper()
 
 
 __all__ = ["QCDataGeneratorTorch"]

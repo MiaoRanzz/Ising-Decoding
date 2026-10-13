@@ -1,0 +1,43 @@
+# @package _global_
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+model_id: 111
+distance: 9
+n_rounds: 9
+seed: 20260907
+workflow:
+  task: train
+data:
+  code_rotation: O1
+  skip_noise_upscaling: true
+  noise_model:
+    p_prep_X: 0.001
+    p_prep_Z: 0.001
+    p_meas_X: 0.015
+    p_meas_Z: 0.015
+    p_idle_cnot_X: 0.000333
+    p_idle_cnot_Y: 0.000333
+    p_idle_cnot_Z: 0.000333
+    p_idle_spam_X: 0.000667
+    p_idle_spam_Y: 0.000667
+    p_idle_spam_Z: 0.000667
+    p_cnot_IX: 0.000667
+    p_cnot_IY: 0.000667
+    p_cnot_IZ: 0.000667
+    p_cnot_XI: 0.000667
+    p_cnot_XX: 0.000667
+    p_cnot_XY: 0.000667
+    p_cnot_XZ: 0.000667
+    p_cnot_YI: 0.000667
+    p_cnot_YX: 0.000667
+    p_cnot_YY: 0.000667
+    p_cnot_YZ: 0.000667
+    p_cnot_ZI: 0.000667
+    p_cnot_ZX: 0.000667
+    p_cnot_ZY: 0.000667
+    p_cnot_ZZ: 0.000667
+htnet_ablation:
+  branch_mixer: true
+  axis_channel_gate: false
+  input_skip_head: true

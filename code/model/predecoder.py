@@ -741,6 +741,8 @@ class STFusionBlockV2(nn.Module):
         se_reduction,
         dropout_p,
         activation_name,
+        use_branch_mixer=True,
+        use_axis_channel_gate=True,
     ):
         super(STFusionBlockV2, self).__init__()
         if expand_channels % joint_groups != 0:
@@ -788,20 +790,25 @@ class STFusionBlockV2(nn.Module):
             reduction=se_reduction,
             activation=self._get_activation(activation_name),
         )
-        self.branch_mixer = nn.Sequential(
-            nn.Conv3d(
-                expand_channels,
-                expand_channels,
-                kernel_size=1,
-                groups=joint_groups,
-            ),
-            self._get_activation(activation_name),
+        self.branch_mixer = (
+            nn.Sequential(
+                nn.Conv3d(
+                    expand_channels,
+                    expand_channels,
+                    kernel_size=1,
+                    groups=joint_groups,
+                ),
+                self._get_activation(activation_name),
+            )
+            if use_branch_mixer
+            else nn.Identity()
         )
         self.project = nn.Sequential(
             nn.Conv3d(expand_channels, channels, kernel_size=1),
             self._get_activation(activation_name),
         )
-        self.gate = AxisChannelGate3D(
+        gate_type = AxisChannelGate3D if use_axis_channel_gate else ChannelGate3D
+        self.gate = gate_type(
             channels=channels,
             reduction=se_reduction,
             activation=self._get_activation(activation_name),
@@ -885,10 +892,10 @@ class PreDecoderSTFusion_v1(nn.Module):
         return self.head(self.blocks(self.stem(x)))  # x: (B, 4, T, D, D)
 
 
-class PreDecoderSTFusion_v2(nn.Module):
+class HTnet(nn.Module):
 
     def __init__(self, cfg):
-        super(PreDecoderSTFusion_v2, self).__init__()
+        super().__init__()
 
         self.distance = cfg.distance
         self.n_rounds = cfg.n_rounds
@@ -903,6 +910,14 @@ class PreDecoderSTFusion_v2(nn.Module):
         norm_groups = int(cfg.model.norm_groups)
         se_reduction = int(cfg.model.se_reduction)
         activation_name = cfg.model.activation
+        ablation_cfg = getattr(cfg, "htnet_ablation", None)
+        use_branch_mixer = bool(getattr(ablation_cfg, "branch_mixer", True))
+        use_axis_channel_gate = bool(
+            getattr(ablation_cfg, "axis_channel_gate", True)
+        )
+        self.use_input_skip_head = bool(
+            getattr(ablation_cfg, "input_skip_head", True)
+        )
 
         self.stem = nn.Sequential(
             nn.Conv3d(input_channels, channels, kernel_size=3, padding=1),
@@ -918,12 +933,14 @@ class PreDecoderSTFusion_v2(nn.Module):
                 se_reduction=se_reduction,
                 dropout_p=self.dropout_p,
                 activation_name=activation_name,
+                use_branch_mixer=use_branch_mixer,
+                use_axis_channel_gate=use_axis_channel_gate,
             )
             for _ in range(num_blocks)
         ])
         self.head_norm = nn.GroupNorm(num_groups=norm_groups, num_channels=channels)
         self.head_hidden = nn.Conv3d(
-            channels + input_channels,
+            channels + input_channels if self.use_input_skip_head else channels,
             channels,
             kernel_size=1,
         )
@@ -943,7 +960,8 @@ class PreDecoderSTFusion_v2(nn.Module):
     def forward(self, x):
         y = self.blocks(self.stem(x))
         y = self.head_norm(y)
-        y = torch.cat([y, x], dim=1)
+        if self.use_input_skip_head:
+            y = torch.cat([y, x], dim=1)
         y = self.head_activation(self.head_hidden(y))
         return self.head_out(y)  # x: (B, 4, T, D, D)
 

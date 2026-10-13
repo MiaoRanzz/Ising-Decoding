@@ -46,9 +46,9 @@ class ModelFactory:
             from model.predecoder import PreDecoderSTFusion_v1
             model = PreDecoderSTFusion_v1(cfg)
             return model
-        elif cfg.model.version == "predecoder_st_fusion_v2":
-            from model.predecoder import PreDecoderSTFusion_v2
-            model = PreDecoderSTFusion_v2(cfg)
+        elif cfg.model.version in ("htnet", "predecoder_st_fusion_v2"):
+            from model.predecoder import HTnet
+            model = HTnet(cfg)
             return model
         elif cfg.model.version == "predecoder_fasthyper_rf13_v1":
             from model.predecoder import PreDecoderFastHyperRF13_v1

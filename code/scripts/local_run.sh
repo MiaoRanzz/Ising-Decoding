@@ -49,7 +49,7 @@ set -euo pipefail
 #     PREDECODER_SAFETENSORS_CHECKPOINT=<path>.safetensors WORKFLOW=inference bash code/scripts/local_run.sh
 
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-ising_domestic_accurate}"
-CONFIG_NAME="${CONFIG_NAME:-config_domestic}"   # conf/<name>.yaml (no extension)
+CONFIG_NAME="${CONFIG_NAME:-config_public}"   # conf/<name>.yaml (no extension)
 WORKFLOW="${WORKFLOW:-train}"                 # train | inference
 WORKFLOW="$(echo "${WORKFLOW}" | tr '[:upper:]' '[:lower:]')"
 GPUS="${GPUS:-}"                              # if empty, auto-detect
@@ -145,10 +145,11 @@ if [ -n "${EXTRA_PARAMS}" ]; then OVERRIDES+=" ${EXTRA_PARAMS}"; fi
 
 CONFIG_SNAPSHOT_DIR="${OUTPUT_DIR}/config"
 mkdir -p "${CONFIG_SNAPSHOT_DIR}"
+CONFIG_SNAPSHOT_NAME="${CONFIG_NAME//\//_}"
 CONFIG_PATH="${REPO_ROOT}/conf/${CONFIG_NAME}.yaml"
 if [ -f "${CONFIG_PATH}" ]; then
   # Never overwrite existing snapshots: keep full history.
-  base_yaml="${CONFIG_SNAPSHOT_DIR}/${CONFIG_NAME}_${TIMESTAMP_NS}.yaml"
+  base_yaml="${CONFIG_SNAPSHOT_DIR}/${CONFIG_SNAPSHOT_NAME}_${TIMESTAMP_NS}.yaml"
   dest_yaml="${base_yaml}"
   i=0
   while [ -e "${dest_yaml}" ]; do
@@ -157,7 +158,7 @@ if [ -f "${CONFIG_PATH}" ]; then
   done
   cp "${CONFIG_PATH}" "${dest_yaml}"
   # Also save the exact CLI overrides used for this run (useful when configs change over time).
-  base_ovr="${CONFIG_SNAPSHOT_DIR}/${CONFIG_NAME}_${TIMESTAMP_NS}.overrides.txt"
+  base_ovr="${CONFIG_SNAPSHOT_DIR}/${CONFIG_SNAPSHOT_NAME}_${TIMESTAMP_NS}.overrides.txt"
   dest_ovr="${base_ovr}"
   j=0
   while [ -e "${dest_ovr}" ]; do

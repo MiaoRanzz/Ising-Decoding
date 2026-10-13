@@ -128,6 +128,9 @@ class DatapipeFactory:
                     dataset_kwargs["strict_noise"] = False
             else:
                 dataset_cls = QCDataPipePreDecoder_Memory_inference
+                seed = getattr(cfg, "seed", None)
+                if seed is not None:
+                    dataset_kwargs["seed"] = int(seed)
 
             test_dataset = dataset_cls(
                 distance=cfg.distance,

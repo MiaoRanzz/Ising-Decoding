@@ -16,7 +16,7 @@
 #   EXPERIMENT_NAME     Sub-directory under outputs/ for this run.
 #                       (default: qec-decoder-depolarizing-r9-fp8)
 #   CONFIG_NAME         Hydra config name without .yaml extension.
-#                       (default: config_qec_decoder_r9_fp8)
+#                       (default: presets/surface/config_qec_decoder_r9_fp8)
 #   GPUS                Number of GPUs to use (must match --gres). (default: 1)
 #   FRESH_START         Set to 1 to ignore existing checkpoints. (default: 0)
 #   PREDECODER_TRAIN_EPOCHS   Override epoch count.
@@ -39,12 +39,12 @@
 #
 #   # R=13, 1 GPU (Model 4)
 #   EXPERIMENT_NAME=qec-decoder-depolarizing-r13-fp8 \
-#   CONFIG_NAME=config_qec_decoder_r13_fp8 \
+#   CONFIG_NAME=presets/surface/config_qec_decoder_r13_fp8 \
 #     sbatch code/scripts/sbatch_train.sh
 #
 #   # R=13, 4 GPUs — override partition and resources on the command line:
 #   EXPERIMENT_NAME=qec-decoder-depolarizing-r13-fp8 \
-#   CONFIG_NAME=config_qec_decoder_r13_fp8 \
+#   CONFIG_NAME=presets/surface/config_qec_decoder_r13_fp8 \
 #   GPUS=4 FRESH_START=1 \
 #     sbatch --partition=<4gpu-partition> --nodes=1 --gres=gpu:4 \
 #            --cpus-per-task=80 --mem=240G \
@@ -52,7 +52,7 @@
 #
 #   # Resume a 1-GPU checkpoint on 4 GPUs (fixed LR schedule):
 #   EXPERIMENT_NAME=qec-decoder-depolarizing-r13-fp8 \
-#   CONFIG_NAME=config_qec_decoder_r13_fp8 \
+#   CONFIG_NAME=presets/surface/config_qec_decoder_r13_fp8 \
 #   GPUS=4 \
 #   PREDECODER_TRAIN_SAMPLES=8388608 \
 #   PREDECODER_LR_MILESTONES="1.0,2.0,4.0" \
@@ -82,7 +82,7 @@ REPO_ROOT="${REPO_ROOT:-$(cd -- "${SCRIPT_DIR}/../.." && pwd)}"
 SHARED_OUTPUT_DIR="${SHARED_OUTPUT_DIR:-$HOME/predecoder_outputs}"
 GPUS="${GPUS:-1}"
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-qec-decoder-depolarizing-r9-fp8}"
-CONFIG_NAME="${CONFIG_NAME:-config_qec_decoder_r9_fp8}"
+CONFIG_NAME="${CONFIG_NAME:-presets/surface/config_qec_decoder_r9_fp8}"
 DOCKER_IMAGE="${DOCKER_IMAGE:-predecoder-train}"
 DOCKER_BASE_IMAGE="${DOCKER_BASE_IMAGE:-nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04}"
 

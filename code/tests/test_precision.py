@@ -110,3 +110,11 @@ def test_match_input_noop_for_contiguous_model():
     conv = torch.nn.Conv3d(4, 8, kernel_size=3)  # default contiguous
     x = torch.randn(1, 4, 3, 5, 5)
     assert match_input_to_model_memory_format(x, conv) is x
+
+
+def test_match_input_noop_during_onnx_export(monkeypatch):
+    conv = module_to_channels_last_3d(torch.nn.Conv3d(4, 8, kernel_size=3), True)
+    x = torch.randn(1, 4, 3, 5, 5)
+    monkeypatch.setattr(torch.onnx, "is_in_onnx_export", lambda: True)
+
+    assert match_input_to_model_memory_format(x, conv) is x

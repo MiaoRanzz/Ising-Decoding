@@ -193,6 +193,13 @@ class MultiQCDataGeneratorTorch:
     def get_current_pair(self, step: int) -> Tuple[int, int]:
         return self._pairs[self._index_for_step(step)]
 
+    def get_current_basis(self, step: int) -> str:
+        idx = self._index_for_step(step)
+        single_basis = getattr(self._gens[idx], "_single_basis", None)
+        if single_basis is not None:
+            return str(single_basis).upper()
+        return "X" if int(step) % 2 == 0 else "Z"
+
     def get_info(self) -> dict:
         return {
             "mode": self._mode,

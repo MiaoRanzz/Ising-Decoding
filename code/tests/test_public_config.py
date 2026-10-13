@@ -13,7 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import argparse
 import unittest
+from hydra import compose, initialize_config_dir
 from pathlib import Path
 import sys
 from unittest.mock import patch
@@ -63,7 +65,7 @@ class TestPublicConfig(unittest.TestCase):
             101: "predecoder_memory_factorized_v1",
             102: "predecoder_memory_factorized_v1",
             110: "predecoder_st_fusion_v1",
-            111: "predecoder_st_fusion_v2",
+            111: "htnet",
             112: "predecoder_fasthyper_rf13_v1",
         }
         for model_id, version in expected.items():
@@ -591,9 +593,9 @@ class TestColorConfigRouting(unittest.TestCase):
 
         repo_root = Path(__file__).resolve().parents[2]
         for name in (
-            "config_color_model_1_s_LR3e-4.yaml",
-            "config_color_threshold_model_1_d13.yaml",
-            "config_inference_color_model_5.yaml",
+            "presets/color/config_color_model_1_s_LR3e-4.yaml",
+            "presets/color/config_color_threshold_model_1_d13.yaml",
+            "presets/color/config_inference_color_model_5.yaml",
         ):
             path = repo_root / "conf" / name
             if not path.exists():
@@ -610,6 +612,124 @@ class TestColorConfigRouting(unittest.TestCase):
         # Even with a test section, surface always goes through the validator.
         cfg = OmegaConf.create({"code": "surface", "test": {"num_samples": 8}})
         self.assertFalse(_is_standalone_color_config(cfg, "surface"))
+
+
+class TestQAdaptExampleLayout(unittest.TestCase):
+    """The shipped QAdapt examples form a small, portable public surface."""
+
+    def setUp(self):
+        self.repo_root = Path(__file__).resolve().parents[2]
+
+    def test_exact_example_entrypoints_are_shipped(self):
+        example_root = self.repo_root / "code" / "examples"
+        expected = {
+            "train_seq_ewc.sh",
+            "train_ising_fast_t0.sh",
+            "infer_t0_t4.py",
+            "infer_ood.py",
+            "infer_google_benchmark.py",
+            "infer_willow.py",
+            "download_google_benchmark.py",
+        }
+        observed = {
+            path.name
+            for path in example_root.iterdir()
+            if path.is_file() and path.name != "README.md"
+        }
+        self.assertEqual(observed, expected)
+
+    def test_exact_qadapt_example_configs_are_shipped(self):
+        config_root = self.repo_root / "conf" / "examples" / "qadapt"
+        expected = {
+            "config_ising_fast_t0_a100.yaml",
+            "config_qadapt_t0_base.yaml",
+            "config_qadapt_t1_meas_1p5.yaml",
+            "config_qadapt_t2_cnot_1p5.yaml",
+            "config_qadapt_t3_idle_1p5.yaml",
+            "config_qadapt_t4_z_bias_1p5.yaml",
+        }
+        observed = {path.name for path in config_root.glob("*.yaml")}
+        self.assertEqual(observed, expected)
+        for path in config_root.glob("*.yaml"):
+            with self.subTest(config=path.name):
+                cfg = OmegaConf.load(path)
+                expected_model_id = (
+                    1 if path.name == "config_ising_fast_t0_a100.yaml" else 111
+                )
+                self.assertEqual(int(cfg.model_id), expected_model_id)
+                self.assertEqual(str(cfg.workflow.task), "train")
+                self.assertNotIn("ewc", cfg)
+                if path.name == "config_ising_fast_t0_a100.yaml":
+                    self.assertTrue(cfg.data.skip_noise_upscaling)
+
+    def test_ising_fast_config_composes_at_hydra_root(self):
+        config_dir = self.repo_root / "conf"
+        with initialize_config_dir(config_dir=str(config_dir), version_base="1.3"):
+            cfg = compose(
+                config_name="examples/qadapt/config_ising_fast_t0_a100"
+            )
+        self.assertEqual(int(cfg.model_id), 1)
+        self.assertEqual(str(cfg.workflow.task), "train")
+        self.assertTrue(cfg.data.skip_noise_upscaling)
+
+    def test_public_examples_use_released_model_cli(self):
+        from scripts.qadapt_example_utils import (
+            add_common_inference_args,
+            checkpoint_specs,
+        )
+
+        public_paths = [
+            self.repo_root / "README.md",
+            self.repo_root / "README_zh.md",
+            self.repo_root / "TRAINING.md",
+            self.repo_root / "conf" / "README.md",
+            self.repo_root / "code" / "examples" / "README.md",
+            self.repo_root / "code" / "scripts" / "qadapt_example_utils.py",
+        ]
+        public_paths.extend(
+            path
+            for path in (self.repo_root / "code" / "examples").iterdir()
+            if path.suffix in {".py", ".sh"}
+        )
+        for path in public_paths:
+            with self.subTest(path=path.relative_to(self.repo_root)):
+                text = path.read_text(encoding="utf-8")
+                self.assertNotIn("R9-X", text)
+                self.assertNotIn("r9x_", text)
+
+        parser = argparse.ArgumentParser()
+        add_common_inference_args(
+            parser,
+            default_output_dir=Path("outputs/examples/released_models"),
+        )
+        args = parser.parse_args(
+            [
+                "--model",
+                "qadapt:111:models/qadapt.safetensors",
+                "--model",
+                "ising_fast:1:models/ising_fast.pt",
+            ]
+        )
+        specs = checkpoint_specs(args)
+        self.assertEqual([spec.name for spec in specs], ["qadapt", "ising_fast"])
+        self.assertEqual([spec.model_id for spec in specs], [111, 1])
+        self.assertEqual(
+            [spec.checkpoint for spec in specs],
+            [
+                self.repo_root / "models" / "qadapt.safetensors",
+                self.repo_root / "models" / "ising_fast.pt",
+            ],
+        )
+
+    def test_examples_do_not_hardcode_machine_specific_runtime(self):
+        example_root = self.repo_root / "code" / "examples"
+        for path in example_root.iterdir():
+            if not path.is_file():
+                continue
+            with self.subTest(example=path.name):
+                text = path.read_text(encoding="utf-8")
+                self.assertNotIn("/root/miniconda3", text)
+                self.assertNotIn("4,5,6,7", text)
 
 
 if __name__ == "__main__":

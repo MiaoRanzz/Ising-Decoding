@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ising-decoder-core"
+version = "0.1.0"
+description = "Standalone d=9/T=9 HTnet and PyMatching surface decoder"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {file = "LICENSE"}
+dependencies = [
+  "hydra-core>=1.3",
+  "numpy>=1.26",
+  "omegaconf>=2.3",
+  "pymatching>=2.3",
+  "stim>=1.15",
+  "torch>=2.5",
+]
+
+[project.scripts]
+ising-decode = "ising_decoder.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.data-files]
+"share/ising_decoder/conf" = ["conf/config.yaml"]
+"share/ising_decoder/conf/basis" = ["conf/basis/X.yaml", "conf/basis/Z.yaml"]
+"share/ising_decoder/artifacts" = [
+  "artifacts/HTnet.0.82.pt",
+  "artifacts/geometry_d9_xv.npz",
+  "artifacts/surface_d9_t9_xv_t0_X.dem",
+  "artifacts/surface_d9_t9_xv_t0_Z.dem",
+]

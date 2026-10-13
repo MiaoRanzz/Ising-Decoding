@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+track: realistic
+frozen: true
+order: [T1, T2, T3, T4]
+common:
+  geometry: {distance: 9, rounds: 9, measurement_basis: both, code_rotation: O1}
+  skip_noise_upscaling: true
+  architecture: {model_id: 111, branch_mixer: true, axis_channel_gate: false, input_skip_head: true}
+tasks:
+  T0: {change: baseline, config: conf/experiments/qewc_v3/realistic/t0_base.yaml}
+  T1: {change: measurement_1.5x, config: conf/experiments/qewc_v3/realistic/t1_meas_1p5.yaml}
+  T2: {change: cnot_1.5x, config: conf/experiments/qewc_v3/realistic/t2_cnot_1p5.yaml}
+  T3: {change: idle_cnot_and_idle_spam_1.5x, config: conf/experiments/qewc_v3/realistic/t3_idle_1p5.yaml}
+  T4: {change: specified_z_bias_components_1.5x, config: conf/experiments/qewc_v3/realistic/t4_z_bias_1p5.yaml}

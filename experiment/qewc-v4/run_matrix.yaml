@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+status: queued_with_hard_budget_and_calibration_gate
+formal_run_count: 16
+budget_B: 30
+budget_decision: experiment/qewc-v4/budget_decision.json
+runs:
+  - {id: H_T0, architecture: htnet_a101, method: t0_only, order: four_t0_stages, total_budget: 4B}
+  - {id: H_SEQ, architecture: htnet_a101, method: seq, order: high_conflict, total_budget: 4B}
+  - {id: H_EWC, architecture: htnet_a101, method: online_ewc, order: high_conflict, total_budget: 4B}
+  - {id: H_REPLAY, architecture: htnet_a101, method: replay, order: high_conflict, total_budget: 4B}
+  - {id: H_MIX_TOTAL, architecture: htnet_a101, method: mix_total, order: joint, total_budget: 4B}
+  - {id: H_MIX_EXPOSURE, architecture: htnet_a101, method: mix_exposure, order: joint, total_budget: 5B}
+  - {id: H_REV_SEQ, architecture: htnet_a101, method: seq, order: reverse, total_budget: 4B}
+  - {id: H_REV_EWC, architecture: htnet_a101, method: online_ewc, order: reverse, total_budget: 4B}
+  - {id: I_T0, architecture: ising_fast, method: t0_only, order: four_t0_stages, total_budget: 4B}
+  - {id: I_SEQ, architecture: ising_fast, method: seq, order: high_conflict, total_budget: 4B}
+  - {id: I_EWC, architecture: ising_fast, method: online_ewc, order: high_conflict, total_budget: 4B}
+  - {id: I_REPLAY, architecture: ising_fast, method: replay, order: high_conflict, total_budget: 4B}
+  - {id: I_MIX_TOTAL, architecture: ising_fast, method: mix_total, order: joint, total_budget: 4B}
+  - {id: I_MIX_EXPOSURE, architecture: ising_fast, method: mix_exposure, order: joint, total_budget: 5B}
+  - {id: I_REV_SEQ, architecture: ising_fast, method: seq, order: reverse, total_budget: 4B}
+  - {id: I_REV_EWC, architecture: ising_fast, method: online_ewc, order: reverse, total_budget: 4B}

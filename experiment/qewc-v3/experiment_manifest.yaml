@@ -1,0 +1,120 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+experiment: qewc_v3_lifelong_training
+design: experiment/qewc_v3_experiment_design.md
+status: completed
+created_utc: 2026-09-07
+completed_utc: 2026-09-08T00:57:18Z
+
+stage0:
+  checkpoint: outputs/htnet_ablation_t0_a101_s4m_e100_seed12345_a100_skipup_v1/models/best_model/HTnet.0.97.pt
+  config: conf/examples/qadapt/htnet_ablation/config_htnet_ablation_a101.yaml
+  epoch: 97
+  load_mode: weights_only
+
+geometry:
+  distance: 9
+  rounds: 9
+  measurement_basis: both
+  code_rotation: O1
+
+architecture:
+  model_id: 111
+  branch_mixer: true
+  axis_channel_gate: false
+  input_skip_head: true
+  expected_parameters: 650332
+
+seeds:
+  pilot_train: 20260907
+  continual_train: 20260907
+  validation_base: 20260907
+  validation_offset: 100000000
+  pilot_test: 20260908
+  formal_test: 20260916
+
+pilot:
+  first_run: realistic_seq_t1_1k
+  optimizer_steps_per_task_candidates: [1000, 5000, 20000]
+  selected_optimizer_steps_per_task: 1000
+  batch_size_per_gpu: 512
+  world_size: 1
+  validation_samples: 8192
+  formal_test_samples_per_basis: 65536
+  optimizer_steps_selection: {path: outputs/qewc_v3/optimizer_steps_pilot/selection.json, sha256: b3f749f54c733e462c67da4679190fe24c7d91e2bcc8b2fac1b5a2dc957d4120}
+  optimizer_steps_paired_evaluation: {path: outputs/qewc_v3/evaluations/realistic_pilot_optimizer_steps/evaluation_manifest.json, sha256: 964b347c7c1c2db395ad697d2c19441e431cfffbba5f3d825c41646da53e2f3e}
+  tradeoff_plot: {path: outputs/qewc_v3/pilot_tradeoff/stability_plasticity.png, sha256: 292de5fbbb809b3a34ba8f45f5e67a99f0bcbaf3d11f490878b1425f73c5dd68}
+
+ewc:
+  gamma: 1.0
+  lambda: 43.87539484535376
+  fisher_samples: 65536
+  fisher_batch_size: 2048
+  per_sample_chunk_size: 16
+  fisher_seed: 20260912
+  fisher_estimator: mean_squared_per_sample_bce_gradient
+  stability_n4096_vs_n65536: {cosine: 0.9990922, pearson: 0.9990284, total_ratio: 0.9991771}
+  n65536_wall_seconds: 130.777
+  n65536_state_bytes: 5251834
+  positive_weight: 1.0
+  selection: {path: outputs/qewc_v3/ewc_lambda_pilot/selection_seeded.json, sha256: 31d5352a16f13609ec83a45005938533d2e74abbdba281ccdce6c6b32b205f9b}
+  paired_evaluation: {path: outputs/qewc_v3/evaluations/realistic_pilot_ewc_lambda_seeded/evaluation_manifest.json, sha256: ae3e498c8bfbdaa303b7092c35b3a2c796a795980729c5e25bc76236c653bb47}
+
+replay:
+  ratio: 0.10
+  ratio_candidates: [0.10, 0.25, 0.50]
+  serialized_byte_limit: 5202656
+  byte_tolerance_fraction: 0.10
+  capacity_samples: 594
+  calibrated_serialized_bytes: 5229158
+  selection_rule: fixed_deterministic_task_and_basis_balanced
+  selection: {path: outputs/qewc_v3/replay_calibration/selection.json, sha256: 201276b34ebb9eab0370d729b27c23fc1c9a81638567d7a1f6ec00ec6aac54aa}
+  paired_evaluation: {path: outputs/qewc_v3/evaluations/realistic_pilot_replay_ratio/evaluation_manifest.json, sha256: 7a62641d0c58a861603bb2418891c02d5ce3c34de6383726802da9c7ac6a38f0}
+
+stretch:
+  enabled: true
+  execution_order: [S7, R4, O5, O6, O7, O8, R5]
+  stress_mix_exposure: {run_id: S7, total_optimizer_steps: 5000}
+  realistic_replay: {run_id: R4, total_optimizer_steps: 4000}
+  realistic_oracles: {run_ids: [O5, O6, O7, O8], optimizer_steps_each: 1000}
+  realistic_mix_exposure: {run_id: R5, total_optimizer_steps: 5000}
+
+conditional_ood:
+  gate_status: passed
+  decision_basis: paired_stress_results
+  acquisition_gap_tolerance_note: design_has_no_numeric_tolerance
+  fallback_reference: max_relative_acquisition_gap_below_5_percent
+  synthetic_protocol: {base_config: conf/experiments/qewc_v3/realistic/t0_base.yaml, distances: [7, 9], rounds: 9, configurations: 110, samples_per_basis: 262144, seed: 20260916}
+  synthetic_latency_protocol: {distances: [7, 9], rounds: 9, configurations: 110, samples_per_basis: 10000, latency_samples: 10000, workers_per_gpu: 1, seed: 20260916}
+  willow_protocol: {distances: [5, 7], rounds: 10, samples: all_available}
+  willow_benchmark:
+    record: https://zenodo.org/records/13273331
+    archive: google_105Q_surface_code_d3_d5_d7.zip
+    size_bytes: 5716907033
+    md5: 21fa6ad35b395d838ebcdbc92e364a12
+    local_root: /mnt/data2/Ising-Decoding/benchmarks/google_qec/google_105Q_surface_code_d3_d5_d7/google_105Q_surface_code_d3_d5_d7
+    selected_cases: 10
+    selected_shots: 500000
+  results:
+    synthetic_accuracy: {path: outputs/qewc_v3/summary/ood/ood_summary.json, sha256: 3bc5d53500e6d72a02bc23bb2bb78fc51d4d7a312e546c69f0944c9a142304b6}
+    synthetic_latency: {path: outputs/qewc_v3/summary/ood_latency/ood_summary.json, sha256: e6974c94457e50abf9d56278334451d31dd17d9eb15085fec4520f2e5ab9bbb2}
+    synthetic_config_manifest: {path: outputs/qewc_v3/generated_configs/ood/manifest.json, sha256: 92914d207c73f218f5dbabde3624480992a7f4d3c1c0b03a50b1a7a9a661de7d}
+    willow: {path: outputs/qewc_v3/evaluations/willow_stress_final/results.json, sha256: 2c812573ec14d9f7285b3fbbbd8fbd9f0ede4262a3f2f2c20582d79a8f10da47}
+
+evaluation:
+  protocol: immutable_per_task_stim_files
+  formal_samples_per_basis: 65536
+  realistic_streams: {path: outputs/qewc_v3/evaluation_streams/formal/realistic/stream_manifest.json, sha256: 7f0c079be956f9636908d69a1f0e796aefe24f4e8f7164ddce0eca70002c9ebe, bytes: 258270632}
+  stress_streams: {path: outputs/qewc_v3/evaluation_streams/formal/stress/stream_manifest.json, sha256: 2d00c45fcdd2e1c1747c89e14f7d8e8fffad5b99a2125f1865ae442042939aa4, bytes: 280122499}
+
+freeze:
+  realistic_tasks: true
+  stress_tasks: true
+  stress_orders: true
+  continual_seed: true
+  optimizer_steps_per_task: true
+  ewc_lambda: true
+  replay_ratio: true
+  evaluation_streams: true
+  success_criteria: true

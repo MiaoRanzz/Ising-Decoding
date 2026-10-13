@@ -91,6 +91,51 @@ class TestSafeTensorsRoundTrip(unittest.TestCase):
         self.assertEqual(int(metadata["model_id"]), self.MODEL_ID)
         self.assertIsNotNone(loaded)
 
+    def test_public_checkpoint_loader_accepts_safetensors(self):
+        """The paired/OOD/Willow loader accepts one self-describing final file."""
+        from model.checkpoint_loader import load_model_checkpoint
+
+        model = self._make_model("fp32")
+        with tempfile.NamedTemporaryFile(suffix=".safetensors", delete=False) as f:
+            path = f.name
+        self.addCleanup(os.unlink, path)
+        save_safetensors(model, path, model_id=self.MODEL_ID, dtype="fp32")
+
+        cfg = _build_minimal_cfg(self.MODEL_ID)
+        cfg.enable_fp16 = False
+        dist = types.SimpleNamespace(rank=0, device=torch.device("cpu"))
+        loaded = load_model_checkpoint(
+            cfg,
+            checkpoint=Path(path),
+            model_id=self.MODEL_ID,
+            distributed=dist,
+        )
+
+        self.assertEqual(cfg.model_checkpoint_file, str(Path(path).resolve()))
+        self.assertFalse(cfg.enable_fp16)
+        self._assert_state_dicts_close(model.state_dict(), loaded.state_dict(), atol=0.0)
+
+    def test_public_checkpoint_loader_rejects_model_id_mismatch(self):
+        """CLI model IDs must agree with embedded release metadata."""
+        from model.checkpoint_loader import load_model_checkpoint
+
+        model = self._make_model("fp32")
+        with tempfile.NamedTemporaryFile(suffix=".safetensors", delete=False) as f:
+            path = f.name
+        self.addCleanup(os.unlink, path)
+        save_safetensors(model, path, model_id=self.MODEL_ID, dtype="fp32")
+
+        cfg = _build_minimal_cfg(self.MODEL_ID)
+        cfg.enable_fp16 = False
+        dist = types.SimpleNamespace(rank=0, device=torch.device("cpu"))
+        with self.assertRaisesRegex(ValueError, "model_id mismatch"):
+            load_model_checkpoint(
+                cfg,
+                checkpoint=Path(path),
+                model_id=2,
+                distributed=dist,
+            )
+
     def test_missing_model_id_raises(self):
         """load_safetensors should raise if metadata has no model_id and none provided."""
         from safetensors.torch import save_file

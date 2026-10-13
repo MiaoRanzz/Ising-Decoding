@@ -166,7 +166,7 @@ def _is_standalone_color_config(cfg: DictConfig, code_name: str) -> bool:
     surface and color.
 
     Color can also be driven by the standalone color configs
-    (``conf/config_color_*.yaml``, ``conf/config_inference_color_model_5.yaml``)
+    (``conf/presets/color/config_color_*.yaml``, ``conf/presets/color/config_inference_color_model_5.yaml``)
     that spell out the full config schema themselves (explicit
     ``test``/``train``/``val`` sections, threshold sweeps). Those bypass the
     validator — it would reject those sections — and go straight to
@@ -309,8 +309,8 @@ def run_color(cfg: DictConfig):
     - chromobius_timing: Single-shot chromobius timing sweep
 
     Driven either by the public config (conf/config_public.yaml with
-    `code: color`) or by the standalone color configs (conf/config_color_*.yaml,
-    conf/config_inference_color_model_5.yaml), which spell out the full config
+    `code: color`) or by the standalone color configs (conf/presets/color/config_color_*.yaml,
+    conf/presets/color/config_inference_color_model_5.yaml), which spell out the full config
     schema (test/train/val sections, threshold sweeps) and bypass the
     public-config validator.
     """

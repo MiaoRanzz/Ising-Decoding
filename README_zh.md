@@ -551,11 +551,100 @@ LOGICAL Z (lz):
  ●  ·  ·
 ```
 
+#### QAdapt 与 Ising-Fast-T0-E100 发布流程
+
+本仓库发布两个最终模型：
+
+| 名称 | model_id | 训练方式 |
+|---|---:|---|
+| `qadapt` | 111（HTnet） | T0→T4 顺序训练，每任务 20 epoch，T0–T3 后计算 Fisher 并使用 EWC |
+| `ising_fast_t0_e100` | 1 | 随机初始化，仅在 T0 上训练 100 epoch，不使用 EWC |
+
+训练命令为：
+
+```bash
+bash code/examples/train_seq_ewc.sh
+bash code/examples/train_ising_fast_t0.sh
+```
+
+训练目录中的逐 epoch checkpoint、优化器状态、Fisher 快照、日志和
+`best_model/` 历史只用于本地训练与恢复，不作为 Hugging Face 发布资产。只导出
+两个最终权重：
+
+```bash
+QADAPT_CHECKPOINT=/path/to/HTnet.0.100.pt \
+ISING_FAST_T0_CHECKPOINT=/path/to/PreDecoderModelMemory_v1.0.100.pt \
+OUTPUT_DIR=release_models \
+  bash code/examples/export_release_models.sh
+```
+
+输出为两个独立的 Hugging Face 待上传目录；每个目录仅包含最终权重，以及模型卡、
+`LICENSE`、`NOTICE`、`config.json`、`evaluation.json`、`.gitattributes` 和
+`SHA256SUMS`。
+推理使用可重复的 `--model 名称:model_id:路径` 参数：
+
+```bash
+python code/examples/infer_ood.py \
+  --model qadapt:111:release_models/qadapt/qadapt.safetensors \
+  --model ising_fast_t0_e100:1:release_models/ising-fast-t0-e100/ising-fast-t0-e100.safetensors \
+  --gpus 0,1 --parallelism 2 --resume
+
+python code/examples/download_google_benchmark.py --extract
+python code/examples/infer_willow.py \
+  --model qadapt:111:release_models/qadapt/qadapt.safetensors \
+  --model ising_fast_t0_e100:1:release_models/ising-fast-t0-e100/ising-fast-t0-e100.safetensors \
+  --gpus 0 --resume
+```
+
+`infer_willow.py` 对应 Google Willow 105Q surface-code benchmark；
+`infer_google_benchmark.py` 是等价的兼容入口。两个神经模型和 PyMatching 基线
+使用完全相同的样本。更完整的下载布局、T0–T4 推理和参数说明见
+`code/examples/README.md`。
+
 #### 噪声模型（公开默认值）
 
 - `data.noise_model`：一个 **25 参数电路级** 噪声模型（SPAM、空闲门，以及 CNOT Pauli 通道）。
 - 仓库附带配置使用的是 **统一电路级去极化** 映射，其中 25 个值都由单个物理错误率 `p` 推导得到（例如 `p_prep_{X,Z}=2*p/3`、`p_idle_cnot_{X,Y,Z}=p/3`、`p_cnot_*=p/15`）。
 - 你可以编辑 `data.noise_model`，用非均匀/自定义的 25 参数模型进行训练。在这种情况下，Torch 训练生成器会从当前活动的 25 参数模型刷新采样概率向量，而不是退回到标量统一去极化路径。
+
+#### 从 Google 真机 benchmark 学习并适配 25 维噪声
+
+完整流程分两步。首先，`fit_google_qec_noise.py` 直接读取 Google 压缩包中的
+ideal Stim 电路、metadata、`detection_events.b8` 和
+`obs_flips_actual.b8`，联合 d=3/d=5、X/Z 数据拟合 25 个有效电路级 Pauli
+参数；必须检查 `fit.success`、纯真机数据 Jacobian rank 和成本下降率。
+其次，`adapt_google_noise_network.py` 将真机 detector 数据映射为论文的
+`(B,4,2,D,D)` 输入，在 GPU 上训练 Eq. (58)-(61) 的
+`8通道 CNN -> GAP -> MLP(256,128,25)` 网络，并输出可直接用于解码器训练的
+25 维配置。完整命令见英文 README 的 Google Willow / Quantum AI QEC benchmark 小节。
+
+这里采用明确的两阶段真机适配目标：先用硬件奇偶矩识别 25 维目标，再以
+log-parameter loss 适配论文网络。它复现论文网络结构、batch-logit 聚合和
+`[1e-5,3e-2]` 有界 log-space 输出，但不把 Google 数据伪装成论文合成训练中
+18 类 edge/43 类 hyperedge 标签。
+
+本次正式结果在 66 次函数评估后收敛，成本下降 90.66%，数据 Jacobian rank
+为 25/25；网络 held-out log-RMSE 为 0.04410。最终配置自动设置
+`data.skip_noise_upscaling: true`。正式长训练前执行真实 GPU 优化步：
+
+论文 Eq. (62)-(68) 的精确可微目标已实现在
+`code/noise_learning/paper_loss.py`。公式目录必须恰好包含 18 个
+`edge_formulas`、43 个 `hyperedge_formulas` 以及对应实例计数；每个公式的
+外层列表表示相互独立的 fault location，内层列表表示同一 location 中先求和的
+互斥 25 参数通道。训练时通过 `--formula-catalog PATH` 启用；若要使用
+Eq. (66)-(68)，再加 `--unbiased-paper-loss --base-error-rate P`。公开论文没有
+逐项列出 43 个 hyperedge 公式，且三个复杂 boundary 公式只给出代表性子集，
+因此实现会拒绝不完整目录，不会静默臆造缺失项。
+
+```bash
+PYTHONPATH=code python code/scripts/smoke_train_learned_noise.py \
+  conf/experiments/google_qec/config_google_d3_d5_r13_noise_network.yaml --device cuda:0 \
+  --output outputs/google_noise_learning/smoke_train_network_checkpoint.pt
+```
+
+成功时输出 `SMOKE_TRAIN_OK`，并保存含噪声 SHA-256、模型和优化器状态的
+checkpoint。最终网络配置为 `conf/experiments/google_qec/config_google_d3_d5_r13_noise_network.yaml`。
+拟合统计与网络输出快照保存在 `conf/experiments/google_qec/noise_models/`。
 
 #### 训练噪声放大（surface code）
 
