@@ -1,0 +1,256 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+experiment: qewc_v4_cross_arch_lifelong_generalization
+status: in_progress
+updated_utc: 2026-09-17T02:25:00Z
+
+environment:
+  conda_environment: ising-decoding
+  python: /root/miniconda3/envs/ising-decoding/bin/python
+  python_prefix: /root/miniconda3/envs/ising-decoding
+  gpus:
+    - {id: 0, model: NVIDIA A100-SXM4-80GB}
+    - {id: 1, model: NVIDIA A100-SXM4-80GB}
+
+attempts:
+  - id: htnet_shared_calibration_20260917
+    stage: htnet_only_parallel_parameter_search
+    status: calibration_only_launched
+    budget_B: 30
+    parameter_authority: htnet_a101
+    ising_search: stopped_by_user
+    preserved_existing_htnet_candidate_pid: 3703924
+    new_gpu_assignment: {gpu0: htnet_lambda_0p1_existing, gpu1: htnet_lambda_1}
+    transfer: [lambda, fisher_sample_count, replay_ratio]
+    architecture_specific: [fisher_tensors, replay_capacity_matched_to_own_ewc_bytes]
+    stopped_process_audit: logs/qewc_v4/orchestration/switch_htnet_dualgpu_20260917.json
+    queue_log: logs/qewc_v4/orchestration/htnet_dualgpu_20260917.log
+    automatic_formal_continuation: authorized_by_user_20260917
+    review_gate: calibration_validation_then_transfer_then_freeze_then_formal
+    continuation_log: logs/qewc_v4/orchestration/shared_htnet_20260917.log
+    candidate_logs: logs/qewc_v4/orchestration/htnet_dualgpu
+  - id: b30_resume_20260914
+    stage: calibration
+    status: launched
+    budget_B: 30
+    reason: resume_after_disk_quota_failure
+    resumed_checkpoints:
+      htnet_a101: {method: seq, stage: 3, task: T2, completed_epochs: 13}
+      ising_fast: {method: ewc, lambda: 0.1, stage: 3, task: T2, completed_epochs: 2}
+    log: logs/qewc_v4/orchestration/b30_resume_20260914.log
+    restore: [weights, optimizer, scheduler, amp_scaler, epoch, global_step]
+    rng_state_restored: false
+    history: per_stage_recovery_directory_preserves_original_logs_and_resource_metrics
+    validation: 41_qewc_v4_tests_passed_and_both_checkpoint_pairs_validated
+  - id: b30_pipeline_20260911
+    stage: oracle_then_calibration_then_formal
+    status: launched
+    budget_B: 30
+    budget_source: experiment/qewc-v4/budget_decision.json
+    gpu_assignment: {htnet_a101: 0, ising_fast: 1}
+    log: logs/qewc_v4/orchestration/b30_pipeline.log
+    task_logs: logs/qewc_v4/orchestration/b30
+    retention: latest_two_complete_pairs_per_stage_and_best_model_directory
+    prior_pilot_endpoints_protected: true
+    minimum_free_output_gib_before_next_job: 10
+    note: Independent E30 runs; original scheduler preserved. B5 pilot result remains historical evidence. Old status entries below are historical snapshots.
+  - id: stress_epoch100_batch_smoke
+    stage: stress_selection
+    status: completed
+    checkpoint: outputs/htnet_ablation_t0_a101_s4m_e100_seed12345_a100_skipup_v1/models/HTnet.0.100.pt
+    batch_size: 2
+    batches: 1
+    seed: 20260910
+    device: cpu
+    output: outputs/qewc_v4/stress_screen/batch_metrics.smoke.json
+  - id: stress_epoch100_screen
+    stage: stress_selection
+    status: completed
+    started_utc: 2026-09-08T07:49:14Z
+    completed_utc: 2026-09-08T07:58:14Z
+    authority_architecture: htnet_a101
+    checkpoint: outputs/htnet_ablation_t0_a101_s4m_e100_seed12345_a100_skipup_v1/models/HTnet.0.100.pt
+    ler:
+      samples_per_basis: 32768
+      seed: 20260911
+      output: outputs/qewc_v4/stress_screen/ler
+    batch_metrics:
+      samples: 1024
+      batch_size: 256
+      batches: 4
+      seed: 20260910
+      output: outputs/qewc_v4/stress_screen/batch_metrics.json
+    selection:
+      selected: {T1: measurement_4p0x, T2: cnot_1p5x, T3: idle_4p0x, T4: z_bias_1p5x}
+      high_conflict_order: [T1, T3, T2, T4]
+      reverse_order: [T4, T2, T3, T1]
+      output: outputs/qewc_v4/stress_screen/selection.json
+    artifact_sha256:
+      ler: 0de8c0674128d9e5b093657816759b85da7a8483306c32f6c64135adbe94f28b
+      batch_metrics: 03c7766ad98dc9bb694e80c08d7c80d254d291aa455b24a0f1d2544b779c35a0
+      selection: 65c4a89b5a6dbf6d83592e7e3c8927b2eefe69661b5e77627f0e9ad30427602d
+
+  - id: ising_fast_conflict_diagnostic
+    stage: ising_fast_conflict_diagnostic
+    status: completed
+    started_utc: 2026-09-08T08:06:34Z
+    completed_utc: 2026-09-08T08:09:37Z
+    checkpoint: outputs/ising_fast_qadapt_t0_s4m_e100_seed12345_a100_skipup_v1/models/PreDecoderModelMemory_v1.0.100.pt
+    tasks: [T1, T2, T3, T4]
+    note: Diagnostic only; cannot change the HTNet-selected tasks or orders.
+    representation_hook: input to final output convolution model.net[-1]
+    ler_output: outputs/qewc_v4/ising_diagnostic/ler
+    batch_metrics_output: outputs/qewc_v4/ising_diagnostic/batch_metrics.json
+    result:
+      stage0_ler: {T1: 0.1409149169921875, T2: 0.14373779296875, T3: 0.0731658935546875, T4: 0.09063720703125}
+      diagnostic_greedy_order: [T1, T3, T2, T4]
+      frozen_order_changed: false
+      summary: outputs/qewc_v4/ising_diagnostic/summary.json
+    artifact_sha256:
+      ler: 72db5a1ce5ad052c7994680948b27a591de0e5377ef9016c10db78ea88562925
+      batch_metrics: 37a35331195bb0ede69ab4091105c7c7f8970402ab586ee114c159c74cffa58c
+      summary: ea56e02c0c8addacbe8d533ed79f95ec236c2b61641d48d11a376836b4d79fd7
+
+  - id: htnet_budget_launcher_smoke
+    stage: htnet_budget_pilot
+    status: completed
+    endpoint: outputs/qewc_v4/smoke/htnet_legacy_epoch/stage_1_T1/models/HTnet.0.1.pt
+    requested_samples: 8192
+    actual_generated_samples: 4096
+    optimizer_updates: 32
+    micro_batch_size: 64
+    accumulate_steps: 2
+    evidence: outputs/qewc_v4/smoke/htnet_legacy_epoch/run_manifest.json
+  - id: htnet_budget_pilot
+    stage: htnet_budget_pilot
+    status: running
+    started_utc: 2026-09-08T08:17:51Z
+    authority_architecture: htnet_a101_only
+    tasks: [T1, T2, T3, T4]
+    candidate_legacy_epochs: [1, 5, 20, 50]
+    requested_samples_per_epoch: 4194304
+    actual_generated_samples_per_epoch: 2097152
+    optimizer_updates_per_epoch: 512
+    micro_batch_size: 2048
+    accumulate_steps: 2
+    output_root: outputs/qewc_v4/budget_pilot/htnet
+
+events:
+  - id: design_confirmed
+    status: completed
+    date_utc: 2026-09-08
+    note: User confirmed the final design before any V4 GPU training was launched.
+  - id: calibration_id_stream_v1_superseded
+    status: completed_but_unused
+    date_utc: 2026-09-08
+    path: outputs/qewc_v4/evaluation_streams/calibration/stress
+    seeds: [20260915, 20260916]
+    note: Replaced before any evaluation because one seed value overlapped the formal stream seed set.
+  - id: calibration_id_stream_frozen
+    status: completed
+    date_utc: 2026-09-08
+    path: outputs/qewc_v4/evaluation_streams/calibration_seed20260914/stress
+    seeds: [20260914, 20260915]
+    samples_per_basis: 65536
+    tasks: [T0, T1, T2, T3, T4]
+    manifest_sha256: 6b93226589ae853c57b09065c7e5e6f718058e01f4c8cb4ed853cb51c7a1510e
+    separate_formal_stream_seeds: [20260916, 20260917]
+  - id: stale_postprocessing_gates_replaced
+    status: completed
+    date_utc: 2026-09-08
+    note: Waiting-only gates were stopped before producing evaluations; active budget training was not interrupted.
+  - id: v4_pipeline_validation
+    status: completed
+    date_utc: 2026-09-08
+    tests: 25
+    result: passed
+    environment: ising-decoding
+    covers: [budget_extension, fisher_selection, replay_byte_matching, calibration_grid, formal_launcher, formal_audit]
+  - id: gated_pipeline_v2
+    status: queued
+    date_utc: 2026-09-08
+    chain:
+      - {stage: finish_budget_selection, pid: 3052683}
+      - {stage: fisher_calibration, pid: 3052814}
+      - {stage: replay_capacity, pid: 3052926}
+      - {stage: full_hyperparameter_calibration, pid: 3053030}
+      - {stage: formal_training_and_audit, pid: 3053422}
+    note: Every downstream stage checks its upstream artifact and exits on upstream failure.
+
+stages:
+  stress_rescreen: completed
+  ising_fast_conflict_diagnostic: completed
+  htnet_budget_pilot: running
+  ising_fast_oracles: pending
+  ewc_calibration: pending
+  replay_calibration: pending
+  formal_training: queued_after_calibration
+  id_evaluation: pending
+  synthetic_ood_evaluation: pending
+  willow_evaluation: pending
+  final_report: pending
+
+runs:
+  - id: htnet_T1_e1
+    status: completed
+    gpu: 0
+    legacy_epochs: 1
+    optimizer_updates: 512
+    actual_samples: 2097152
+    wall_seconds: 1217.536449432373
+    peak_reserved_bytes: 78557216768
+    endpoint: outputs/qewc_v4/budget_pilot/htnet/T1_e1/stage_1_T1/models/HTnet.0.1.pt
+    endpoint_sha256: db89c8e19030f95580995b92dcf7b1e8dc9be0d6fdbbbe3f242562942a97220c
+  - id: htnet_T2_e1
+    status: completed
+    gpu: 1
+    legacy_epochs: 1
+    optimizer_updates: 512
+    actual_samples: 2097152
+    wall_seconds: 1293.8706939220428
+    peak_reserved_bytes: 82046877696
+    endpoint: outputs/qewc_v4/budget_pilot/htnet/T2_e1/stage_1_T2/models/HTnet.0.1.pt
+    endpoint_sha256: 76629d051c1f1b69fc20ba35ef9620e0df7b4f98d43c72be76e9b8658b63fa75
+  - id: htnet_T3_e1
+    status: completed
+    gpu: 0
+    legacy_epochs: 1
+    optimizer_updates: 512
+    actual_samples: 2097152
+    train_bce: 0.01851
+    validation_bce: 0.01843
+    wall_seconds: 1221.1190886497498
+    peak_reserved_bytes: 81375789056
+    endpoint: outputs/qewc_v4/budget_pilot/htnet/T3_e1/stage_1_T3/models/HTnet.0.1.pt
+    endpoint_sha256: 61a5dea2d6fadcebea59407ecaa5e50e99ff7af8965e5b13a3ce7faa46ab2ef3
+  - id: htnet_T4_e1
+    status: completed
+    gpu: 1
+    legacy_epochs: 1
+    optimizer_updates: 512
+    actual_samples: 2097152
+    train_bce: 0.02152
+    validation_bce: 0.02142
+    wall_seconds: 1250.9806144237518
+    peak_reserved_bytes: 79561752576
+    endpoint: outputs/qewc_v4/budget_pilot/htnet/T4_e1/stage_1_T4/models/HTnet.0.1.pt
+    endpoint_sha256: c14fc13bbfd7a2a1495e49d305150f5857feb895004260095e6629b568720f7d
+  - id: htnet_T1_e5
+    status: running
+    gpu: 0
+    legacy_epochs: 5
+    output: outputs/qewc_v4/budget_pilot/htnet/T1_e5
+  - id: htnet_T2_e5
+    status: running
+    gpu: 1
+    legacy_epochs: 5
+    output: outputs/qewc_v4/budget_pilot/htnet/T2_e5
+  - id: htnet_budget_queue_gpu0
+    status: running
+    gpu: 0
+    remaining_order: [T1_e5, T3_e5, T1_e20, T3_e20, T1_e50, T3_e50]
+  - id: htnet_budget_queue_gpu1
+    status: running
+    gpu: 1
+    remaining_order: [T2_e5, T4_e5, T2_e20, T4_e20, T2_e50, T4_e50]

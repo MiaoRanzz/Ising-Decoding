@@ -1,0 +1,198 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+experiment: qewc_v4_cross_arch_lifelong_generalization
+design: experiment/qewc-v4/experiment_design.md
+status: in_progress
+confirmed_utc: 2026-09-08
+
+scope:
+  train_repetitions: 1
+  architectures: [htnet_a101, ising_fast]
+  methods: [t0_only, seq, online_ewc, replay, mix_total, mix_exposure]
+  reverse_methods: [seq, online_ewc]
+  synthetic_ood_and_willow_are_co_primary: true
+
+stage0:
+  seed: 12345
+  primary_endpoint: epoch_100
+  htnet_a101:
+    model_id: 111
+    parameters: 650332
+    config:
+      path: conf/examples/qadapt/htnet_ablation/config_htnet_ablation_a101.yaml
+      sha256: 2590ffee6d070f7e2a0fce67042307ac5d5a8993090d88d678b971f91b618770
+    endpoint:
+      path: outputs/htnet_ablation_t0_a101_s4m_e100_seed12345_a100_skipup_v1/models/HTnet.0.100.pt
+      sha256: e028202cf7b5a28fbd176b2858b844199de256ee051799032af5ac6fa5a6dac8
+    sensitivity_endpoint:
+      path: outputs/htnet_ablation_t0_a101_s4m_e100_seed12345_a100_skipup_v1/models/best_model/HTnet.0.97.pt
+      sha256: e78178597350253f2a917c11fe14a1b62a44d05d9f2b380aea065611dde1efb3
+    actual_t0_samples: 209715200
+    optimizer_updates: 51200
+  ising_fast:
+    model_id: 1
+    parameters: 912772
+    config:
+      path: conf/examples/qadapt/config_ising_fast_t0_a100.yaml
+      sha256: b5d3dc747b77aea47554a2514ab375a78bf4e70d0585c1743e1dd055788498e5
+    endpoint:
+      path: outputs/ising_fast_qadapt_t0_s4m_e100_seed12345_a100_skipup_v1/models/PreDecoderModelMemory_v1.0.100.pt
+      sha256: cf519ed2b399337c22f6cfb9a7acf0e93a64bfb07233b9d4e4037ec731d61880
+    sensitivity_endpoint:
+      path: outputs/ising_fast_qadapt_t0_s4m_e100_seed12345_a100_skipup_v1/models/best_model/PreDecoderModelMemory_v1.0.87.pt
+      sha256: 9aa139beaa605caad2ae93438d3853112f1a6bc2ba359d8e00f36c47063d206f
+    actual_t0_samples: 209715200
+    optimizer_updates: 52736
+
+legacy_epoch:
+  requested_samples: 4194304
+  actual_generated_samples: 2097152
+  micro_batch_size: 2048
+  accumulate_steps: 2
+  effective_batch_size: 4096
+  optimizer_updates: 512
+  world_size: 1
+
+geometry:
+  distance: 9
+  rounds: 9
+  measurement_basis: both
+  code_rotation: O1
+
+seeds:
+  stage0_train: 12345
+  lifelong_train: 20260907
+  stress_batch_screen: 20260910
+  stress_ler_screen: 20260911
+  formal_test: 20260916
+  calibration_id_validation: 20260914
+
+stress_selection:
+  status: completed
+  authority_architecture: htnet_a101_epoch_100
+  families: [measurement, cnot, idle, z_bias]
+  multipliers: [1.5, 2.0, 3.0, 4.0]
+  combinations: 256
+  samples_per_basis: 32768
+  batch_metric_samples: 1024
+  difficulty_slack: 0.005
+  primary: minimize_stage0_ler_range
+  secondary: minimize_mean_pairwise_gradient_cosine
+  tertiary: maximize_mean_pairwise_representation_distance
+  high_conflict_order: [T1, T3, T2, T4]
+  reverse_order: [T4, T2, T3, T1]
+  selected_tasks: {T1: measurement_4p0x, T2: cnot_1p5x, T3: idle_4p0x, T4: z_bias_1p5x}
+
+ising_fast_conflict_diagnostic:
+  status: completed
+  authority: diagnostic_only
+  checkpoint: outputs/ising_fast_qadapt_t0_s4m_e100_seed12345_a100_skipup_v1/models/PreDecoderModelMemory_v1.0.100.pt
+  stage0_ler: {T1: 0.1409149169921875, T2: 0.14373779296875, T3: 0.0731658935546875, T4: 0.09063720703125}
+  diagnostic_greedy_order: [T1, T3, T2, T4]
+  frozen_order_changed: false
+  representation_hook: input_to_final_output_convolution
+  summary: {path: outputs/qewc_v4/ising_diagnostic/summary.json, sha256: ea56e02c0c8addacbe8d533ed79f95ec236c2b61641d48d11a376836b4d79fd7}
+
+budget_pilot:
+  status: completed_user_budget_override
+  authority_architecture: htnet_a101_only
+  candidate_legacy_epochs: [1, 5, 20, 50]
+  extend_to_100_if_needed: true
+  current_task_ler_plateau_absolute: 0.001
+  bce_plateau_relative: 0.01
+  selected_B: 30
+  selection: experiment/qewc-v4/budget_decision.json
+  pilot_selected_B: 5
+  applies_to_both_architectures: true
+
+ewc_calibration:
+  final_relative_limit: 0.02
+  current_task_relative_limit: 0.05
+  threshold_revision: user_authorized_20260921_after_coarse_results
+  status: htnet_only_parallel_in_progress
+  parameter_source_architecture: htnet_a101
+  ising_independent_search: stopped_by_user_20260917
+  forbidden_lambda: 43.87539484535376
+  lambda_coarse_grid: [0.1, 1.0, 10.0, 100.0, 1000.0]
+  refine_with_geometric_midpoints: true
+  gamma: 1.0
+  fisher_sample_candidates: [4096, 16384, 65536]
+  fisher_cosine_minimum: 0.99
+  fisher_total_ratio_tolerance: 0.05
+  select_per_architecture: false
+  uses_ood_or_willow: false
+
+replay_calibration:
+  status: queued_htnet_only
+  parameter_source_architecture: htnet_a101
+  transfer_ratio_to_ising: true
+  ratio_candidates: [0.10, 0.25, 0.50]
+  storage_match: per_architecture_ewc_state_bytes
+  samples_count_inside_fixed_training_batch: true
+  uses_ood_or_willow: false
+
+formal_training:
+  status: queued_after_budget_and_calibration
+  run_count: 16
+  main_runs_per_architecture: [t0_only, seq, online_ewc, replay, mix_total, mix_exposure]
+  reverse_runs_per_architecture: [seq, online_ewc]
+  fixed_endpoint_primary: true
+  select_checkpoint_with_ood_or_willow: false
+
+evaluation:
+  id_samples_per_basis: 65536
+  paired_fixed_streams: true
+  calibration_id_stream:
+    path: outputs/qewc_v4/evaluation_streams/calibration_seed20260914/stress
+    seeds: [20260914, 20260915]
+    samples_per_basis: 65536
+    status: completed_and_frozen
+    manifest_sha256: 6b93226589ae853c57b09065c7e5e6f718058e01f4c8cb4ed853cb51c7a1510e
+    separate_from_formal_test: true
+  id_fixed_stream:
+    path: outputs/qewc_v3/evaluation_streams/formal/stress
+    manifest_sha256: 2d00c45fcdd2e1c1747c89e14f7d8e8fffad5b99a2125f1865ae442042939aa4
+    samples_per_basis: 65536
+    task_config_hashes_match_v4: true
+  synthetic_ood:
+    status: frozen_existing_protocol
+    configurations: 110
+    distances: [7, 9]
+    samples_per_basis: 262144
+    seed: 20260916
+  willow:
+    status: frozen_existing_protocol
+    distances: [5, 7]
+    rounds: 10
+    cases: 10
+    selected_shots: 500000
+    zero_shot: true
+  baselines: [same_arch_seq, same_arch_replay, mix_total, mix_exposure, t0_only, raw_pymatching]
+
+success:
+  lifelong:
+    ewc_af_below_seq: true
+    ewc_bwt_closer_to_zero_than_seq: true
+    faler_relative_noninferiority: 0.01
+    current_task_relative_degradation_max: 0.05
+    acquisition_gap_must_be_acceptable: true
+  generalization:
+    both_ood_and_willow_required: true
+    relative_ler_improvement_minimum_each: 0.01
+    paired_ci_must_exclude_zero: true
+  claims:
+    cross_training_seed_stability_allowed: false
+    universal_proof_allowed: false
+
+freeze:
+  design_confirmed: true
+  stage0_endpoints: true
+  legacy_epoch_semantics: true
+  candidate_grid: true
+  stress_tasks_and_orders: true
+  budget_B: true
+  ewc_parameters: false
+  replay_parameters: false
+  evaluation_protocols: true
+  success_criteria: true

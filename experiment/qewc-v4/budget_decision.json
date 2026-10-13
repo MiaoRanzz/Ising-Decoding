@@ -1,0 +1,13 @@
+{
+  "status": "selected",
+  "selected_B": 30,
+  "selection_source": "explicit_user_decision_20260911",
+  "supersedes_for_future_training": "outputs/qewc_v4/budget_pilot/selection.json",
+  "pilot_selected_B": 5,
+  "legacy_epoch_semantics_unchanged": true,
+  "optimizer_updates_per_task": 15360,
+  "actual_samples_per_task": 62914560,
+  "scheduler_semantics_unchanged": true,
+  "independent_30_epoch_runs": true,
+  "strict_convergence_claim": false
+}
