@@ -33,6 +33,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--distances", nargs="+", type=int, default=[3, 5, 7])
     parser.add_argument("--rounds", nargs="+", type=int, default=[13])
+    parser.add_argument(
+        "--config-name",
+        default="examples/qadapt/config_qadapt_t0_base",
+        help="Hydra config used to reconstruct the checkpoint architecture.",
+    )
     add_common_inference_args(
         parser,
         default_output_dir=Path("outputs/examples/released_models/willow"),
@@ -59,6 +64,8 @@ def main(argv: list[str] | None = None) -> int:
         *(str(value) for value in args.distances),
         "--rounds",
         *(str(value) for value in args.rounds),
+        "--config-name",
+        str(args.config_name),
         "--bases",
         *bases,
         "--models",

@@ -14,8 +14,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
-import onnx
-import onnxruntime as ort
 import torch
 from omegaconf import OmegaConf
 
@@ -149,6 +147,13 @@ def export_onnx(
     output_path: Path,
     device: torch.device,
 ) -> None:
+    try:
+        import onnx
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "ONNX export validation requires the training dependencies"
+        ) from exc
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     example_tensor = torch.as_tensor(example, dtype=torch.uint8, device=device)
     torch.onnx.export(
@@ -176,6 +181,13 @@ def compare_onnx(
     batch_size: int,
     provider: str,
 ) -> tuple[int, list[str]]:
+    try:
+        import onnxruntime as ort
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "ONNX runtime comparison requires the training dependencies"
+        ) from exc
+
     options = ort.SessionOptions()
     options.intra_op_num_threads = 1
     options.inter_op_num_threads = 1

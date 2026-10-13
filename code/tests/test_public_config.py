@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import argparse
 import unittest
 from hydra import compose, initialize_config_dir
 from pathlib import Path
@@ -623,9 +624,11 @@ class TestQAdaptExampleLayout(unittest.TestCase):
         example_root = self.repo_root / "code" / "examples"
         expected = {
             "train_seq_ewc.sh",
+            "train_ising_fast_t0.sh",
             "infer_t0_t4.py",
             "infer_ood.py",
             "infer_google_benchmark.py",
+            "infer_willow.py",
             "download_google_benchmark.py",
         }
         observed = {
@@ -669,7 +672,12 @@ class TestQAdaptExampleLayout(unittest.TestCase):
         self.assertEqual(str(cfg.workflow.task), "train")
         self.assertTrue(cfg.data.skip_noise_upscaling)
 
-    def test_public_example_model_name_is_qadapt(self):
+    def test_public_examples_use_released_model_cli(self):
+        from scripts.qadapt_example_utils import (
+            add_common_inference_args,
+            checkpoint_specs,
+        )
+
         public_paths = [
             self.repo_root / "README.md",
             self.repo_root / "README_zh.md",
@@ -688,13 +696,30 @@ class TestQAdaptExampleLayout(unittest.TestCase):
                 text = path.read_text(encoding="utf-8")
                 self.assertNotIn("R9-X", text)
                 self.assertNotIn("r9x_", text)
-        helper_text = public_paths[5].read_text(encoding="utf-8")
-        self.assertIn('"qadapt_seq_ewc"', helper_text)
-        self.assertNotIn('"qadapt_mixed"', helper_text)
-        self.assertNotIn('"qadapt_seq"', helper_text)
-        self.assertIn('"--checkpoint"', helper_text)
-        self.assertNotIn('"--mixed-checkpoint"', helper_text)
-        self.assertNotIn('"--seq-checkpoint"', helper_text)
+
+        parser = argparse.ArgumentParser()
+        add_common_inference_args(
+            parser,
+            default_output_dir=Path("outputs/examples/released_models"),
+        )
+        args = parser.parse_args(
+            [
+                "--model",
+                "qadapt:111:models/qadapt.safetensors",
+                "--model",
+                "ising_fast:1:models/ising_fast.pt",
+            ]
+        )
+        specs = checkpoint_specs(args)
+        self.assertEqual([spec.name for spec in specs], ["qadapt", "ising_fast"])
+        self.assertEqual([spec.model_id for spec in specs], [111, 1])
+        self.assertEqual(
+            [spec.checkpoint for spec in specs],
+            [
+                self.repo_root / "models" / "qadapt.safetensors",
+                self.repo_root / "models" / "ising_fast.pt",
+            ],
+        )
 
     def test_examples_do_not_hardcode_machine_specific_runtime(self):
         example_root = self.repo_root / "code" / "examples"

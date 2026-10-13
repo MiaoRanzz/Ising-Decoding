@@ -14,6 +14,7 @@ entry points stay unchanged.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import csv
 import json
 import math
@@ -503,6 +504,7 @@ def make_dataset(cfg: Any, seed: int):
     cuda_state = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
     try:
         set_all_seeds(seed)
+        cfg.seed = int(seed)
         return DatapipeFactory.create_datapipe_inference(cfg)
     finally:
         random.setstate(py_state)
@@ -570,7 +572,9 @@ def evaluate_pymatching(
 ) -> tuple[dict[str, float | int], np.ndarray]:
     dets = np.ascontiguousarray(dets_and_obs[:, :-num_obs], dtype=np.uint8)
     obs = np.ascontiguousarray(dets_and_obs[:, -num_obs:], dtype=np.uint8)
+    started = time.perf_counter()
     pred = matcher.decode_batch(dets).reshape(obs.shape)
+    batch_decode_seconds = time.perf_counter() - started
     error_mask = np.asarray(pred != obs, dtype=np.bool_).reshape(obs.shape[0], -1).any(axis=1)
     errors = int(error_mask.sum())
     total = int(obs.shape[0])
@@ -581,6 +585,9 @@ def evaluate_pymatching(
         "logical_errors": errors,
         "samples": total,
         "ler": float(errors / total) if total else float("nan"),
+        "pymatching_batch_us_per_shot": float(
+            batch_decode_seconds * 1e6 / max(1, total)
+        ),
         **measure_single_shot_latency(matcher, latency_rows, n_rounds, latency_repeats),
         **input_density.statistics("input"),
     }, error_mask
@@ -616,6 +623,8 @@ def evaluate_model(
     error_chunks: list[np.ndarray] = []
     residual_count = 0
     active_correction_shots = 0
+    model_seconds = 0.0
+    residual_matching_seconds = 0.0
     input_density = SyndromeDensityAccumulator()
     residual_density = SyndromeDensityAccumulator()
 
@@ -626,7 +635,13 @@ def evaluate_model(
             dets_only = dets_and_obs[:, :-num_obs]
             gt_obs = dets_and_obs[:, -num_obs:].to(torch.int64).cpu()
 
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            started = time.perf_counter()
             output = module(dets_only)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            model_seconds += time.perf_counter() - started
             pre_l = output[:, 0].to(torch.int64).cpu()
             residual = output[:, 1:].to(torch.uint8).cpu().numpy()
             input_detectors = dets_only.to(torch.uint8).cpu().numpy()
@@ -639,7 +654,10 @@ def evaluate_model(
                 saved_residual_chunks.append(
                     np.ascontiguousarray(residual, dtype=np.uint8)
                 )
-            pred_obs = torch.from_numpy(matcher.decode_batch(residual)).reshape(gt_obs.shape)
+            started = time.perf_counter()
+            residual_prediction = matcher.decode_batch(residual)
+            residual_matching_seconds += time.perf_counter() - started
+            pred_obs = torch.from_numpy(residual_prediction).reshape(gt_obs.shape)
             final_l = (pre_l.reshape(gt_obs.shape) + pred_obs).remainder(2)
 
             error_mask = (final_l != gt_obs).reshape(gt_obs.shape[0], -1).any(dim=1)
@@ -660,6 +678,13 @@ def evaluate_model(
         "logical_errors": logical_errors,
         "samples": total,
         "ler": float(logical_errors / total) if total else float("nan"),
+        "model_latency_us_per_shot": float(model_seconds * 1e6 / max(1, total)),
+        "residual_pymatching_batch_us_per_shot": float(
+            residual_matching_seconds * 1e6 / max(1, total)
+        ),
+        "end_to_end_batch_us_per_shot": float(
+            (model_seconds + residual_matching_seconds) * 1e6 / max(1, total)
+        ),
         **measure_single_shot_latency(matcher, residual_rows, n_rounds, latency_repeats),
         "active_correction_shots": active_correction_shots,
         "active_correction_fraction": (
@@ -986,6 +1011,11 @@ def mean_metric(rows: list[dict[str, Any]], name: str) -> float:
     values = [float(row[name]) for row in rows if row.get(name) is not None]
     return float(np.mean(values)) if values else float("nan")
 
+def array_sha256(value: np.ndarray) -> str:
+    """Hash the exact detector/observable sample matrix without copying it."""
+    contiguous = np.ascontiguousarray(value)
+    return hashlib.sha256(memoryview(contiguous).cast("B")).hexdigest()
+
 
 def main() -> None:
     args = parse_args()
@@ -1053,6 +1083,7 @@ def main() -> None:
     error_masks_by_basis: dict[str, dict[str, np.ndarray]] = {}
     paired_comparisons: list[dict[str, Any]] = []
     sample_metadata: dict[str, Any] = {}
+    sample_streams: dict[str, Any] = {}
     for basis_index, basis in enumerate(bases):
         dataset_cfg = build_cfg(args, args.model[0], basis=basis)
         dataset_seed = int(args.seed) + basis_index
@@ -1062,6 +1093,12 @@ def main() -> None:
             sample_metadata[basis] = dict(dataset.metadata)
         matcher, num_obs = build_matcher(dataset)
         dets_and_obs = np.asarray(dataset.dets_and_obs, dtype=np.uint8)
+        sample_streams[basis] = {
+            "seed": dataset_seed,
+            "sha256": array_sha256(dets_and_obs),
+            "shape": list(dets_and_obs.shape),
+            "dtype": str(dets_and_obs.dtype),
+        }
 
         baseline, baseline_errors = evaluate_pymatching(
             matcher,
@@ -1162,6 +1199,14 @@ def main() -> None:
             "speedup_vs_pymatching_avg": mean_metric(method_rows, "speedup_vs_pymatching"),
             **combine_density_statistics(method_rows, "input"),
         }
+        for timing_name in (
+            "pymatching_batch_us_per_shot",
+            "model_latency_us_per_shot",
+            "residual_pymatching_batch_us_per_shot",
+            "end_to_end_batch_us_per_shot",
+        ):
+            if any(row.get(timing_name) is not None for row in method_rows):
+                summary_row[f"{timing_name}_avg"] = mean_metric(method_rows, timing_name)
         if any(row.get("residual_syndrome_elements") for row in method_rows):
             residual_stats = combine_density_statistics(method_rows, "residual")
             summary_row.update(residual_stats)
@@ -1197,6 +1242,7 @@ def main() -> None:
         "sample_source": "stim_files" if stim_samples_dir else "generated",
         "stim_samples_dir": str(stim_samples_dir) if stim_samples_dir else None,
         "sample_metadata": sample_metadata,
+        "sample_streams": sample_streams,
         "rows": rows,
         "summary": summary,
         "paired_comparisons": paired_comparisons,
@@ -1215,6 +1261,10 @@ def main() -> None:
         "logical_errors",
         "samples",
         "ler",
+        "pymatching_batch_us_per_shot",
+        "model_latency_us_per_shot",
+        "residual_pymatching_batch_us_per_shot",
+        "end_to_end_batch_us_per_shot",
         "latency_us_per_round",
         "speedup_vs_pymatching",
         "active_correction_shots",

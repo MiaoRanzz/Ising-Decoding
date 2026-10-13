@@ -46,11 +46,13 @@ class QCDataPipePreDecoder_Memory_inference(Dataset):
         measure_basis='X',
         code_rotation='XV',  # <--- NEW: surface code orientation
         noise_model=None,  # Optional explicit NoiseModel (overrides p_error when provided)
+        seed=None,
     ):
         self.distance = int(distance)
         self.n_rounds = max(int(n_rounds), 1)
         self.num_samples = int(num_samples)
         self.measure_basis = str(measure_basis).upper()
+        self.seed = None if seed is None else int(seed)
         self.code_rotation = code_rotation.upper() if code_rotation else 'XV'
 
         if error_mode != "circuit_level_surface_custom":
@@ -98,7 +100,7 @@ class QCDataPipePreDecoder_Memory_inference(Dataset):
                 add_boundary_detectors=True,  # Required for proper PyMatching decoding
             )
             self.circ_X.set_error_rates()
-            meas_X = self.circ_X.stim_circuit.compile_sampler().sample(shots=self.nX)
+            meas_X = self.circ_X.stim_circuit.compile_sampler(seed=self.seed).sample(shots=self.nX)
             # drop final D*D data-qubit measurements and reshape to (shots, n_rounds, D^2-1)
             self.meas_X = (
                 torch.from_numpy(meas_X[..., :-(D * D)]
@@ -129,7 +131,7 @@ class QCDataPipePreDecoder_Memory_inference(Dataset):
                 add_boundary_detectors=True,  # Required for proper PyMatching decoding
             )
             self.circ_Z.set_error_rates()
-            meas_Z = self.circ_Z.stim_circuit.compile_sampler().sample(shots=self.nZ)
+            meas_Z = self.circ_Z.stim_circuit.compile_sampler(seed=None if self.seed is None else self.seed + 1).sample(shots=self.nZ)
             self.meas_Z = (
                 torch.from_numpy(meas_Z[..., :-(D * D)]
                                 ).to(torch.uint8).view(self.nZ, self.n_rounds,
@@ -154,7 +156,7 @@ class QCDataPipePreDecoder_Memory_inference(Dataset):
                 add_boundary_detectors=True,  # Required for proper PyMatching decoding
             )
             self.circ.set_error_rates()
-            meas = self.circ.stim_circuit.compile_sampler().sample(shots=self.num_samples)
+            meas = self.circ.stim_circuit.compile_sampler(seed=self.seed).sample(shots=self.num_samples)
             self.meas = (
                 torch.from_numpy(meas[..., :-(D * D)]
                                 ).to(torch.uint8).view(self.num_samples, self.n_rounds,

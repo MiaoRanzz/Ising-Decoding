@@ -58,6 +58,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--n-rounds", type=int, default=9)
     parser.add_argument(
+        "--base-config",
+        default="conf/examples/qadapt/config_qadapt_t0_base.yaml",
+        help="Base config whose model architecture and T0 noise define the OOD grid.",
+    )
+    parser.add_argument(
         "--multipliers",
         type=parse_multipliers,
         default=list(PAPER_MULTIPLIERS),
@@ -83,7 +88,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     _, manifest = write_axismix_grid_configs(
-        base_config="conf/examples/qadapt/config_qadapt_t0_base.yaml",
+        base_config=args.base_config,
         output_dir=args.generated_config_dir,
         manifest=args.manifest,
         grid_multipliers=args.multipliers,
