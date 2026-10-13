@@ -1,0 +1,145 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+experiment_id: topology_gating_v3_latency_aligned
+evidence_scope: single_distance_d9_train_free_latency_aligned_implementation_example
+external_checkpoint: /mnt/public/miaoran/Ising-Decoding-storage/outputs/ising_domestic_fast/models/best_model/PreDecoderModelMemory_v1.0.53.pt
+
+geometry:
+  distance: 9
+  rounds: 9
+  rotation: XV
+
+seeds: [20260811, 20260812, 20260813]
+
+model:
+  version: predecoder_memory_v1
+  input_channels: 4
+  out_channels: 4
+  num_filters: [128, 128, 128, 4]
+  kernel_size: [3, 3, 3, 3]
+  dropout_p: 0.05
+  activation: gelu
+
+evaluation:
+  batch_size: 512
+
+shots:
+  score_screen: 2048
+  gate_validation: 8192
+  test_t0: 50000
+  test_drift: 25000
+  ablation: 10000
+
+noise_tasks:
+  t0:
+    p_prep_X: 0.001
+    p_prep_Z: 0.001
+    p_meas_X: 0.01
+    p_meas_Z: 0.01
+    p_idle_cnot_X: 0.000333
+    p_idle_cnot_Y: 0.000333
+    p_idle_cnot_Z: 0.000333
+    p_idle_spam_X: 0.000667
+    p_idle_spam_Y: 0.000667
+    p_idle_spam_Z: 0.000667
+    p_cnot_IX: 0.000667
+    p_cnot_IY: 0.000667
+    p_cnot_IZ: 0.000667
+    p_cnot_XI: 0.000667
+    p_cnot_XX: 0.000667
+    p_cnot_XY: 0.000667
+    p_cnot_XZ: 0.000667
+    p_cnot_YI: 0.000667
+    p_cnot_YX: 0.000667
+    p_cnot_YY: 0.000667
+    p_cnot_YZ: 0.000667
+    p_cnot_ZI: 0.000667
+    p_cnot_ZX: 0.000667
+    p_cnot_ZY: 0.000667
+    p_cnot_ZZ: 0.000667
+  measurement_drift_1p5:
+    inherit: t0
+    overrides:
+      p_meas_X: 0.015
+      p_meas_Z: 0.015
+
+gate:
+  expected_candidate_count: 96
+  screen_pareto_limit: 8
+  data_thresholds: [0.5, 0.9]
+  component_weights: [0.5, 1.0]
+  largest_weights: [0.25, 0.5]
+  pair_weights: [0.5, 1.0]
+  pair_radii: [1, 2]
+  guard_margins: [0.0, 0.01, 0.03]
+  defaults:
+    data_threshold: 0.5
+    measurement_threshold: 0.5
+    interaction_radius: 0
+    exact_cluster_size: 8
+    max_combination_actions: 4
+    combination_budget: 64
+    max_total_actions: 64
+    max_candidates: 16
+    acceptance_threshold: 0.0
+    max_workload_increase: 0.0
+    max_logical_risk: 1.0
+    workload_active_weight: 1.0
+    workload_component_weight: 0.5
+    workload_pair_weight: 0.5
+    workload_mode: topology_v3
+    workload_largest_weight: 0.25
+    workload_pair_radius: 1
+    pointwise_guard_enabled: true
+    pointwise_guard_relative_margin: 0.0
+    uncertainty_weight: 0.005
+    logical_risk_weight: 0.25
+    gate_cost_weight: 0.0
+
+latency:
+  measurement_mode: decode_batch_throughput
+  validation_shots_per_seed: 2048
+  test_shots_per_seed: 10000
+  warmup: 500
+  validation_repeats: 10
+  repeats: 5
+  block_size: 100
+  max_sentinel_drift: 0.03
+
+statistics:
+  bootstrap_repeats: 2000
+  latency_bootstrap_repeats: 5000
+  bootstrap_seed: 20260811
+  selection_v2_margin: 0.0005
+  v2_noninferiority_margin: 0.0002
+
+seed_offsets:
+  score_screen: 11000000
+  gate_validation: 12000000
+  test_t0: 13000000
+  test_drift: 14000000
+
+modes:
+  smoke:
+    seeds: [20260811]
+    evaluation:
+      batch_size: 64
+    shots:
+      score_screen: 128
+      gate_validation: 64
+      test_t0: 256
+      test_drift: 256
+      ablation: 64
+    latency:
+      validation_shots_per_seed: 64
+      test_shots_per_seed: 256
+      warmup: 8
+      validation_repeats: 2
+      repeats: 2
+      block_size: 16
+      max_sentinel_drift: 1.0
+    statistics:
+      bootstrap_repeats: 100
+      latency_bootstrap_repeats: 100

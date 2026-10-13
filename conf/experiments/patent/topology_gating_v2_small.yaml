@@ -1,0 +1,145 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+experiment_id: topology_gating_v2_four_channel_go_no_go
+evidence_scope: phase2_single_distance_enhanced_pilot
+
+geometry:
+  distance: 5
+  rounds: 5
+  rotation: XV
+
+seeds: [20260807, 20260808, 20260809]
+
+model:
+  version: predecoder_memory_v1
+  input_channels: 4
+  out_channels: 4
+  num_filters: [128, 128, 128, 4]
+  kernel_size: [3, 3, 3, 3]
+  dropout_p: 0.05
+  activation: gelu
+
+training:
+  epochs: 10
+  samples_per_epoch: 131072
+  batch_size: 512
+  accumulate_steps: 2
+  checkpoint_epochs: [2, 4, 6, 8, 10]
+  checkpoint_validation_shots: 16384
+  positive_weight: 1.0
+  optimizer:
+    name: Lion
+    learning_rate: 0.0003
+    beta1: 0.9
+    beta2: 0.95
+    weight_decay: 0.0000001
+  topology_loss:
+    topology: 0.2
+    logical_frame: 0.1
+    calibration: 0.05
+
+gate_validation_shots_per_basis: 8192
+test_shots_per_basis:
+  t0: 50000
+  measurement_drift_1p5: 25000
+ablation_shots_per_cell: 10000
+
+noise_tasks:
+  t0:
+    p_prep_X: 0.001
+    p_prep_Z: 0.001
+    p_meas_X: 0.01
+    p_meas_Z: 0.01
+    p_idle_cnot_X: 0.000333
+    p_idle_cnot_Y: 0.000333
+    p_idle_cnot_Z: 0.000333
+    p_idle_spam_X: 0.000667
+    p_idle_spam_Y: 0.000667
+    p_idle_spam_Z: 0.000667
+    p_cnot_IX: 0.000667
+    p_cnot_IY: 0.000667
+    p_cnot_IZ: 0.000667
+    p_cnot_XI: 0.000667
+    p_cnot_XX: 0.000667
+    p_cnot_XY: 0.000667
+    p_cnot_XZ: 0.000667
+    p_cnot_YI: 0.000667
+    p_cnot_YX: 0.000667
+    p_cnot_YY: 0.000667
+    p_cnot_YZ: 0.000667
+    p_cnot_ZI: 0.000667
+    p_cnot_ZX: 0.000667
+    p_cnot_ZY: 0.000667
+    p_cnot_ZZ: 0.000667
+  measurement_drift_1p5:
+    inherit: t0
+    overrides:
+      p_meas_X: 0.015
+      p_meas_Z: 0.015
+
+gate:
+  data_thresholds: [0.5, 0.7, 0.9]
+  measurement_thresholds: [0.5, 0.7, 0.9]
+  logical_risk_weights: [0.25, 0.5]
+  defaults:
+    data_threshold: 0.7
+    measurement_threshold: 0.7
+    interaction_radius: 0
+    exact_cluster_size: 8
+    max_combination_actions: 4
+    combination_budget: 64
+    max_total_actions: 64
+    max_candidates: 16
+    acceptance_threshold: 0.0
+    max_workload_increase: 0.0
+    max_logical_risk: 1.0
+    workload_active_weight: 1.0
+    workload_component_weight: 0.25
+    workload_pair_weight: 0.1
+    uncertainty_weight: 0.005
+    logical_risk_weight: 0.25
+    gate_cost_weight: 0.0
+
+statistics:
+  bootstrap_repeats: 2000
+  ler_noninferiority_margin: 0.005
+  minimum_error_events: 200
+  workload_reduction: 0.10
+  whole_cluster_complexity_reduction: 0.05
+  joint_loss_improvement: 0.05
+  minimum_harmful_whole_avoided: 20
+  drift_ler_red_flag: 0.01
+
+seed_offsets:
+  checkpoint_validation: 1000000
+  gate_validation: 2000000
+  test_t0: 3000000
+  test_measurement_drift_1p5: 4000000
+
+modes:
+  smoke:
+    seeds: [20260807]
+    training:
+      epochs: 1
+      samples_per_epoch: 128
+      batch_size: 64
+      accumulate_steps: 1
+      checkpoint_epochs: [1]
+      checkpoint_validation_shots: 64
+    gate_validation_shots_per_basis: 64
+    test_shots_per_basis:
+      t0: 256
+      measurement_drift_1p5: 128
+    ablation_shots_per_cell: 64
+    gate:
+      data_thresholds: [0.5]
+      measurement_thresholds: [0.5]
+      logical_risk_weights: [0.25]
+      defaults:
+        max_candidates: 8
+        combination_budget: 32
+    statistics:
+      bootstrap_repeats: 100
+      minimum_error_events: 1

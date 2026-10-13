@@ -71,7 +71,9 @@ logs/
 
 # Precomputed data
 /frames_data/
-/benchmarks
+/benchmarks/*
+!/benchmarks/patent_validation/
+!/benchmarks/patent_validation/**
 
 # Stable public presets, examples, and curated experiment configs are source configs.
 /conf/*.yaml
