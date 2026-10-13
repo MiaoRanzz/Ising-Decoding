@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+status: preregistered_before_screen_results
+candidate_families: [measurement, cnot, idle, z_bias]
+multipliers: [1.5, 2.0, 3.0, 4.0]
+stage0_ler:
+  seed: 20260911
+  shots_per_basis: 32768
+batch_metrics:
+  seed: 20260910
+  batch_size: 256
+  batches: 4
+  bce_reduction: mean
+  gradient_estimator: mean_gradient_over_fixed_minibatches
+  representation: mean_head_activation_channels
+selection:
+  enumerate_one_candidate_per_family: true
+  primary: minimize_stage0_ler_range
+  absolute_ler_range_slack: 0.005
+  secondary: minimize_mean_pairwise_gradient_cosine
+  tertiary: maximize_mean_pairwise_representation_distance
+order:
+  first: selected_task_with_lowest_mean_pairwise_gradient_cosine
+  next: greedily_minimize_cosine_with_cumulative_history_gradient
+  reverse: exact_reverse_of_high_conflict_order

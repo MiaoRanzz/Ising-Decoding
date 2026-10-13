@@ -1,0 +1,161 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+attempts:
+  - id: pilot_realistic_seq_t1_1k_attempt_1
+    status: failed_pre_training
+    started_utc: 2026-09-07T07:41:05Z
+    reason: missing_explicit_hydra_global_package
+    optimizer_steps_completed: 0
+    log: logs/qewc_v3/pilot_realistic_seq_t1_1k_20260907_074105/train.log
+  - id: pilot_realistic_seq_t1_1k_attempt_2
+    status: completed
+    started_utc: 2026-09-07T07:42:32Z
+    optimizer_steps_planned: 1000
+    optimizer_steps_completed: 1000
+    completed_utc: 2026-09-07T07:53:32Z
+    train_seconds: 644.0
+    validation_seconds: 8.4
+    train_loss: 0.01611
+    validation_loss: 0.01600
+    endpoint: outputs/qewc_v3/pilot_realistic_seq_t1_1k/models/HTnet.0.1.pt
+    log: logs/qewc_v3/pilot_realistic_seq_t1_1k_20260907_074232/train.log
+  - id: pilot_realistic_seq_t1_5k
+    status: completed
+    started_utc: 2026-09-07T08:48:26Z
+    optimizer_steps_planned: 5000
+    optimizer_steps_completed: 5000
+    completed_utc: 2026-09-07T09:40:32Z
+    train_seconds: 3110.9
+    validation_seconds: 8.4
+    train_loss: 0.01612
+    validation_loss: 0.01601
+    endpoint: outputs/qewc_v3/pilot_realistic_seq_t1_5k/models/HTnet.0.1.pt
+    endpoint_bytes: 2630668
+    endpoint_sha256: f4fef65758b4c95996ea83bbf9c7f2bbb0fe17314e56c5586f81a5fdbdd271ae
+    log: logs/qewc_v3/pilot_realistic_seq_t1_5k_20260907_084826/train.log
+  - id: willow_download_attempt_1
+    status: failed_pre_download
+    reason: missing_project_pythonpath
+    bytes_downloaded: 0
+  - id: willow_download_attempt_2
+    status: completed
+    archive: /mnt/data2/Ising-Decoding/benchmarks/google_qec/google_105Q_surface_code_d3_d5_d7.zip
+    size_bytes: 5716907033
+    md5: 21fa6ad35b395d838ebcdbc92e364a12
+    extracted_root: /mnt/data2/Ising-Decoding/benchmarks/google_qec/google_105Q_surface_code_d3_d5_d7/google_105Q_surface_code_d3_d5_d7
+
+evaluations:
+  - id: realistic_pilot_c0_c5k
+    status: completed
+    seed: 20260908
+    shots_per_basis: 65536
+    manifest: outputs/qewc_v3/evaluations/realistic_pilot_c0_c5k/evaluation_manifest.json
+    conclusion: C5k_significantly_degrades_T0_through_T4_including_current_T1
+  - id: willow_stress_final_attempt_1
+    status: failed_pre_inference
+    reason: final_checkpoint_paths_not_resolved_from_run_manifests
+    shots_completed: 0
+  - id: willow_stress_final_attempt_2
+    status: failed_pre_inference
+    reason: benchmark_default_architecture_did_not_match_frozen_A101_checkpoint
+    shots_completed: 0
+  - id: willow_stress_final_attempt_3
+    status: completed
+    config_name: examples/qadapt/htnet_ablation/config_htnet_ablation_a101
+    cases: 10
+    shots: 500000
+    results: outputs/qewc_v3/evaluations/willow_stress_final/results.json
+  - id: ood_stress_d7_attempt_1
+    status: failed_pre_inference
+    reason: generated_configs_did_not_include_frozen_A101_architecture
+    configurations_failed: 55
+    shots_completed: 0
+  - id: ood_stress_architecture_smoke
+    status: completed
+    base_config: conf/experiments/qewc_v3/realistic/t0_base.yaml
+    distance: 7
+    configurations: 1
+    shots_per_basis: 32
+  - id: ood_stress_serial_attempt
+    status: interrupted_for_resource_optimization
+    completed_outputs_preserved: {d7: 4, d9: 0}
+    reason: sample_generation_was_CPU_bound_and_each_A100_had_large_memory_headroom
+    replacement: five_workers_per_gpu_with_resume
+  - id: ood_stress_split_parallel_attempt
+    status: interrupted_for_load_balancing
+    completed_outputs_preserved: {d7: 9, d9: 5}
+    reason: d9_configs_were_slower_and_fixed_distance_GPU_assignment_would_leave_a_tail
+    replacement: one_balanced_ten_worker_queue_with_resume
+  - id: ood_stress_final
+    status: completed
+    base_config: conf/experiments/qewc_v3/realistic/t0_base.yaml
+    distances: [7, 9]
+    configurations: 110
+    shots_per_basis: 262144
+    seed: 20260916
+    workers_per_gpu: 5
+    scheduling: balanced_across_both_distances
+    output: outputs/qewc_v3/evaluations/ood_stress_final
+    summary: outputs/qewc_v3/summary/ood/ood_summary.json
+    completed_utc: 2026-09-08T00:25:21Z
+  - id: ood_stress_latency
+    status: completed
+    base_config: conf/experiments/qewc_v3/realistic/t0_base.yaml
+    distances: [7, 9]
+    configurations: 110
+    shots_per_basis: 10000
+    latency_samples: 10000
+    seed: 20260916
+    workers_per_gpu: 1
+    scheduling: one_worker_per_gpu
+    output: outputs/qewc_v3/evaluations/ood_stress_latency
+    summary: outputs/qewc_v3/summary/ood_latency/ood_summary.json
+    completed_utc: 2026-09-08T00:57:18Z
+
+calibrations:
+  - id: replay_t0_capacity_594
+    status: completed
+    capacity: 594
+    serialized_bytes: 5229158
+    target_bytes: 5202656
+    relative_error: 0.005093
+    task_basis_counts: {T0: {X: 297, Z: 297}}
+    manifest: outputs/qewc_v3/replay_calibration/t0_capacity_594/balanced_manifest.json
+screens:
+  - id: stress_candidate_screen
+    status: completed_and_frozen
+    candidates: 16
+    ler_seed: 20260911
+    batch_seed: 20260910
+    selection: outputs/qewc_v3/stress_screen/selection.json
+    selected: {T1: measurement_4p0x, T2: cnot_1p5x, T3: idle_4p0x, T4: z_bias_1p5x}
+    high_conflict_order: [T1, T3, T2, T4]
+    reverse_order: [T4, T2, T3, T1]
+pilot_freeze:
+  status: completed
+  optimizer_steps: {selected: 1000, selection: outputs/qewc_v3/optimizer_steps_pilot/selection.json, evaluation: outputs/qewc_v3/evaluations/realistic_pilot_optimizer_steps/evaluation_manifest.json}
+  ewc_lambda: {selected: 43.87539484535376, selection: outputs/qewc_v3/ewc_lambda_pilot/selection_seeded.json, evaluation: outputs/qewc_v3/evaluations/realistic_pilot_ewc_lambda_seeded/evaluation_manifest.json}
+  replay_ratio: {selected: 0.10, selection: outputs/qewc_v3/replay_calibration/selection.json, evaluation: outputs/qewc_v3/evaluations/realistic_pilot_replay_ratio/evaluation_manifest.json}
+  deterministic_stream_cross_check: exact_match_all_five_tasks
+formal_runs:
+  - {id: S1, status: completed_and_audited, started_utc: 2026-09-07T12:49:49Z, completed_utc: 2026-09-07T13:35:34Z, gpu: 0, order: [T1, T3, T2, T4], method: seq, audit: outputs/qewc_v3/audits/formal/S1.json}
+  - {id: S2, status: completed_and_audited, started_utc: 2026-09-07T12:49:49Z, completed_utc: 2026-09-07T13:46:48Z, gpu: 1, order: [T1, T3, T2, T4], method: online_ewc, audit: outputs/qewc_v3/audits/formal/S2.json, telemetry: outputs/qewc_v3/formal/S2/ewc_telemetry.json}
+  - {id: S3, status: completed_and_audited, started_utc: 2026-09-07T13:37:42Z, completed_utc: 2026-09-07T14:24:14Z, gpu: 0, order: [T1, T3, T2, T4], method: replay, audit: outputs/qewc_v3/audits/formal/S3.json}
+  - {id: S4, status: completed_and_audited, started_utc: 2026-09-07T13:47:20Z, completed_utc: 2026-09-07T14:34:02Z, gpu: 1, order: joint, method: mix_total, audit: outputs/qewc_v3/audits/formal/S4.json}
+  - {id: O1, status: completed_and_audited, started_utc: 2026-09-07T14:25:46Z, completed_utc: 2026-09-07T14:36:46Z, gpu: 0, order: [T1], method: oracle, audit: outputs/qewc_v3/audits/formal/O1.json}
+  - {id: O2, status: completed_and_audited, started_utc: 2026-09-07T14:35:08Z, completed_utc: 2026-09-07T14:47:14Z, gpu: 1, order: [T2], method: oracle, audit: outputs/qewc_v3/audits/formal/O2.json}
+  - {id: O3, status: completed_and_audited, started_utc: 2026-09-07T14:37:58Z, completed_utc: 2026-09-07T14:48:57Z, gpu: 0, order: [T3], method: oracle, audit: outputs/qewc_v3/audits/formal/O3.json}
+  - {id: O4, status: completed_and_audited, started_utc: 2026-09-07T14:47:59Z, completed_utc: 2026-09-07T14:59:27Z, gpu: 1, order: [T4], method: oracle, audit: outputs/qewc_v3/audits/formal/O4.json}
+  - {id: R1, status: completed_and_audited, started_utc: 2026-09-07T14:50:17Z, completed_utc: 2026-09-07T15:35:35Z, gpu: 0, order: [T1, T2, T3, T4], method: seq, audit: outputs/qewc_v3/audits/formal/R1.json}
+  - {id: R2, status: completed_and_audited, started_utc: 2026-09-07T15:00:35Z, completed_utc: 2026-09-07T15:57:37Z, gpu: 1, order: [T1, T2, T3, T4], method: online_ewc, audit: outputs/qewc_v3/audits/formal/R2.json, telemetry: outputs/qewc_v3/formal/R2/ewc_telemetry.json}
+  - {id: R3, status: completed_and_audited, started_utc: 2026-09-07T15:36:31Z, completed_utc: 2026-09-07T16:22:27Z, gpu: 0, order: joint, method: mix_total, audit: outputs/qewc_v3/audits/formal/R3.json}
+  - {id: S5, status: completed_and_audited, started_utc: 2026-09-07T15:58:01Z, completed_utc: 2026-09-07T16:43:41Z, gpu: 1, order: [T4, T2, T3, T1], method: seq, audit: outputs/qewc_v3/audits/formal/S5.json}
+  - {id: S6, status: completed_and_audited, started_utc: 2026-09-07T16:23:12Z, completed_utc: 2026-09-07T17:21:16Z, gpu: 0, order: [T4, T2, T3, T1], method: online_ewc, audit: outputs/qewc_v3/audits/formal/S6.json, telemetry: outputs/qewc_v3/formal/S6/ewc_telemetry.json}
+  - {id: S7, status: completed_and_audited, started_utc: 2026-09-07T18:12:50Z, completed_utc: 2026-09-07T19:10:54Z, gpu: 0, order: joint, method: mix_exposure, optimizer_steps_planned: 5000, audit: outputs/qewc_v3/audits/formal/S7.json}
+  - {id: R4, status: completed_and_audited, started_utc: 2026-09-07T18:13:46Z, completed_utc: 2026-09-07T18:59:39Z, gpu: 1, order: [T1, T2, T3, T4], method: replay, optimizer_steps_planned: 4000, audit: outputs/qewc_v3/audits/formal/R4.json}
+  - {id: O5, status: completed_and_audited, started_utc: 2026-09-07T19:00:36Z, completed_utc: 2026-09-07T19:11:21Z, gpu: 1, order: [T1], method: oracle, optimizer_steps_planned: 1000, audit: outputs/qewc_v3/audits/formal/O5.json}
+  - {id: O6, status: completed_and_audited, started_utc: 2026-09-07T19:11:47Z, completed_utc: 2026-09-07T19:23:54Z, gpu: 0, order: [T2], method: oracle, optimizer_steps_planned: 1000, audit: outputs/qewc_v3/audits/formal/O6.json}
+  - {id: O7, status: completed_and_audited, started_utc: 2026-09-07T19:11:45Z, completed_utc: 2026-09-07T19:22:35Z, gpu: 1, order: [T3], method: oracle, optimizer_steps_planned: 1000, audit: outputs/qewc_v3/audits/formal/O7.json}
+  - {id: O8, status: completed_and_audited, started_utc: 2026-09-07T19:23:14Z, completed_utc: 2026-09-07T19:34:39Z, gpu: 1, order: [T4], method: oracle, optimizer_steps_planned: 1000, audit: outputs/qewc_v3/audits/formal/O8.json}
+  - {id: R5, status: completed_and_audited, started_utc: 2026-09-07T19:34:59Z, completed_utc: 2026-09-07T20:31:59Z, gpu: 1, order: joint, method: mix_exposure, optimizer_steps_planned: 5000, audit: outputs/qewc_v3/audits/formal/R5.json}

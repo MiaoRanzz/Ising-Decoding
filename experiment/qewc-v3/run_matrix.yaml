@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+status: completed
+runs:
+  - {id: R1, priority: P0, track: realistic, order: natural, method: seq}
+  - {id: R2, priority: P0, track: realistic, order: natural, method: online_ewc}
+  - {id: R3, priority: P0, track: realistic, order: joint, method: mix_total}
+  - {id: S1, priority: P0, track: stress, order: high_conflict, method: seq}
+  - {id: S2, priority: P0, track: stress, order: high_conflict, method: online_ewc}
+  - {id: S3, priority: P0, track: stress, order: high_conflict, method: replay}
+  - {id: S4, priority: P0, track: stress, order: joint, method: mix_total}
+  - {id: O1, priority: P0, track: stress, order: single_T1, method: oracle}
+  - {id: O2, priority: P0, track: stress, order: single_T2, method: oracle}
+  - {id: O3, priority: P0, track: stress, order: single_T3, method: oracle}
+  - {id: O4, priority: P0, track: stress, order: single_T4, method: oracle}
+  - {id: S5, priority: P1, track: stress, order: reverse_high_conflict, method: seq}
+  - {id: S6, priority: P1, track: stress, order: reverse_high_conflict, method: online_ewc}
+  - {id: S7, priority: stretch_1, track: stress, order: joint, method: mix_exposure}
+  - {id: R4, priority: stretch_2, track: realistic, order: natural, method: replay}
+  - {id: O5, priority: stretch_3, track: realistic, order: single_T1, method: oracle}
+  - {id: O6, priority: stretch_3, track: realistic, order: single_T2, method: oracle}
+  - {id: O7, priority: stretch_3, track: realistic, order: single_T3, method: oracle}
+  - {id: O8, priority: stretch_3, track: realistic, order: single_T4, method: oracle}
+  - {id: R5, priority: stretch_4, track: realistic, order: joint, method: mix_exposure}

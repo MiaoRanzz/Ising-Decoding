@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+track: stress
+frozen: true
+frozen_utc: 2026-09-07T10:00:00Z
+baseline: conf/experiments/qewc_v3/realistic/t0_base.yaml
+common:
+  geometry: {distance: 9, rounds: 9, measurement_basis: both, code_rotation: O1}
+  skip_noise_upscaling: true
+  architecture: {model_id: 111, branch_mixer: true, axis_channel_gate: false, input_skip_head: true}
+screen:
+  candidate_families: [measurement, cnot, idle, z_bias]
+  multipliers: [1.5, 2.0, 3.0, 4.0]
+  ler_seed: 20260911
+  ler_shots_per_basis: 32768
+  batch_seed: 20260910
+  batch_size: 256
+  batches: 4
+  difficulty_slack: 0.005
+  minimum_candidate_ler_range: 0.0650177001953125
+  selected_ler_range: 0.0651092529296875
+  selected_mean_gradient_cosine: 0.1262135903040568
+  selected_mean_representation_distance: 0.8198754688103994
+  artifacts:
+    ler: {path: outputs/qewc_v3/stress_screen/ler/stress_ler_manifest.json, sha256: 3844264605e23b4ad1ba42dbddf6654e2b31ef76fea0c20d01767447a7030da1}
+    batch: {path: outputs/qewc_v3/stress_screen/batch_metrics.json, sha256: 0ba771f50c8b8bef87aadcdc26b1cc94b97315754351b9921192cc6771cf2251}
+    selection: {path: outputs/qewc_v3/stress_screen/selection.json, sha256: 40535bdf93925b298ad27046fecd511bca5d5390bc22f8fba92f534733c328d6}
+tasks:
+  T0: {change: baseline, config: conf/experiments/qewc_v3/realistic/t0_base.yaml, stage0_ler: 0.0343780517578125}
+  T1: {change: measurement_4.0x, config: conf/experiments/qewc_v3/stress/measurement_4p0x.yaml, config_sha256: 4c079c697c2949c6486c68ac4b1959fb5ed1f2918e320db4912f6e74e2adafd3, stage0_ler: 0.128631591796875}
+  T2: {change: cnot_1.5x, config: conf/experiments/qewc_v3/stress/cnot_1p5x.yaml, config_sha256: a5c3bf1eee246e340144b47115e8e75cfb52640258e1f9afecb4dcb1249c5e97, stage0_ler: 0.1285400390625}
+  T3: {change: idle_4.0x, config: conf/experiments/qewc_v3/stress/idle_4p0x.yaml, config_sha256: 5ab619f2f611d7b7f6c7860bf78a5010383ce0bc973f764b618a6a15a0e389a8, stage0_ler: 0.0635223388671875}
+  T4: {change: z_bias_1.5x, config: conf/experiments/qewc_v3/stress/z_bias_1p5x.yaml, config_sha256: 0e456ab0f6a345b8049924de8e8fbc5bce69f276b87a5a47e90f4e792746fa0b, stage0_ler: 0.0826568603515625}
+high_conflict_order: [T1, T3, T2, T4]
+reverse_order: [T4, T2, T3, T1]
+known_limitation: closest available four-family Stage-0 LER range is 0.0651 because idle_4x remains easier than cnot_1.5x; selection follows the preregistered finite candidate scan without post-hoc expansion
