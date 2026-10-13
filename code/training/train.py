@@ -23,6 +23,7 @@ import sys
 import os
 import re
 import gc
+import json
 import math
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -441,6 +442,7 @@ def train_epoch(
     replay_task_id="",
     replay_ratio=0.5,
     replay_lambda=1.0,
+    replay_admit_current=True,
     profile_generator_subphases=False,
     ewc_states=None,
     ewc_lambda=0.0,
@@ -598,6 +600,7 @@ def train_epoch(
                 )
                 loss = data_loss
             ewc_penalty = None
+            ewc_ratio_to_data = None
             if use_ewc:
                 ewc_penalty = diagonal_ewc_penalty(model, ewc_states)
                 loss = add_ewc_penalty_to_loss(
@@ -606,12 +609,16 @@ def train_epoch(
                     ewc_lambda=float(ewc_lambda),
                     batch_size=total_batch_size,
                 )
+                ewc_ratio_to_data = (
+                    float(ewc_lambda) * ewc_penalty.detach()
+                    / (data_loss.detach() / total_batch_size).clamp_min(1e-30)
+                )
 
             scaler.scale(loss).backward()
             if profile_enabled:
                 _sync_cuda_if_needed(device)
                 model_fwd_bwd_s = time.perf_counter() - model_t0
-            if replay_buffer is not None:
+            if replay_buffer is not None and replay_admit_current:
                 replay_admitted_samples += replay_buffer.observe(
                     current_trainX,
                     current_trainY,
@@ -697,6 +704,11 @@ def train_epoch(
                     )
                     if ewc_penalty is not None:
                         tb_writer.add_scalar('Loss/ewc_penalty', float(ewc_penalty.detach()), global_step)
+                        tb_writer.add_scalar(
+                            'EWC/lambda_penalty_to_data_ratio',
+                            float(ewc_ratio_to_data),
+                            global_step,
+                        )
                     tb_writer.add_scalar(
                         'LearningRate/train',
                         scheduler.get_last_lr()[0], global_step
@@ -1219,6 +1231,8 @@ def main(cfg: DictConfig) -> None:
         use_parallel_spacelike=bool(getattr(cfg.data, 'use_parallel_spacelike', False)),
     )
 
+    mix_val_generators = {}
+
     if use_multi_pairs:
         from data.generator_torch_multi import MultiQCDataGeneratorTorch
         _multi_common = dict(
@@ -1362,6 +1376,13 @@ def main(cfg: DictConfig) -> None:
                         seed_offset=(task_idx + 1) * 10_000_000,
                         **task_common,
                     ))
+                    mix_val_generators[task["name"]] = QCDataGeneratorTorch(
+                        mode="test",
+                        verbose=False,
+                        base_seed=base_seed,
+                        seed_offset=100_000_000 + (task_idx + 1) * 10_000_000,
+                        **task_common,
+                    )
                 train_generator = MixedNoiseBatchGenerator(train_generators, task_names)
             else:
                 train_generator = QCDataGeneratorTorch(
@@ -1370,13 +1391,16 @@ def main(cfg: DictConfig) -> None:
                     base_seed=base_seed,
                     **_gen_torch_common,
                 )
-            val_generator = QCDataGeneratorTorch(
-                mode="test",
-                verbose=False,
-                base_seed=base_seed,
-                seed_offset=100_000_000,
-                **_gen_torch_common,
-            )
+            if mix_val_generators:
+                val_generator = next(iter(mix_val_generators.values()))
+            else:
+                val_generator = QCDataGeneratorTorch(
+                    mode="test",
+                    verbose=False,
+                    base_seed=base_seed,
+                    seed_offset=100_000_000,
+                    **_gen_torch_common,
+                )
 
     # Create test generator
     test_distance_override = getattr(cfg.test, 'distance', None)
@@ -1573,8 +1597,11 @@ def main(cfg: DictConfig) -> None:
             ewc_lambda = float(os.environ.get("PREDECODER_EWC_LAMBDA", "100"))
         except (TypeError, ValueError):
             ewc_lambda = 100.0
-        if ewc_dir:
-            ewc_states = load_ewc_states(ewc_dir, device=dist.device)
+        if not ewc_dir:
+            raise ValueError("EWC is enabled but PREDECODER_EWC_DIR is not set")
+        ewc_states = load_ewc_states(ewc_dir, device=dist.device)
+        if not ewc_states:
+            raise FileNotFoundError(f"EWC is enabled but no Fisher states were found in {ewc_dir}")
         if dist.rank == 0:
             print(
                 f"[EWC] enabled={ewc_enabled} states={len(ewc_states)} "
@@ -1582,6 +1609,8 @@ def main(cfg: DictConfig) -> None:
             )
 
     replay_settings = resolve_replay_settings(cfg)
+    if ewc_enabled and replay_settings.enabled:
+        raise ValueError("QEWC v3 does not permit EWC and Replay in the same run")
     replay_buffer = None
     replay_buffer_dir = None
     loaded_replay = False
@@ -1594,7 +1623,7 @@ def main(cfg: DictConfig) -> None:
             world_size=dist.world_size,
             storage_dtype=replay_settings.storage_dtype,
         )
-        if bool(cfg.load_checkpoint):
+        if bool(cfg.load_checkpoint) or replay_settings.load_existing:
             loaded_replay = replay_buffer.load(
                 replay_buffer_dir,
                 strict_world_size=replay_settings.strict_world_size,
@@ -1766,6 +1795,7 @@ def main(cfg: DictConfig) -> None:
         pass
 
     epoch_times = []
+    epoch_resource_metrics = []
     cumulative_steps = 0
 
     # === TRAINING LOOP ===
@@ -1847,6 +1877,7 @@ def main(cfg: DictConfig) -> None:
             replay_task_id=replay_settings.task_id,
             replay_ratio=replay_settings.ratio,
             replay_lambda=replay_settings.replay_lambda,
+            replay_admit_current=replay_settings.admit_current,
             positive_weight=positive_weight,
         )
 
@@ -1858,18 +1889,35 @@ def main(cfg: DictConfig) -> None:
 
         val_samples_per_gpu = cfg.val.num_samples // dist.world_size
 
-        avg_vloss = validation_step(
-            generator=val_generator,
-            model=model_to_eval,
-            num_samples=val_samples_per_gpu,
-            batch_size=per_device_batch_size,
-            device=dist.device,
-            enable_fp16=cfg.enable_fp16,
-            enable_bf16=getattr(cfg, 'enable_bf16', False),
-            use_channels_last_3d=use_channels_last_3d,
-            rank=dist.rank,
-            positive_weight=positive_weight,
-        )
+        val_losses_by_task = {}
+        if mix_val_generators:
+            for task_name, task_generator in mix_val_generators.items():
+                val_losses_by_task[task_name] = validation_step(
+                    generator=task_generator,
+                    model=model_to_eval,
+                    num_samples=val_samples_per_gpu,
+                    batch_size=per_device_batch_size,
+                    device=dist.device,
+                    enable_fp16=cfg.enable_fp16,
+                    enable_bf16=getattr(cfg, 'enable_bf16', False),
+                    use_channels_last_3d=use_channels_last_3d,
+                    rank=dist.rank,
+                    positive_weight=positive_weight,
+                )
+            avg_vloss = sum(val_losses_by_task.values()) / len(val_losses_by_task)
+        else:
+            avg_vloss = validation_step(
+                generator=val_generator,
+                model=model_to_eval,
+                num_samples=val_samples_per_gpu,
+                batch_size=per_device_batch_size,
+                device=dist.device,
+                enable_fp16=cfg.enable_fp16,
+                enable_bf16=getattr(cfg, 'enable_bf16', False),
+                use_channels_last_3d=use_channels_last_3d,
+                rank=dist.rank,
+                positive_weight=positive_weight,
+            )
 
         # Synchronize losses
         if torch.distributed.is_available() and torch.distributed.is_initialized():
@@ -1877,9 +1925,16 @@ def main(cfg: DictConfig) -> None:
             torch.distributed.all_reduce(t, op=torch.distributed.ReduceOp.AVG)
             avg_loss = float(t.item())
 
-            v = torch.tensor([avg_vloss], device=dist.device)
-            torch.distributed.all_reduce(v, op=torch.distributed.ReduceOp.AVG)
-            avg_vloss = float(v.item())
+            if val_losses_by_task:
+                for task_name, task_loss in val_losses_by_task.items():
+                    v = torch.tensor([task_loss], device=dist.device)
+                    torch.distributed.all_reduce(v, op=torch.distributed.ReduceOp.AVG)
+                    val_losses_by_task[task_name] = float(v.item())
+                avg_vloss = sum(val_losses_by_task.values()) / len(val_losses_by_task)
+            else:
+                v = torch.tensor([avg_vloss], device=dist.device)
+                torch.distributed.all_reduce(v, op=torch.distributed.ReduceOp.AVG)
+                avg_vloss = float(v.item())
 
         gc.collect()
         if torch.cuda.is_available():
@@ -1984,6 +2039,12 @@ def main(cfg: DictConfig) -> None:
                 }, epoch_number
             )
 
+            for task_name, task_loss in val_losses_by_task.items():
+                print(f"[Mix Validation] {task_name} loss={task_loss:.5f}")
+                writer.add_scalar(
+                    f"ValidationLoss/{task_name}", task_loss, epoch_number
+                )
+
             # Log LER to TensorBoard (important evaluation metric)
             # Color code reports LER per round; surface code reports total LER
             if validation_ler is not None:
@@ -2062,6 +2123,54 @@ def main(cfg: DictConfig) -> None:
         epoch_end_time = time.time()
         epoch_duration = epoch_end_time - epoch_start_time
         epoch_times.append(epoch_duration)
+
+        peak_allocated_bytes = 0
+        peak_reserved_bytes = 0
+        if torch.cuda.is_available():
+            peak_allocated_bytes = int(torch.cuda.max_memory_allocated(dist.device))
+            peak_reserved_bytes = int(torch.cuda.max_memory_reserved(dist.device))
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                peak_tensor = torch.tensor(
+                    [peak_allocated_bytes, peak_reserved_bytes],
+                    dtype=torch.int64,
+                    device=dist.device,
+                )
+                torch.distributed.all_reduce(
+                    peak_tensor, op=torch.distributed.ReduceOp.MAX
+                )
+                peak_allocated_bytes, peak_reserved_bytes = map(
+                    int, peak_tensor.tolist()
+                )
+        resource_row = {
+            "epoch": int(epoch_number),
+            "wall_seconds": float(epoch_duration),
+            "gpu_hours": float(epoch_duration * dist.world_size / 3600.0),
+            "world_size": int(dist.world_size),
+            "optimizer_steps_global": int(global_step),
+            "samples_requested": int(effective_num_samples),
+            "peak_allocated_bytes_max_rank": peak_allocated_bytes,
+            "peak_reserved_bytes_max_rank": peak_reserved_bytes,
+        }
+        epoch_resource_metrics.append(resource_row)
+        if dist.rank == 0:
+            print(
+                "[Resources] "
+                f"epoch={epoch_number} wall_seconds={epoch_duration:.3f} "
+                f"gpu_hours={resource_row['gpu_hours']:.6f} "
+                f"peak_allocated_bytes={peak_allocated_bytes} "
+                f"peak_reserved_bytes={peak_reserved_bytes}"
+            )
+            writer.add_scalar(
+                "Resources/peak_allocated_bytes", peak_allocated_bytes, epoch_number
+            )
+            writer.add_scalar(
+                "Resources/peak_reserved_bytes", peak_reserved_bytes, epoch_number
+            )
+            resource_path = Path(to_absolute_path(str(cfg.output))) / "resource_metrics.json"
+            resource_path.write_text(
+                json.dumps({"epochs": epoch_resource_metrics}, indent=2) + "\n",
+                encoding="utf-8",
+            )
 
         if dist.rank == 0:
             print(

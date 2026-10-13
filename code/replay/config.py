@@ -36,6 +36,8 @@ class ReplaySettings:
     storage_dtype: torch.dtype
     save_every_epoch: bool
     strict_world_size: bool
+    load_existing: bool
+    admit_current: bool
 
     def local_capacity(self, rank: int, world_size: int) -> int:
         base, remainder = divmod(self.global_capacity, int(world_size))
@@ -92,6 +94,8 @@ def resolve_replay_settings(cfg) -> ReplaySettings:
         "PREDECODER_REPLAY_STRICT_WORLD_SIZE",
         bool(_select(cfg, "replay.strict_world_size", True)),
     )
+    load_existing = _env_bool("PREDECODER_REPLAY_LOAD_EXISTING", False)
+    admit_current = _env_bool("PREDECODER_REPLAY_ADMIT_CURRENT", True)
     if enabled and not task_id:
         raise ValueError(
             "Replay is enabled but no task id was provided; set "
@@ -114,6 +118,8 @@ def resolve_replay_settings(cfg) -> ReplaySettings:
         storage_dtype=dtype_by_name[dtype_name],
         save_every_epoch=save_every_epoch,
         strict_world_size=strict_world_size,
+        load_existing=load_existing,
+        admit_current=admit_current,
     )
 
 

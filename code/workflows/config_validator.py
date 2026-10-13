@@ -306,7 +306,7 @@ def _apply_code_specific_defaults(
     if "model" not in merged:
         merged.model = {}
 
-    if merged.data.noise_model is None:
+    if merged.data.noise_model is None and not getattr(merged.data, "noise_model_mixture", None):
         merged.data.noise_model = _default_public_noise_model()
 
     if code == "surface":
@@ -496,6 +496,7 @@ def validate_public_config(cfg: DictConfig) -> PublicModelSpec:
         allowed_data_keys = {
             "code_rotation",
             "noise_model",
+            "noise_model_mixture",
             "skip_noise_upscaling",
             "use_requested_training_window",
             "train_meas_basis",
@@ -535,6 +536,44 @@ def validate_public_config(cfg: DictConfig) -> PublicModelSpec:
         # Validate rotation value (accept O1..O4; also allow internal XV/XH/ZV/ZH for compatibility).
         if "code_rotation" in cfg.data:
             _normalize_code_rotation(cfg.data.code_rotation)
+
+        if "noise_model_mixture" in cfg.data:
+            if code != "surface":
+                raise ValueError("data.noise_model_mixture is supported only for surface code")
+            if "noise_model" in cfg.data and cfg.data.noise_model is not None:
+                raise ValueError(
+                    "Configure either data.noise_model or data.noise_model_mixture, not both"
+                )
+            mixture = OmegaConf.to_container(cfg.data.noise_model_mixture, resolve=True)
+            if not isinstance(mixture, list) or not mixture:
+                raise ValueError("data.noise_model_mixture must be a non-empty list")
+            from qec.noise_model import NoiseModel
+
+            seen_names = set()
+            for task_idx, item in enumerate(mixture):
+                if not isinstance(item, dict):
+                    raise ValueError(
+                        f"data.noise_model_mixture[{task_idx}] must be a mapping"
+                    )
+                name = str(item.get("name", "")).strip()
+                if not name:
+                    raise ValueError(
+                        f"data.noise_model_mixture[{task_idx}].name must be non-empty"
+                    )
+                if name in seen_names:
+                    raise ValueError(f"Duplicate noise-model mixture task name: {name!r}")
+                seen_names.add(name)
+                noise_model = item.get("noise_model")
+                if not isinstance(noise_model, dict):
+                    raise ValueError(
+                        f"data.noise_model_mixture[{task_idx}].noise_model must be a mapping"
+                    )
+                try:
+                    NoiseModel.from_config_dict(noise_model)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"Invalid data.noise_model_mixture[{task_idx}].noise_model: {exc}"
+                    ) from exc
 
     # Restrict optimizer sub-keys: only lr is public.
     if "optimizer" in cfg and isinstance(cfg.optimizer, DictConfig):

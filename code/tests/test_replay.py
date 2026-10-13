@@ -36,7 +36,7 @@ class TestReplayLoss(unittest.TestCase):
         )
         self.assertIs(combined, current)
 
-    def test_equal_weight_sources_are_normalized(self):
+    def test_unit_replay_weight_is_the_fixed_batch_mean(self):
         current = torch.tensor(8.0)
         replay = torch.tensor(12.0)
         combined = combine_current_and_replay_loss(
@@ -46,8 +46,8 @@ class TestReplayLoss(unittest.TestCase):
             replay_batch_size=4,
             replay_lambda=1.0,
         )
-        # B * ((8/2 + 12/4) / 2) = 21.
-        self.assertEqual(combined.item(), 21.0)
+        # With unit sample weights, the two sum-reduced losses simply add.
+        self.assertEqual(combined.item(), 20.0)
 
     def test_ewc_keeps_batch_independent_effective_scale(self):
         current = torch.tensor(8.0)
@@ -64,7 +64,7 @@ class TestReplayLoss(unittest.TestCase):
         )
         # train_epoch later divides gradients by six samples; the EWC term is
         # 6 * 2 * .25 here, yielding 2 * .25 after that division.
-        self.assertEqual(total.item(), 24.0)
+        self.assertEqual(total.item(), 23.0)
 
     def test_negative_lambda_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "non-negative"):

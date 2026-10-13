@@ -16,18 +16,14 @@ def combine_current_and_replay_loss(
     replay_batch_size: int,
     replay_lambda: float,
 ) -> torch.Tensor:
-    """Return a sum-scaled loss compatible with ``training.train``.
+    """Return a sum-scaled, sample-weighted current-plus-Replay loss.
 
-    ``train_epoch`` accumulates sum-reduced BCE gradients and divides them by
-    the accumulated number of samples immediately before the optimizer step.
-    This helper therefore multiplies the desired normalized objective by the
-    combined batch size. After the existing gradient division, the effective
-    objective is::
-
-        (mean_current + replay_lambda * mean_replay) / (1 + replay_lambda)
-
-    where each mean is per sample (and still sums over output elements). With
-    no replay samples the returned tensor is exactly ``current_loss_sum``.
+    The training loop divides accumulated gradients by the physical total
+    batch size. With replay_lambda=1, this therefore reduces exactly to the
+    ordinary mean over the fixed-size mixed batch, so the configured Replay
+    sample fraction controls its influence. Other replay_lambda values weight
+    each Replay sample relative to each current sample while preserving the
+    overall loss scale.
     """
     current_batch_size = int(current_batch_size)
     replay_batch_size = int(replay_batch_size)
@@ -40,13 +36,11 @@ def combine_current_and_replay_loss(
         return current_loss_sum
 
     total_batch_size = current_batch_size + replay_batch_size
-    current_mean = current_loss_sum / current_batch_size
-    replay_mean = replay_loss_sum / replay_batch_size
-    return (
-        total_batch_size
-        * (current_mean + replay_lambda * replay_mean)
-        / (1.0 + replay_lambda)
-    )
+    weighted_sample_count = current_batch_size + replay_lambda * replay_batch_size
+    weighted_mean = (
+        current_loss_sum + replay_lambda * replay_loss_sum
+    ) / weighted_sample_count
+    return total_batch_size * weighted_mean
 
 
 __all__ = ["combine_current_and_replay_loss"]
